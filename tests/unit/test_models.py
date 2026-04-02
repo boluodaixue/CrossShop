@@ -64,6 +64,7 @@ def test_standard_item_accepts_a_valid_offer() -> None:
     [
         ("price", Decimal("-1.00")),
         ("currency", "BTC"),
+        ("platform", "unknown"),
         ("offer_id", ""),
     ],
 )
@@ -91,12 +92,18 @@ def test_product_id_cannot_be_empty() -> None:
 def test_shipping_quote_requires_exact_component_sum() -> None:
     with pytest.raises(ValidationError, match="landed_price must equal"):
         ShippingQuote(
+            canonical_product_id="demo-product",
             offer_id="amazon:demo-001",
+            platform=Platform.AMAZON,
             item_price=Decimal("100.00"),
             shipping_fee=Decimal("10.00"),
             tax_fee=Decimal("5.00"),
             landed_price=Decimal("114.00"),
             currency=Currency.CNY,
+            eta_days=12,
+            tax_rate=Decimal("0.13"),
+            tax_tier="标准",
+            rule_version="unit-test-v1",
         )
 
 

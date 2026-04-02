@@ -30,6 +30,10 @@ NonNegativeMoney = Annotated[
     Decimal,
     Field(ge=Decimal("0"), max_digits=12, decimal_places=2),
 ]
+Rate = Annotated[
+    Decimal,
+    Field(ge=Decimal("0"), le=Decimal("1"), max_digits=5, decimal_places=4),
+]
 
 
 class StrictModel(BaseModel):
@@ -57,6 +61,13 @@ class ProvenanceKind(str, Enum):
     DERIVED = "derived"
     EXTERNAL_PUBLIC = "external_public"
     LICENSED_PROVIDER = "licensed_provider"
+
+
+class ResultStatus(str, Enum):
+    OK = "ok"
+    NO_RESULTS = "no_results"
+    PARTIAL = "partial"
+    INVALID_INPUT = "invalid_input"
 
 
 class DataProvenance(StrictModel):
@@ -165,6 +176,14 @@ class UserProfile(StrictModel):
     provenance: DataProvenance
 
 
+class ToolIssue(StrictModel):
+    """Structured warning or failure produced by a deterministic tool."""
+
+    code: NonEmptyText
+    message: NonEmptyText
+    subject_id: NonEmptyText | None = None
+
+
 class SearchRequest(StrictModel):
     query: NonEmptyText
     user_id: NonEmptyText | None = None
@@ -194,29 +213,62 @@ class SearchResult(StrictModel):
     request: SearchRequest
     candidates: list[SearchCandidate] = Field(default_factory=list)
     total_catalog_items: Annotated[int, Field(ge=0)]
-    warnings: list[str] = Field(default_factory=list)
+    matched_catalog_items: Annotated[int, Field(ge=0)] = 0
+    truncated: bool = False
+    status: ResultStatus = ResultStatus.OK
+    issues: list[ToolIssue] = Field(default_factory=list)
+
+
+class NormalizedOffer(StrictModel):
+    canonical_product_id: NonEmptyText
+    title: NonEmptyText
+    offer: Offer
+    normalized_price: PositiveMoney
+    base_currency: Currency
 
 
 class PriceComparison(StrictModel):
     canonical_product_id: NonEmptyText
-    offers: Annotated[list[Offer], Field(min_length=1)]
+    title: NonEmptyText
+    offers: Annotated[list[NormalizedOffer], Field(min_length=1)]
     best_offer_id: NonEmptyText
 
     @model_validator(mode="after")
-    def best_offer_must_exist(self) -> "PriceComparison":
-        if self.best_offer_id not in {offer.offer_id for offer in self.offers}:
+    def offers_must_be_consistent(self) -> "PriceComparison":
+        offer_ids = {point.offer.offer_id for point in self.offers}
+        if self.best_offer_id not in offer_ids:
             raise ValueError("best_offer_id must refer to one of the compared offers")
+        if any(point.canonical_product_id != self.canonical_product_id for point in self.offers):
+            raise ValueError("all compared offers must belong to canonical_product_id")
+        minimum = min(point.normalized_price for point in self.offers)
+        best = next(point for point in self.offers if point.offer.offer_id == self.best_offer_id)
+        if best.normalized_price != minimum:
+            raise ValueError("best_offer_id must refer to the lowest normalized price")
         return self
 
 
+class PriceCompareResult(StrictModel):
+    base_currency: Currency
+    comparisons: list[PriceComparison] = Field(default_factory=list)
+    fx_rate_version: NonEmptyText
+    status: ResultStatus = ResultStatus.OK
+    issues: list[ToolIssue] = Field(default_factory=list)
+
+
 class ShippingQuote(StrictModel):
+    canonical_product_id: NonEmptyText
     offer_id: NonEmptyText
+    platform: Platform
     item_price: PositiveMoney
     shipping_fee: NonNegativeMoney
     tax_fee: NonNegativeMoney
     landed_price: PositiveMoney
     currency: Currency
+    eta_days: Annotated[int, Field(ge=1)]
+    tax_rate: Rate
+    tax_tier: NonEmptyText
     is_estimate: bool = True
+    rule_version: NonEmptyText
 
     @model_validator(mode="after")
     def landed_price_must_equal_components(self) -> "ShippingQuote":
@@ -226,13 +278,37 @@ class ShippingQuote(StrictModel):
         return self
 
 
+class ShippingResult(StrictModel):
+    destination: NonEmptyText
+    quotes: list[ShippingQuote] = Field(default_factory=list)
+    rule_version: NonEmptyText
+    status: ResultStatus = ResultStatus.OK
+    issues: list[ToolIssue] = Field(default_factory=list)
+
+
 class PickedItem(StrictModel):
     canonical_product_id: NonEmptyText
+    title: NonEmptyText
     offer_id: NonEmptyText
+    platform: Platform
     landed_price: PositiveMoney
     currency: Currency
     score: Annotated[float, Field(ge=0, le=1)]
+    rating: Annotated[float, Field(ge=0, le=5)] | None = None
     reasons: Annotated[list[NonEmptyText], Field(min_length=1)]
+
+
+class RejectedItem(StrictModel):
+    canonical_product_id: NonEmptyText
+    reason_code: NonEmptyText
+    reason: NonEmptyText
+
+
+class ItemPickerResult(StrictModel):
+    picks: Annotated[list[PickedItem], Field(max_length=3)] = Field(default_factory=list)
+    rejected: list[RejectedItem] = Field(default_factory=list)
+    status: ResultStatus = ResultStatus.OK
+    issues: list[ToolIssue] = Field(default_factory=list)
 
 
 class ShoppingRecommendation(StrictModel):
@@ -240,3 +316,17 @@ class ShoppingRecommendation(StrictModel):
     items: Annotated[list[PickedItem], Field(max_length=3)] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+class ShoppingSummaryResult(StrictModel):
+    recommendation: ShoppingRecommendation
+    final_text: NonEmptyText
+    status: ResultStatus = ResultStatus.OK
+
+
+class DeterministicPipelineResult(StrictModel):
+    search: SearchResult
+    price_comparison: PriceCompareResult
+    shipping: ShippingResult
+    selection: ItemPickerResult
+    summary: ShoppingSummaryResult
