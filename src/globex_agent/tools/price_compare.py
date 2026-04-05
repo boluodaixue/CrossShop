@@ -1,96 +1,104 @@
-"""Deterministic cross-platform price comparison."""
+"""Deterministic cross-platform price comparison from chapter 12."""
 
 from decimal import ROUND_HALF_UP, Decimal
 
 from globex_agent.domain import (
+    Candidate,
     Currency,
-    NormalizedOffer,
-    PriceCompareResult,
-    PriceComparison,
+    PriceCompareOutput,
+    PricePoint,
     ResultStatus,
-    SearchResult,
     ToolIssue,
 )
 
 FX_RATE_VERSION = "demo-fx-2026-08-12-v1"
 FX_RATES_TO_CNY: dict[Currency, Decimal] = {
     Currency.CNY: Decimal("1.00"),
-    Currency.USD: Decimal("7.20"),
-    Currency.SGD: Decimal("5.30"),
-    Currency.EUR: Decimal("7.80"),
+    Currency.USD: Decimal("7.18"),
+    Currency.SGD: Decimal("5.32"),
+    Currency.GBP: Decimal("9.05"),
+    Currency.EUR: Decimal("7.78"),
+    Currency.JPY: Decimal("0.046"),
 }
 _CENT = Decimal("0.01")
 
 
 def compare_prices(
-    search_result: SearchResult,
+    candidates: list[Candidate],
     base_currency: Currency = Currency.CNY,
-) -> PriceCompareResult:
-    """Normalize matched offer prices and choose the sticker-price winner per item."""
+    top_n: int = 12,
+) -> PriceCompareOutput:
+    """Normalize currencies and return the cheapest ``PricePoint`` rows.
 
-    comparisons: list[PriceComparison] = []
+    This follows the course boundary: PriceCompare compares item prices only; it
+    does not calculate shipping or duty and it does not compute a quality score.
+    """
+
+    top_n = max(1, min(top_n, 30))
     issues: list[ToolIssue] = []
-    for candidate in search_result.candidates:
-        matched_ids = set(candidate.matched_offer_ids)
-        normalized: list[NormalizedOffer] = []
-        for offer in candidate.item.offers:
-            if offer.offer_id not in matched_ids:
-                continue
-            try:
-                price = convert_money(offer.price, offer.currency, base_currency)
-            except KeyError:
-                issues.append(
-                    ToolIssue(
-                        code="unsupported_currency",
-                        message=f"缺少 {offer.currency.value} 到 {base_currency.value} 的演示汇率",
-                        subject_id=offer.offer_id,
-                    )
-                )
-                continue
-            normalized.append(
-                NormalizedOffer(
-                    canonical_product_id=candidate.item.canonical_product_id,
-                    title=candidate.item.title,
-                    offer=offer,
-                    normalized_price=price,
-                    base_currency=base_currency,
-                )
-            )
-
-        normalized.sort(
-            key=lambda point: (
-                point.normalized_price,
-                point.offer.platform.value,
-                point.offer.offer_id,
-            )
-        )
-        if not normalized:
+    points: list[PricePoint] = []
+    for candidate in candidates[:100]:
+        if candidate.price is None or candidate.currency is None:
             issues.append(
                 ToolIssue(
-                    code="no_comparable_offer",
-                    message="候选商品没有可换算的有效报价",
-                    subject_id=candidate.item.canonical_product_id,
+                    code="price_unavailable",
+                    message="公开商品数据没有可用于比价的观测价格",
+                    subject_id=candidate.item_id,
                 )
             )
             continue
-        comparisons.append(
-            PriceComparison(
-                canonical_product_id=candidate.item.canonical_product_id,
-                title=candidate.item.title,
-                offers=normalized,
-                best_offer_id=normalized[0].offer.offer_id,
+        try:
+            normalized_price = convert_money(candidate.price, candidate.currency, base_currency)
+        except KeyError:
+            issues.append(
+                ToolIssue(
+                    code="unsupported_currency",
+                    message=(
+                        f"缺少 {candidate.currency.value} 到 {base_currency.value} "
+                        "的演示汇率"
+                    ),
+                    subject_id=candidate.item_id,
+                )
+            )
+            continue
+        points.append(
+            PricePoint(
+                item_id=candidate.item_id,
+                platform=candidate.platform,
+                title=candidate.title,
+                price_local=candidate.price,
+                currency_local=candidate.currency,
+                price_cny=normalized_price,
+                rating=candidate.rating,
+                sales=candidate.sales,
+                note=_pack_note(candidate),
+                same_group_id=candidate.same_group_id,
+                brand=candidate.brand,
+                category_path=candidate.category_path,
+                attributes=candidate.attributes,
             )
         )
 
-    if not comparisons:
+    points.sort(key=lambda point: (point.price_cny, point.platform.value, point.item_id))
+    ranked = points[:top_n]
+    cheapest_per_platform: dict = {}
+    cheapest_per_group: dict[str, str] = {}
+    for point in points:
+        cheapest_per_platform.setdefault(point.platform, point.item_id)
+        cheapest_per_group.setdefault(point.same_group_id, point.item_id)
+
+    if not ranked:
         status = ResultStatus.NO_RESULTS
+        issues.append(ToolIssue(code="no_comparable_item", message="没有可换算的候选商品"))
     elif issues:
         status = ResultStatus.PARTIAL
     else:
         status = ResultStatus.OK
-    return PriceCompareResult(
+    return PriceCompareOutput(
         base_currency=base_currency,
-        comparisons=comparisons,
+        ranked=ranked,
+        cheapest_per_platform=cheapest_per_platform,
+        cheapest_per_group=cheapest_per_group,
         fx_rate_version=FX_RATE_VERSION,
         status=status,
         issues=issues,
@@ -98,8 +106,22 @@ def compare_prices(
 
 
 def convert_money(amount: Decimal, source: Currency, target: Currency) -> Decimal:
-    """Convert with the versioned illustrative table, rounded half-up to cents."""
+    """Convert with the versioned demo table, rounded half-up to cents."""
 
     source_rate = FX_RATES_TO_CNY[source]
     target_rate = FX_RATES_TO_CNY[target]
     return (amount * source_rate / target_rate).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _pack_note(candidate: Candidate) -> str | None:
+    if candidate.price is None or candidate.currency is None:
+        return None
+    pack_size = candidate.attributes.get("pack_size")
+    try:
+        count = int(pack_size) if pack_size is not None else 1
+    except (TypeError, ValueError):
+        return None
+    if count > 1:
+        unit_price = (candidate.price / count).quantize(_CENT, rounding=ROUND_HALF_UP)
+        return f"一套 {count} 件，等价单件 {unit_price} {candidate.currency.value}"
+    return None

@@ -1,20 +1,15 @@
-"""Deterministic hard-constraint filtering and candidate ranking."""
+"""Deterministic hard-constraint filtering and ItemPicker ranking."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from decimal import Decimal
 
 from globex_agent.domain import (
-    ItemPickerResult,
+    ItemPickerOutput,
+    LandedCost,
     PickedItem,
-    RejectedItem,
     ResultStatus,
-    SearchCandidate,
-    SearchResult,
-    ShippingQuote,
-    ShippingResult,
-    StandardItem,
+    SearchRequest,
     ToolIssue,
     UserProfile,
 )
@@ -25,21 +20,19 @@ from globex_agent.tools.constraints import (
 )
 
 
-@dataclass(frozen=True)
-class _Eligible:
-    candidate: SearchCandidate
-    quote: ShippingQuote
-
-
 def pick_items(
-    search_result: SearchResult,
-    shipping_result: ShippingResult,
-    profile: UserProfile | None = None,
+    landed: list[LandedCost],
+    request: SearchRequest,
+    user_profile: UserProfile | None = None,
     top_n: int = 3,
-) -> ItemPickerResult:
-    """Apply hard constraints first, then rank surviving canonical products."""
+) -> ItemPickerOutput:
+    """Pick at most three items from ``ShippingCalc.items``.
 
-    request = search_result.request
+    The course signature receives natural-language preferences and optional
+    CategoryInsight. Stage two has neither an LLM nor CategoryInsight, so this
+    local implementation injects the already parsed request and user profile.
+    """
+
     unsupported = sorted(set(request.hard_constraints) - SUPPORTED_HARD_CONSTRAINTS)
     if unsupported:
         issues = [
@@ -50,150 +43,132 @@ def pick_items(
             )
             for key in unsupported
         ]
-        return ItemPickerResult(status=ResultStatus.INVALID_INPUT, issues=issues)
+        return ItemPickerOutput(status=ResultStatus.INVALID_INPUT, issues=issues)
 
-    best_quotes = _best_quote_per_product(shipping_result.quotes)
-    eligible: list[_Eligible] = []
-    rejected: list[RejectedItem] = []
-    for candidate in search_result.candidates:
-        product_id = candidate.item.canonical_product_id
-        quote = best_quotes.get(product_id)
-        if quote is None:
-            rejected.append(
-                RejectedItem(
-                    canonical_product_id=product_id,
-                    reason_code="missing_shipping_quote",
-                    reason="没有可用的到手价估算",
-                )
-            )
-            continue
-        failure = _hard_failure(candidate.item, quote, search_result, profile)
+    eligible: list[LandedCost] = []
+    failures_by_group: dict[str, list[str]] = {}
+    for cost in landed:
+        failure = _hard_failure(cost, request, user_profile)
         if failure is not None:
-            rejected.append(
-                RejectedItem(
-                    canonical_product_id=product_id,
-                    reason_code=failure[0],
-                    reason=failure[1],
-                )
-            )
+            failures_by_group.setdefault(cost.same_group_id, []).append(failure)
             continue
-        eligible.append(_Eligible(candidate, quote))
+        eligible.append(cost)
 
-    picks = _rank_eligible(eligible, profile)[: max(1, min(top_n, 3))]
+    eligible_groups = {cost.same_group_id for cost in eligible}
+    rejected = [
+        f"{group_id}：{reasons[0]}"
+        for group_id, reasons in failures_by_group.items()
+        if group_id not in eligible_groups
+    ]
+    picks = _take_unique_groups(
+        _rank_eligible(eligible, user_profile),
+        max(1, min(top_n, 3)),
+    )
     if picks:
         status = ResultStatus.OK
         issues: list[ToolIssue] = []
     else:
         status = ResultStatus.NO_RESULTS
         issues = [
-            ToolIssue(code="all_candidates_rejected", message="所有候选均违反硬约束或缺少报价")
+            ToolIssue(code="all_candidates_rejected", message="所有候选均违反硬约束或缺少到手价")
         ]
-    return ItemPickerResult(
+    return ItemPickerOutput(
         picks=picks,
-        rejected=rejected,
+        rejected_brief=rejected[:8],
         status=status,
         issues=issues,
     )
 
 
 def _hard_failure(
-    item: StandardItem,
-    quote: ShippingQuote,
-    search_result: SearchResult,
+    cost: LandedCost,
+    request: SearchRequest,
     profile: UserProfile | None,
-) -> tuple[str, str] | None:
-    request = search_result.request
-    if request.budget is not None and quote.landed_price > request.budget:
-        return (
-            "over_budget",
-            f"到手价 {quote.currency.value} {quote.landed_price} 超过预算 {request.budget}",
-        )
+) -> str | None:
+    if request.budget is not None and cost.landed_cny > request.budget:
+        return f"到手价 CNY {cost.landed_cny} 超过预算 {request.budget}"
 
     if profile is not None:
-        if item.brand and any(
-            normalize_text(blocked) == normalize_text(item.brand)
+        if cost.brand and any(
+            normalize_text(blocked) == normalize_text(cost.brand)
             for blocked in profile.blocked_brands
         ):
-            return "blocked_brand", f"品牌 {item.brand} 在用户黑名单中"
-        material = normalize_text(item.attributes.get("material", ""))
+            return f"品牌 {cost.brand} 在用户黑名单中"
+        material = normalize_text(cost.attributes.get("material", ""))
         for blocked in profile.blocked_materials:
             if normalize_text(blocked) in material:
-                return "blocked_material", f"材质 {blocked} 在用户黑名单中"
+                return f"材质 {blocked} 在用户黑名单中"
 
     for key, expected in request.hard_constraints.items():
-        check = check_constraint(item, key, expected)
+        check = check_constraint(cost, key, expected)
         if not check.matched:
-            return "hard_constraint_mismatch", check.reason
+            return check.reason
     return None
 
 
-def _best_quote_per_product(quotes: list[ShippingQuote]) -> dict[str, ShippingQuote]:
-    best: dict[str, ShippingQuote] = {}
-    for quote in quotes:
-        current = best.get(quote.canonical_product_id)
-        if current is None or (quote.landed_price, quote.offer_id) < (
-            current.landed_price,
-            current.offer_id,
-        ):
-            best[quote.canonical_product_id] = quote
-    return best
+def _take_unique_groups(ranked: list[PickedItem], top_n: int) -> list[PickedItem]:
+    picks: list[PickedItem] = []
+    seen_groups: set[str] = set()
+    for item in ranked:
+        if item.same_group_id in seen_groups:
+            continue
+        seen_groups.add(item.same_group_id)
+        picks.append(item)
+        if len(picks) == top_n:
+            break
+    return picks
 
 
 def _rank_eligible(
-    eligible: list[_Eligible],
+    eligible: list[LandedCost],
     profile: UserProfile | None,
 ) -> list[PickedItem]:
     if not eligible:
         return []
-    prices = [entry.quote.landed_price for entry in eligible]
+    prices = [item.landed_cny for item in eligible]
     minimum = min(prices)
     maximum = max(prices)
 
     picks: list[PickedItem] = []
-    for entry in eligible:
-        candidate = entry.candidate
-        quote = entry.quote
-        rating = _offer_rating(candidate.item, quote.offer_id)
-        price_score = _price_score(quote.landed_price, minimum, maximum)
-        rating_score = Decimal(str(rating / 5 if rating is not None else 0.5))
-        preference_score = Decimal(str(_preference_alignment(candidate.item, profile)))
+    for item in eligible:
+        price_score = _price_score(item.landed_cny, minimum, maximum)
+        rating_score = Decimal(str(item.rating / 5 if item.rating is not None else 0.5))
+        preference_score = Decimal(str(_preference_alignment(item, profile)))
+        eta_score = Decimal("1") if item.eta_days <= 12 else Decimal("0")
+        duty_score = Decimal("1") if item.duty_tier == "免征" else Decimal("0")
         score = (
-            Decimal("0.45") * Decimal(str(candidate.score))
-            + Decimal("0.30") * price_score
+            Decimal("0.25") * price_score
             + Decimal("0.15") * rating_score
-            + Decimal("0.10") * preference_score
+            + Decimal("0.20") * preference_score
+            + Decimal("0.20") * eta_score
+            + Decimal("0.20") * duty_score
         )
-        reasons = [
-            "满足全部硬约束",
-            f"到手价 {quote.currency.value} {quote.landed_price}",
-        ]
-        if preference_score > 0:
+        reasons = [f"到手价 CNY {item.landed_cny}"]
+        if item.eta_days <= 12:
+            reasons.append(f"预计 {item.eta_days} 天到手")
+        if item.duty_tier == "免征":
+            reasons.append("演示规则中的免征档")
+        elif preference_score > 0:
             reasons.append("命中用户画像偏好")
-        elif rating is not None:
-            reasons.append(f"商品评分 {rating:.1f}/5")
-        else:
-            reasons.append(f"查询相关度 {candidate.score:.2f}")
+        elif item.rating is not None:
+            reasons.append(f"商品评分 {item.rating:.1f}/5")
+
         picks.append(
             PickedItem(
-                canonical_product_id=candidate.item.canonical_product_id,
-                title=candidate.item.title,
-                offer_id=quote.offer_id,
-                platform=quote.platform,
-                landed_price=quote.landed_price,
-                currency=quote.currency,
+                item_id=item.item_id,
+                platform=item.platform,
+                landed_cny=item.landed_cny,
                 score=round(float(score), 4),
-                rating=rating,
-                reasons=reasons,
+                reasons=reasons[:3],
+                flags=[],
+                same_group_id=item.same_group_id,
+                title=item.title,
+                currency=item.currency,
+                rating=item.rating,
             )
         )
 
-    picks.sort(
-        key=lambda pick: (
-            -pick.score,
-            pick.landed_price,
-            pick.canonical_product_id,
-        )
-    )
+    picks.sort(key=lambda pick: (-pick.score, pick.landed_cny, pick.item_id))
     return picks
 
 
@@ -203,18 +178,14 @@ def _price_score(price: Decimal, minimum: Decimal, maximum: Decimal) -> Decimal:
     return Decimal("1") - (price - minimum) / (maximum - minimum)
 
 
-def _offer_rating(item: StandardItem, offer_id: str) -> float | None:
-    return next((offer.rating for offer in item.offers if offer.offer_id == offer_id), None)
-
-
-def _preference_alignment(item: StandardItem, profile: UserProfile | None) -> float:
+def _preference_alignment(item: LandedCost, profile: UserProfile | None) -> float:
     if profile is None:
         return 0.0
     signals = 0
     matched = 0
     if profile.positive_item_ids:
         signals += 1
-        matched += item.canonical_product_id in profile.positive_item_ids
+        matched += item.item_id in profile.positive_item_ids
     if profile.preferred_categories:
         signals += 1
         categories = " ".join(item.category_path)

@@ -1,166 +1,190 @@
-"""Deterministic local ItemSearch implementation."""
+"""ItemSearch adapter over a replaceable retrieval backend."""
 
 from __future__ import annotations
 
 import re
-from unicodedata import normalize
+from collections.abc import Mapping
+from typing import Any
 
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import (
+    Candidate,
+    Currency,
+    ItemSearchOutput,
+    MarketLocale,
+    Platform,
     ResultStatus,
-    SearchCandidate,
-    SearchRequest,
-    SearchResult,
     StandardItem,
     ToolIssue,
-    UserProfile,
 )
-from globex_agent.tools.constraints import SUPPORTED_HARD_CONSTRAINTS, check_constraint
-
-_ASCII_TOKEN = re.compile(r"[a-z0-9%]+")
-_CJK_SEGMENT = re.compile(r"[\u3400-\u9fff]+")
+from globex_agent.recall import (
+    CanonicalDedupSearchBackend,
+    CanonicalListing,
+    KeywordSearchBackend,
+    ListingLanguage,
+    PairReranker,
+    PreferredLanguageSearchBackend,
+    RerankedSearchBackend,
+    SearchBackend,
+    SearchDocument,
+    standard_item_to_search_document,
+)
+from globex_agent.tools.constraints import SUPPORTED_HARD_CONSTRAINTS
 
 
 def search_items(
     catalog: LocalCatalog,
-    request: SearchRequest,
-    profile: UserProfile | None = None,
-) -> SearchResult:
-    """Recall local products with deterministic lexical and attribute scoring."""
+    query: str,
+    platform: Platform,
+    top_k: int = 20,
+    hard_constraints: dict[str, Any] | None = None,
+    *,
+    locale: MarketLocale | None = None,
+    backend: SearchBackend | None = None,
+    reranker: PairReranker | None = None,
+    listing_languages: Mapping[str, ListingLanguage] | None = None,
+) -> ItemSearchOutput:
+    """Search one platform without using user-profile recall signals.
 
-    query_features = _features(request.query)
+    ``catalog`` and the optional ANN backend/reranker are dependency-injection
+    values; none appears in the model-facing schema. An injected backend is
+    canonicalized before an optional reranker, then the preferred display
+    language is selected without changing relevance scores or canonical order.
+    Without injection the first-stage teaching example remains BM25-only.
+    """
+
+    top_k = max(1, min(top_k, 50))
+    constraints = hard_constraints or {}
     issues = [
         ToolIssue(
             code="unsupported_constraint",
             message=f"ItemSearch 无法识别硬约束 {key}，交由 ItemPicker 拒绝处理",
             subject_id=key,
         )
-        for key in sorted(request.hard_constraints)
+        for key in sorted(constraints)
         if key not in SUPPORTED_HARD_CONSTRAINTS
     ]
 
-    ranked: list[SearchCandidate] = []
-    for item in catalog.items:
-        offers = [
-            offer for offer in item.offers if offer.in_stock and offer.platform in request.platforms
-        ]
-        if not offers:
-            continue
-
-        filtered_item = item.model_copy(update={"offers": offers})
-        score, reasons = _score_item(filtered_item, request, query_features, profile)
-        if score <= 0:
-            continue
-        ranked.append(
-            SearchCandidate(
-                item=filtered_item,
-                matched_offer_ids=[offer.offer_id for offer in offers],
-                score=score,
-                reasons=reasons,
-            )
-        )
-
-    ranked.sort(
-        key=lambda candidate: (
-            -candidate.score,
-            candidate.item.title.casefold(),
-            candidate.item.canonical_product_id,
+    platform_items = tuple(
+        item
+        for item in catalog.items
+        if (
+            item.platform is platform
+            and item.is_available
+            and (locale is None or item.locale is locale)
         )
     )
-    matched_count = len(ranked)
-    candidates = ranked[: request.top_k]
+    documents = [item_to_search_document(item) for item in platform_items]
+    if backend is None:
+        search_backend: SearchBackend = KeywordSearchBackend(documents)
+    else:
+        listings = [
+            CanonicalListing(
+                document_id=item.item_id,
+                canonical_id=item.same_group_id,
+                language=_listing_language(item, listing_languages),
+            )
+            for item in platform_items
+        ]
+        relevance_backend: SearchBackend = CanonicalDedupSearchBackend(
+            backend,
+            listings,
+        )
+        if reranker is not None:
+            relevance_backend = RerankedSearchBackend(
+                relevance_backend,
+                documents,
+                reranker,
+                candidate_k=100,
+            )
+        search_backend = PreferredLanguageSearchBackend(
+            relevance_backend,
+            listings,
+            preferred_language=_text_language(query),
+        )
+    recalled = search_backend.search(query, top_k=top_k)
+    item_by_id = {item.item_id: item for item in platform_items}
+    candidates = [
+        _to_candidate(item_by_id[hit.document_id])
+        for hit in recalled.hits
+        if hit.document_id in item_by_id
+    ]
+
     if not candidates:
         status = ResultStatus.NO_RESULTS
-        issues.append(ToolIssue(code="no_search_match", message="本地商品目录没有匹配该查询的候选"))
+        issues.append(
+            ToolIssue(
+                code="no_search_match",
+                message=f"{platform.value} 本地商品目录没有匹配该查询的候选",
+                subject_id=platform.value,
+            )
+        )
     elif issues:
         status = ResultStatus.PARTIAL
     else:
         status = ResultStatus.OK
 
-    return SearchResult(
-        request=request,
+    return ItemSearchOutput(
+        platform=platform,
+        locale=locale,
         candidates=candidates,
-        total_catalog_items=len(catalog),
-        matched_catalog_items=matched_count,
-        truncated=matched_count > request.top_k,
+        total_recall=recalled.total_recall,
+        truncated=recalled.truncated,
         status=status,
         issues=issues,
     )
 
 
-def _score_item(
+def item_to_search_document(item: StandardItem) -> SearchDocument:
+    """Map the stable product contract to the Item-tower/search text contract."""
+
+    return standard_item_to_search_document(item)
+
+
+def _listing_language(
     item: StandardItem,
-    request: SearchRequest,
-    query_features: set[str],
-    profile: UserProfile | None,
-) -> tuple[float, list[str]]:
-    heading = " ".join([item.title, item.brand or "", *item.category_path])
-    details = " ".join(
-        [item.description, *(f"{key} {value}" for key, value in item.attributes.items())]
+    overrides: Mapping[str, ListingLanguage] | None,
+) -> ListingLanguage:
+    if overrides is not None and item.item_id in overrides:
+        return overrides[item.item_id]
+    if item.language is not None:
+        return item.language
+    return _text_language(f"{item.title} {item.description}")
+
+
+def _text_language(text: str) -> ListingLanguage:
+    if re.search(r"[\u3040-\u30ff]", text):
+        return "ja"
+    if re.search(r"[\u3400-\u9fff]", text):
+        return "zh"
+    if re.search(r"[áéíóúüñ¿¡]", text.casefold()):
+        return "es"
+    return "en"
+
+
+def _flatten_attribute_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _to_candidate(item: StandardItem) -> Candidate:
+    return Candidate(
+        item_id=item.item_id,
+        platform=item.platform,
+        locale=item.locale,
+        title=item.title,
+        price=item.price_cny,
+        currency=Currency.CNY if item.price_cny is not None else item.currency_raw,
+        price_source=item.price_source,
+        rating=item.rating,
+        sales=None,
+        image_url=None,
+        attributes={
+            key: _flatten_attribute_value(value)
+            for key, value in item.attributes.items()
+        },
+        same_group_id=item.same_group_id,
+        brand=item.brand,
+        category_path=item.category_path,
     )
-    heading_overlap = _coverage(query_features, _features(heading))
-    detail_overlap = _coverage(query_features, _features(details))
-
-    checks = [
-        check_constraint(item, key, expected) for key, expected in request.hard_constraints.items()
-    ]
-    supported = [check for check in checks if check.supported]
-    constraint_score = (
-        sum(check.matched for check in supported) / len(supported) if supported else 0.0
-    )
-    profile_score = _profile_alignment(item, profile)
-    score = min(
-        1.0,
-        0.55 * heading_overlap
-        + 0.30 * detail_overlap
-        + 0.10 * constraint_score
-        + 0.05 * profile_score,
-    )
-    score = round(score, 4)
-
-    reasons: list[str] = []
-    if heading_overlap > 0:
-        reasons.append("标题或类目与查询匹配")
-    if detail_overlap > 0:
-        reasons.append("描述或属性与查询匹配")
-    if supported:
-        matched = sum(check.matched for check in supported)
-        reasons.append(f"可识别硬约束匹配 {matched}/{len(supported)}")
-    if profile_score > 0:
-        reasons.append("命中用户画像偏好")
-    return score, reasons or ["本地词项弱匹配"]
-
-
-def _profile_alignment(item: StandardItem, profile: UserProfile | None) -> float:
-    if profile is None:
-        return 0.0
-    signals = 0
-    matched = 0
-    if profile.positive_item_ids:
-        signals += 1
-        matched += item.canonical_product_id in profile.positive_item_ids
-    if profile.preferred_categories:
-        signals += 1
-        categories = " ".join(item.category_path)
-        matched += any(category in categories for category in profile.preferred_categories)
-    for key, expected in profile.preferred_attributes.items():
-        signals += 1
-        matched += item.attributes.get(key) == expected
-    return matched / signals if signals else 0.0
-
-
-def _coverage(query_features: set[str], document_features: set[str]) -> float:
-    if not query_features:
-        return 0.0
-    return len(query_features & document_features) / len(query_features)
-
-
-def _features(text: str) -> set[str]:
-    normalized = normalize("NFKC", text).casefold()
-    features = set(_ASCII_TOKEN.findall(normalized))
-    for segment in _CJK_SEGMENT.findall(normalized):
-        if len(segment) == 1:
-            features.add(segment)
-            continue
-        features.update(segment[index : index + 2] for index in range(len(segment) - 1))
-    return features

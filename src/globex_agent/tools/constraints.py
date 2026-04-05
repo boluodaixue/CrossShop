@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Protocol
 from unicodedata import normalize
-
-from globex_agent.domain import StandardItem
 
 SUPPORTED_HARD_CONSTRAINTS = frozenset(
     {
@@ -25,6 +23,10 @@ SUPPORTED_HARD_CONSTRAINTS = frozenset(
 )
 
 
+class HasAttributes(Protocol):
+    attributes: dict[str, str]
+
+
 @dataclass(frozen=True)
 class ConstraintCheck:
     supported: bool
@@ -32,7 +34,7 @@ class ConstraintCheck:
     reason: str
 
 
-def check_constraint(item: StandardItem, key: str, expected: Any) -> ConstraintCheck:
+def check_constraint(item: HasAttributes, key: str, expected: Any) -> ConstraintCheck:
     """Evaluate one supported constraint without guessing unknown semantics."""
 
     if key not in SUPPORTED_HARD_CONSTRAINTS:

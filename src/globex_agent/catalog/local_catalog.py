@@ -10,7 +10,7 @@ from statistics import median
 
 from pydantic import ValidationError
 
-from globex_agent.domain.models import CatalogRecord, Offer, StandardItem
+from globex_agent.domain.models import Platform, StandardItem
 
 MAX_CATEGORY_PRICE_RATIO = Decimal("50")
 
@@ -28,6 +28,7 @@ class CatalogLoadResult:
     total_records: int
     accepted_records: int
     errors: tuple[CatalogLoadError, ...]
+    deduplicated_records: int = 0
 
     @property
     def rejected_records(self) -> int:
@@ -41,22 +42,24 @@ class CatalogValidationError(ValueError):
 
 
 @dataclass(frozen=True)
-class _LoadedRecord:
+class _LoadedItem:
     line_number: int
     raw_line: str
-    record: CatalogRecord
+    item: StandardItem
 
 
 class LocalCatalog:
-    """Read-only in-memory view of normalized demo products."""
+    """Read-only in-memory view of platform-level ``StandardItem`` rows."""
 
     def __init__(self, items: list[StandardItem]) -> None:
-        item_map = {item.canonical_product_id: item for item in items}
+        item_map = {item.item_id: item for item in items}
         if len(item_map) != len(items):
-            raise ValueError("canonical_product_id must be unique")
+            raise ValueError("item_id must be globally unique")
         self._items = item_map
 
     def __len__(self) -> int:
+        """Return the number of platform-level items, not cross-platform groups."""
+
         return len(self._items)
 
     @property
@@ -64,27 +67,34 @@ class LocalCatalog:
         return tuple(self._items[item_id] for item_id in sorted(self._items))
 
     @property
-    def offers(self) -> tuple[Offer, ...]:
-        return tuple(offer for item in self.items for offer in item.offers)
+    def same_group_ids(self) -> tuple[str, ...]:
+        return tuple(sorted({item.same_group_id for item in self.items}))
 
-    def get(self, canonical_product_id: str) -> StandardItem | None:
-        return self._items.get(canonical_product_id)
+    @property
+    def group_count(self) -> int:
+        return len(self.same_group_ids)
 
-    def offers_for(self, canonical_product_id: str) -> tuple[Offer, ...]:
-        item = self.get(canonical_product_id)
-        return tuple(item.offers) if item is not None else ()
+    @property
+    def platforms(self) -> tuple[Platform, ...]:
+        return tuple(sorted({item.platform for item in self.items}, key=lambda value: value.value))
+
+    def get(self, item_id: str) -> StandardItem | None:
+        return self._items.get(item_id)
+
+    def items_for_group(self, same_group_id: str) -> tuple[StandardItem, ...]:
+        return tuple(item for item in self.items if item.same_group_id == same_group_id)
 
     @classmethod
     def from_jsonl(cls, path: str | Path, *, strict: bool = False) -> CatalogLoadResult:
-        """Load records, report invalid rows, and group cross-platform offers.
+        """Load and validate the chapter 09-1 platform-level item rows.
 
-        A row can be rejected for schema violations, duplicate offer IDs, conflicting
-        product master data, or a price more than 50x away from its category median.
-        Valid rows remain usable unless ``strict=True``.
+        Invalid schemas, duplicate globally unique ``item_id`` values, and extreme
+        category price outliers are rejected. Cross-platform rows sharing a
+        ``same_group_id`` remain separate records for the later PriceCompare step.
         """
 
         source_path = Path(path)
-        loaded: list[_LoadedRecord] = []
+        loaded: list[_LoadedItem] = []
         errors: list[CatalogLoadError] = []
         total_records = 0
 
@@ -95,7 +105,7 @@ class LocalCatalog:
                     continue
                 total_records += 1
                 try:
-                    record = CatalogRecord.model_validate_json(stripped)
+                    item = StandardItem.model_validate_json(stripped)
                 except ValidationError as exc:
                     errors.append(
                         CatalogLoadError(
@@ -105,14 +115,15 @@ class LocalCatalog:
                         )
                     )
                     continue
-                loaded.append(_LoadedRecord(line_number, stripped[:500], record))
+                loaded.append(_LoadedItem(line_number, stripped[:500], item))
 
-        loaded, structural_errors = _reject_structural_conflicts(loaded)
-        errors.extend(structural_errors)
+        loaded, duplicate_errors = _reject_duplicate_item_ids(loaded)
+        errors.extend(duplicate_errors)
+        loaded, deduplicated_records = _deduplicate_same_platform_items(loaded)
         loaded, price_errors = _reject_price_outliers(loaded)
         errors.extend(price_errors)
 
-        catalog = cls(_group_records(loaded))
+        catalog = cls([entry.item for entry in loaded])
         ordered_errors = tuple(sorted(errors, key=lambda error: error.line_number))
         if strict and ordered_errors:
             raise CatalogValidationError(ordered_errors)
@@ -121,6 +132,7 @@ class LocalCatalog:
             total_records=total_records,
             accepted_records=len(loaded),
             errors=ordered_errors,
+            deduplicated_records=deduplicated_records,
         )
 
 
@@ -130,68 +142,46 @@ def _summarize_validation_error(exc: ValidationError) -> str:
     return f"{location}: {first['msg']}" if location else str(first["msg"])
 
 
-def _product_signature(record: CatalogRecord) -> tuple[object, ...]:
-    return (
-        record.title,
-        record.brand,
-        tuple(record.category_path),
-        record.description,
-        tuple(sorted(record.attributes.items())),
-        record.provenance,
-    )
-
-
-def _reject_structural_conflicts(
-    loaded: list[_LoadedRecord],
-) -> tuple[list[_LoadedRecord], list[CatalogLoadError]]:
-    accepted: list[_LoadedRecord] = []
+def _reject_duplicate_item_ids(
+    loaded: list[_LoadedItem],
+) -> tuple[list[_LoadedItem], list[CatalogLoadError]]:
+    accepted: list[_LoadedItem] = []
     errors: list[CatalogLoadError] = []
-    product_signatures: dict[str, tuple[object, ...]] = {}
-    offer_ids: set[str] = set()
-
+    item_ids: set[str] = set()
     for entry in loaded:
-        record = entry.record
-        expected_signature = product_signatures.get(record.canonical_product_id)
-        signature = _product_signature(record)
-        if expected_signature is not None and expected_signature != signature:
+        if entry.item.item_id in item_ids:
             errors.append(
                 CatalogLoadError(
                     entry.line_number,
-                    f"conflicting product data for {record.canonical_product_id}",
+                    f"duplicate item_id: {entry.item.item_id}",
                     entry.raw_line,
                 )
             )
             continue
-        if record.offer.offer_id in offer_ids:
-            errors.append(
-                CatalogLoadError(
-                    entry.line_number,
-                    f"duplicate offer_id: {record.offer.offer_id}",
-                    entry.raw_line,
-                )
-            )
-            continue
-        product_signatures.setdefault(record.canonical_product_id, signature)
-        offer_ids.add(record.offer.offer_id)
+        item_ids.add(entry.item.item_id)
         accepted.append(entry)
     return accepted, errors
 
 
 def _reject_price_outliers(
-    loaded: list[_LoadedRecord],
-) -> tuple[list[_LoadedRecord], list[CatalogLoadError]]:
+    loaded: list[_LoadedItem],
+) -> tuple[list[_LoadedItem], list[CatalogLoadError]]:
     prices_by_category: dict[tuple[str, ...], list[Decimal]] = defaultdict(list)
     for entry in loaded:
-        prices_by_category[tuple(entry.record.category_path)].append(entry.record.offer.price)
+        if entry.item.price_cny is not None:
+            prices_by_category[tuple(entry.item.category_path)].append(entry.item.price_cny)
 
     medians = {
         category: median(prices) for category, prices in prices_by_category.items() if prices
     }
-    accepted: list[_LoadedRecord] = []
+    accepted: list[_LoadedItem] = []
     errors: list[CatalogLoadError] = []
     for entry in loaded:
-        price = entry.record.offer.price
-        category_median = medians[tuple(entry.record.category_path)]
+        price = entry.item.price_cny
+        if price is None:
+            accepted.append(entry)
+            continue
+        category_median = medians[tuple(entry.item.category_path)]
         ratio = max(price / category_median, category_median / price)
         if ratio > MAX_CATEGORY_PRICE_RATIO:
             errors.append(
@@ -209,26 +199,31 @@ def _reject_price_outliers(
     return accepted, errors
 
 
-def _group_records(loaded: list[_LoadedRecord]) -> list[StandardItem]:
-    grouped: dict[str, list[CatalogRecord]] = defaultdict(list)
-    for entry in loaded:
-        grouped[entry.record.canonical_product_id].append(entry.record)
+def _deduplicate_same_platform_items(
+    loaded: list[_LoadedItem],
+) -> tuple[list[_LoadedItem], int]:
+    """Keep the higher-rated/newer row for one same item on one platform."""
 
-    items: list[StandardItem] = []
-    for product_id in sorted(grouped):
-        records = grouped[product_id]
-        first = records[0]
-        offers = sorted((record.offer for record in records), key=lambda offer: offer.offer_id)
-        items.append(
-            StandardItem(
-                canonical_product_id=first.canonical_product_id,
-                title=first.title,
-                brand=first.brand,
-                category_path=first.category_path,
-                description=first.description,
-                attributes=first.attributes,
-                offers=offers,
-                provenance=first.provenance,
-            )
-        )
-    return items
+    best: dict[tuple[Platform, str, str | None], _LoadedItem] = {}
+    for entry in loaded:
+        # Parallel EN/ZH listings of one canonical product remain available for
+        # post-recall display selection. Duplicate rows in the same language
+        # still collapse deterministically.
+        key = (entry.item.platform, entry.item.same_group_id, entry.item.language)
+        current = best.get(key)
+        if current is None or _dedupe_rank(entry) > _dedupe_rank(current):
+            best[key] = entry
+    accepted = sorted(best.values(), key=lambda entry: entry.line_number)
+    return accepted, len(loaded) - len(accepted)
+
+
+def _dedupe_rank(entry: _LoadedItem) -> tuple[float, float, str]:
+    return (
+        entry.item.rating if entry.item.rating is not None else -1.0,
+        (
+            entry.item.source_updated_at.timestamp()
+            if entry.item.source_updated_at is not None
+            else float("-inf")
+        ),
+        entry.item.item_id,
+    )
