@@ -24,25 +24,19 @@ def main() -> None:
     catalog = LocalCatalog.from_jsonl(DATA_DIR / "products.jsonl", strict=True).catalog
 
     result = run_deterministic_pipeline(catalog, request, profile)
-    compared_offers = sum(
-        len(comparison.offers) for comparison in result.price_comparison.comparisons
-    )
-
     print(f"query: {request.query}")
-    print(
-        "ItemSearch: "
-        f"{len(result.search.candidates)} returned / "
-        f"{result.search.matched_catalog_items} matched"
-    )
-    print(
-        "PriceCompare: "
-        f"{len(result.price_comparison.comparisons)} products / "
-        f"{compared_offers} offers"
-    )
-    print(f"ShippingCalc: {len(result.shipping.quotes)} landed-cost quotes")
+    for output in result.search:
+        print(
+            f"ItemSearch[{output.platform.value}]: "
+            f"{len(output.candidates)} candidates / "
+            f"{output.total_recall} total_recall / "
+            f"truncated={output.truncated}"
+        )
+    print(f"PriceCompare: {len(result.price_comparison.ranked)} ranked PricePoint rows")
+    print(f"ShippingCalc: {len(result.shipping.items)} LandedCost rows")
     print(
         f"ItemPicker: {len(result.selection.picks)} picked / "
-        f"{len(result.selection.rejected)} rejected"
+        f"{len(result.selection.rejected_brief)} rejected"
     )
     print("ShoppingSummary:")
     print(result.summary.final_text)

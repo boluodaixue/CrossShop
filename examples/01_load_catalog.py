@@ -1,4 +1,4 @@
-"""Load, validate, and group the controlled demo catalog."""
+"""Load and validate the chapter 09-1 StandardItem demo catalog."""
 
 from pathlib import Path
 
@@ -10,22 +10,23 @@ CATALOG_PATH = PROJECT_ROOT / "data" / "demo" / "products.jsonl"
 
 def main() -> None:
     result = LocalCatalog.from_jsonl(CATALOG_PATH, strict=True)
-    platforms = sorted({offer.platform.value for offer in result.catalog.offers})
+    platforms = [platform.value for platform in result.catalog.platforms]
 
     print(f"input records: {result.total_records}")
     print(f"accepted records: {result.accepted_records}")
-    print(f"standard products: {len(result.catalog)}")
-    print(f"platform offers: {len(result.catalog.offers)}")
+    print(f"standard items: {len(result.catalog)}")
+    print(f"same-product groups: {result.catalog.group_count}")
     print(f"platforms: {', '.join(platforms)}")
 
-    example = result.catalog.get("hp-aurora-quietpro")
-    if example is None:
-        raise RuntimeError("expected demo product hp-aurora-quietpro is missing")
-    offer_summary = ", ".join(
-        f"{offer.platform.value}=CNY {offer.price}" for offer in example.offers
+    example_group = result.catalog.items_for_group("hp-aurora-quietpro")
+    if not example_group:
+        raise RuntimeError("expected same_group_id hp-aurora-quietpro is missing")
+    item_summary = ", ".join(
+        f"{item.item_id}=CNY {item.price_cny}" for item in example_group
     )
-    print(f"example: {example.title}")
-    print(f"grouped offers: {offer_summary}")
+    print(f"example: {example_group[0].title}")
+    print("same_group_id: hp-aurora-quietpro")
+    print(f"platform items: {item_summary}")
 
 
 if __name__ == "__main__":

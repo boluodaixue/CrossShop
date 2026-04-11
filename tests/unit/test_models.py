@@ -8,11 +8,10 @@ from pydantic import ValidationError
 from globex_agent.domain import (
     Currency,
     DataProvenance,
-    Offer,
+    LandedCost,
     Platform,
     ProvenanceKind,
     SearchRequest,
-    ShippingQuote,
     StandardItem,
     UserProfile,
 )
@@ -31,78 +30,79 @@ def make_provenance(record_id: str = "demo-record") -> DataProvenance:
     )
 
 
-def make_offer(**overrides: object) -> Offer:
+def make_standard_item(**overrides: object) -> StandardItem:
     values: dict[str, object] = {
-        "offer_id": "amazon:demo-001",
+        "item_id": "amazon:demo-001",
+        "same_group_id": "demo-product",
         "platform": Platform.AMAZON,
-        "listing_id": "demo-001",
-        "price": Decimal("199.00"),
-        "currency": Currency.CNY,
-        "shipping_fee": Decimal("0.00"),
-        "url": "https://example.com/amazon/demo-001",
+        "title": "演示商品",
+        "category_path": ["演示类目"],
+        "price_cny": Decimal("199.00"),
+        "currency_raw": Currency.CNY,
         "source_updated_at": datetime(2026, 8, 12, tzinfo=timezone.utc),
+        "ingested_at": datetime(2026, 8, 12, tzinfo=timezone.utc),
+        "url": "https://example.com/amazon/demo-001",
         "provenance": make_provenance("amazon:demo-001"),
     }
     values.update(overrides)
-    return Offer.model_validate(values)
+    return StandardItem.model_validate(values)
 
 
-def test_standard_item_accepts_a_valid_offer() -> None:
-    item = StandardItem(
-        canonical_product_id="demo-product",
-        title="演示商品",
-        category_path=["演示类目"],
-        offers=[make_offer()],
-        provenance=make_provenance("demo-product"),
-    )
+def test_standard_item_accepts_a_valid_platform_item() -> None:
+    item = make_standard_item()
 
-    assert item.offers[0].price == Decimal("199.00")
+    assert item.item_id == "amazon:demo-001"
+    assert item.same_group_id == "demo-product"
+    assert item.price_cny == Decimal("199.00")
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("price", Decimal("-1.00")),
-        ("currency", "BTC"),
+        ("price_cny", Decimal("-1.00")),
+        ("currency_raw", "BTC"),
         ("platform", "unknown"),
-        ("offer_id", ""),
+        ("item_id", ""),
     ],
 )
-def test_offer_rejects_invalid_core_fields(field: str, value: object) -> None:
+def test_standard_item_rejects_invalid_core_fields(field: str, value: object) -> None:
     with pytest.raises(ValidationError):
-        make_offer(**{field: value})
+        make_standard_item(**{field: value})
+
+
+def test_item_id_must_use_platform_prefix() -> None:
+    with pytest.raises(ValidationError, match="item_id must start"):
+        make_standard_item(item_id="shopee:demo-001", platform=Platform.AMAZON)
 
 
 def test_original_price_cannot_be_lower_than_current_price() -> None:
-    with pytest.raises(ValidationError, match="original_price cannot be lower"):
-        make_offer(price=Decimal("200.00"), original_price=Decimal("199.00"))
-
-
-def test_product_id_cannot_be_empty() -> None:
-    with pytest.raises(ValidationError):
-        StandardItem(
-            canonical_product_id=" ",
-            title="演示商品",
-            category_path=["演示类目"],
-            offers=[make_offer()],
-            provenance=make_provenance(),
+    with pytest.raises(ValidationError, match="original_price_cny cannot be lower"):
+        make_standard_item(
+            price_cny=Decimal("200.00"),
+            original_price_cny=Decimal("199.00"),
         )
 
 
-def test_shipping_quote_requires_exact_component_sum() -> None:
-    with pytest.raises(ValidationError, match="landed_price must equal"):
-        ShippingQuote(
-            canonical_product_id="demo-product",
-            offer_id="amazon:demo-001",
+def test_same_group_id_cannot_be_empty() -> None:
+    with pytest.raises(ValidationError):
+        make_standard_item(same_group_id=" ")
+
+
+def test_landed_cost_requires_exact_component_sum() -> None:
+    with pytest.raises(ValidationError, match="landed_cny must equal"):
+        LandedCost(
+            item_id="amazon:demo-001",
             platform=Platform.AMAZON,
-            item_price=Decimal("100.00"),
-            shipping_fee=Decimal("10.00"),
-            tax_fee=Decimal("5.00"),
-            landed_price=Decimal("114.00"),
-            currency=Currency.CNY,
+            price_cny=Decimal("100.00"),
+            shipping_cny=Decimal("10.00"),
+            duty_cny=Decimal("5.00"),
+            landed_cny=Decimal("114.00"),
             eta_days=12,
-            tax_rate=Decimal("0.13"),
-            tax_tier="标准",
+            duty_tier="标准",
+            same_group_id="demo-product",
+            title="演示商品",
+            category_path=["演示类目"],
+            duty_rate=Decimal("0.13"),
             rule_version="unit-test-v1",
         )
 
@@ -128,6 +128,7 @@ def test_demo_users_follow_the_profile_contract() -> None:
         "demo-user-002",
         "demo-user-003",
     ]
+    assert all(":" in profile.positive_item_ids[0] for profile in profiles)
     assert all(profile.provenance.kind is ProvenanceKind.SYNTHETIC for profile in profiles)
 
 

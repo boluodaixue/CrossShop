@@ -5,7 +5,7 @@ from globex_agent.domain import ResultStatus, SearchRequest, UserProfile
 from globex_agent.pipeline import run_deterministic_pipeline
 
 
-def test_full_pipeline_returns_expected_commuting_headphones(
+def test_full_pipeline_preserves_course_stage_boundaries(
     demo_catalog: LocalCatalog,
     demo_requests: list[SearchRequest],
     demo_profiles: dict[str, UserProfile],
@@ -16,15 +16,16 @@ def test_full_pipeline_returns_expected_commuting_headphones(
         demo_profiles["demo-user-001"],
     )
 
-    assert result.search.status is ResultStatus.OK
-    assert len(result.price_comparison.comparisons) == 3
-    assert len(result.shipping.quotes) == 9
-    assert [pick.canonical_product_id for pick in result.selection.picks] == [
-        "hp-budget-wave",
+    assert len(result.search) == 3
+    assert all(output.status is ResultStatus.OK for output in result.search)
+    assert len(result.price_comparison.ranked) == 9
+    assert len(result.shipping.items) == 9
+    assert [pick.same_group_id for pick in result.selection.picks] == [
+        "hp-nimbus-lite",
         "hp-sonic-commute",
         "hp-aurora-quietpro",
     ]
-    assert all(pick.landed_price <= Decimal("1500.00") for pick in result.selection.picks)
+    assert all(pick.landed_cny <= Decimal("1500.00") for pick in result.selection.picks)
     assert result.summary.status is ResultStatus.OK
 
 
@@ -43,10 +44,10 @@ def test_pipeline_returns_structured_empty_result(demo_catalog: LocalCatalog) ->
 
     result = run_deterministic_pipeline(demo_catalog, request)
 
-    assert result.search.status is ResultStatus.NO_RESULTS
+    assert all(output.status is ResultStatus.NO_RESULTS for output in result.search)
     assert result.selection.status is ResultStatus.NO_RESULTS
     assert result.summary.status is ResultStatus.NO_RESULTS
-    assert result.summary.recommendation.items == []
+    assert result.summary.picks == []
 
 
 def test_pipeline_propagates_invalid_destination(demo_catalog: LocalCatalog) -> None:

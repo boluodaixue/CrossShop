@@ -21,7 +21,7 @@ def test_summary_is_stable_and_discloses_demo_assumptions(
     assert first.status is ResultStatus.OK
     assert "找到 3 个合规推荐" in first.final_text
     assert "离线演示估算" in first.final_text
-    assert len(first.recommendation.items) == 3
+    assert len(first.picks) == 3
 
 
 def test_summary_explains_when_all_candidates_are_rejected(
