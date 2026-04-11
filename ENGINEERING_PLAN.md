@@ -1,8 +1,8 @@
 # Globex 电商搜索 Agent 完整工程计划
 
-> 状态：阶段 0～2 已实现并验证，下一步进入阶段 3
-> 当前阅读进度：已读完第 14 章
-> 当前代码状态：确定性五工具链、36 条模拟报价、34 个测试和 3 个示例已运行
+> 状态：阶段 5/6 已关闭；淘宝检索集冻结 + 四路指标齐备 + 双语翻译方案归档，下一步进入阶段 7
+> 当前阅读进度：已读完第 15 章
+> 当前代码状态：淘宝 shopsimulator_retrieval_v1 已冻结 115 query 并出 FTS/BGE-M3/Hybrid/Reranker 指标；商品 runtime 接 canonical ANN fallback，知识卡 runtime 默认动态 Hybrid 且 Reranker 显式 opt-in
 > 实施原则：离线优先、纵向切片、接口与实现解耦、每阶段必须实际运行并验收
 
 ## 1. 项目目标
@@ -28,7 +28,7 @@
 - 统一商品 Schema 和数据校验。
 - 9 个业务工具中的核心离线实现。
 - 单 AgentLoop 的 Think → Act → Observe → Reflect 闭环。
-- Query / User 双通道召回、融合与 Reranker。
+- Query / Item 双塔向量召回与 Reranker；BM25 和 Hybrid 分别作为基线与扩展消融。
 - CategoryInsight 商品知识 RAG。
 - 主 AgentLoop + 按需 fork 的同质子 AgentLoop。
 - Cache Breakpoint、工具结果压缩和长期偏好 Store。
@@ -40,9 +40,9 @@
 
 - 京东、淘宝等真实线上平台 API。
 - 对平台页面进行爬取。
-- OpenSearch、Milvus、Redis 等重型基础设施。
+- 生产级 OpenSearch、Milvus、Redis 集群；阶段 6 仅按课程在本机 Docker 中运行单节点 OpenSearch。
 - vLLM、GPU 服务和 K8s。
-- 从零训练三塔 Embedding、SFT 或 Agentic RL。
+- 从零训练双塔 Embedding、SFT 或 Agentic RL。
 - 完整 React 商业前端。
 - 自动修改 Prompt 或自动训练的全自动飞轮。
 
@@ -62,7 +62,6 @@ flowchart LR
     IP --> SS["ShoppingSummary 推荐结果"]
 
     M["长期偏好 Store"] --> P
-    M --> IS
     M --> IP
     SS --> M
 
@@ -81,7 +80,7 @@ flowchart LR
 | `ChatFallback` | 非购物问题、信息不足和需要澄清时的终结性兜底 |
 | `WebSearch` | 第一版默认关闭；后续作为外部信息兜底 |
 | `CategoryInsight` | 从本地品类知识卡中召回选购知识 |
-| `ItemSearch` | 对统一商品目录执行关键词、语义和个性化召回 |
+| `ItemSearch` | 对统一商品目录执行关键词与 Query/Item 双塔语义召回 |
 | `ItemPicker` | 在候选集中执行硬约束过滤和综合排序 |
 | `PriceCompare` | 对同一标准商品的多平台报价进行比较 |
 | `ShippingCalc` | 计算运费、税费和到手价估算 |
@@ -112,7 +111,7 @@ GlobexAgentLearning/
 │   ├── config/                 # 环境和运行配置
 │   ├── catalog/                # 商品加载、清洗和标准化
 │   ├── tools/                  # 9 个业务工具
-│   ├── recall/                 # 关键词、Embedding、User 通道、融合、精排
+│   ├── recall/                 # 关键词、Query/Item 双塔、融合、精排
 │   ├── rag/                    # 品类知识卡、索引和检索
 │   ├── agent/                  # AgentLoop、工具注册、fork 和中间件
 │   ├── memory/                 # 长期偏好 Store
@@ -186,18 +185,17 @@ GlobexAgentLearning/
 **数据路线**
 
 1. 先制作 30～50 条受控演示商品，覆盖 2～3 个品类和 2～3 个模拟平台。
-2. 同一商品的跨平台报价通过 `canonical_product_id` 关联。
+2. 每个平台商品保留独立的全局 `item_id={platform}:{原平台ID}`；跨平台同款不合并，只通过 `same_group_id` 关联。
 3. 再从真实公开数据集中按 `query_id` 抽取子集，避免只抽商品造成查询与标注失联。
 4. 价格、平台、运费等公开数据中不存在的字段可以补充，但必须标记为 `synthetic` 或 `derived`。
 
 **核心 Schema**
 
-- `StandardItem`：标准商品。
-- `Offer`：平台报价、币种、库存和链接。
+- `StandardItem`：第 09-1 章的平台级扁平统一商品模型。
 - `UserProfile`：偏好、黑名单和历史反馈。
-- `SearchRequest` / `SearchCandidate` / `SearchResult`。
-- `PriceComparison` / `ShippingQuote`。
-- `PickedItem` / `ShoppingRecommendation`。
+- `Candidate` / `ItemSearchOutput`：第 11 章检索契约。
+- `PricePoint` / `PriceCompareOutput` / `LandedCost` / `ShippingCalcOutput`：第 12 章比价与到手价契约。
+- `PickedItem` / `ItemPickerOutput` / `ShoppingSummaryOutput`：第 14 章收敛契约。
 - `DataProvenance`：字段来源与生成方式。
 
 **任务**
@@ -212,7 +210,8 @@ GlobexAgentLearning/
 
 - 合法数据全部加载成功。
 - 非法币种、负价格、空商品 ID 等错误会被拒绝。
-- 同一商品的多平台报价能够正确归组。
+- 同平台同款多链接只保留评分更高/更新时间更新的一条。
+- 跨平台同款以独立 `StandardItem` 保留，并能通过 `same_group_id` 找到关联项。
 - 测试覆盖成功加载和主要失败分支。
 
 **阶段产物**
@@ -236,9 +235,9 @@ GlobexAgentLearning/
 
 **首批工具**
 
-1. `ItemSearch`：关键词匹配、过滤和 Top-K。
-2. `PriceCompare`：按标准商品归组并比较报价。
-3. `ShippingCalc`：对 Top-N 估算运费、税费和到手价。
+1. `ItemSearch`：按平台分别完成关键词召回和 Top-K，每个平台返回一个 `ItemSearchOutput`。
+2. `PriceCompare`：接收合流的 `list[Candidate]`，币种归一并按标价截断 Top-N。
+3. `ShippingCalc`：只接收 `PriceCompare.ranked`，估算运费、税费和到手价。
 4. `ItemPicker`：执行预算、黑名单等硬约束，再综合排序。
 5. `ShoppingSummary`：生成稳定的结构化结果和可读文本。
 
@@ -247,7 +246,7 @@ GlobexAgentLearning/
 - [x] 为每个工具定义清晰的输入输出 Schema。
 - [x] 将纯业务逻辑和未来 Agent Tool 包装分开。
 - [x] 固定工具顺序写一个离线 pipeline 示例。
-- [x] 明确价格、运费、税费的计算假设和精度。
+- [x] 按第 12 章的静态汇率、0.5 kg 占位重量、运费表和税率表固定计算假设，并用 `Decimal` 保证精度。
 - [x] 对无结果、缺字段、未知平台和超预算实现明确返回。
 
 **验收**
@@ -281,13 +280,14 @@ GlobexAgentLearning/
 
 **任务**
 
-- [ ] 定义 `Planner` 和 `ChatFallback`。
-- [ ] 建立统一模型客户端和配置入口。
-- [ ] 建立 Prompt 文件与加载器。
-- [ ] 注册当前已实现工具。
-- [ ] 实现工具调用循环、最大轮数、总超时和终结性工具。
-- [ ] 使用假的/脚本化模型测试路由，真实模型只做 smoke test。
-- [ ] 记录每一轮模型消息、工具名、参数、结果摘要和结束原因。
+- [x] 定义 `Planner` 和 `ChatFallback`。
+- [x] 建立统一模型客户端和配置入口。
+- [x] 建立 Prompt 文件与加载器。
+- [x] 注册当前已实现工具。
+- [x] 实现工具调用循环、最大轮数、总超时和终结性工具。
+- [x] 使用假的/脚本化模型测试路由。
+- [x] 使用本地 `.env` 中的真实模型完成固定 case 和自由文本 smoke test。
+- [x] 记录每一轮模型消息、工具名、结果摘要和结束原因。
 
 **验收**
 
@@ -317,12 +317,12 @@ GlobexAgentLearning/
 
 **任务**
 
-- [ ] 定义 `SearchBackend` 接口。
-- [ ] 实现关键词/BM25 风格的本地基线。
-- [ ] 从公开电商搜索数据抽取小规模查询—商品相关性集合。
-- [ ] 按查询组划分 train/dev/test，防止相同查询泄漏。
-- [ ] 实现 Recall@K、MRR@K、NDCG@K 和空召回率。
-- [ ] 固定评测配置、随机种子和数据版本。
+- [x] 定义 `SearchBackend` 接口。
+- [x] 实现关键词/BM25 风格的本地基线。
+- [x] 从公开电商搜索数据抽取小规模查询—商品相关性集合。
+- [x] 按查询组划分 train/dev/test，防止相同查询泄漏。
+- [x] 实现 Recall@K、MRR@K、NDCG@K 和空召回率。
+- [x] 固定评测配置、无随机抽样策略和数据版本。
 
 **验收**
 
@@ -339,60 +339,83 @@ GlobexAgentLearning/
 - `scripts/data/prepare_esci_subset.py`
 - `scripts/eval/run_recall_eval.py`
 - `data/eval/recall_cases.jsonl`
+- `data/eval/recall_items.jsonl`
+- `data/eval/recall_manifest.json`
+
+**实际基线（2026-08-15，修正评测口径后）**
+
+- 数据：35 个英文查询组、720 个去重商品；train/dev/test 为 21/6/8。
+- 每个 query 只搜索自己的封闭 ESCI 候选池，所有候选都有标注；Recall/MRR 只以 2～5 个 Exact 为正例，Complement/Substitute 只进入分级 NDCG。
+- BM25 Top-10：Recall 0.531429、MRR 0.650079、NDCG 0.484503；空召回率 0.028571。
+- BM25 Recall@100 为 0.813810；候选池最多 51 条，所以该指标只表示封闭池内检索深度。
 
 ---
 
-### 阶段 5：Embedding 双通道召回、融合与 Reranker
+### 阶段 5：Query/Item 向量召回与 Reranker
 
 **目标**
 
-实现课程三塔思想的可运行离线版本，不从零训练大模型。
+实现 Query / Item 双塔的可运行离线版本，不构建 User 塔，也不从零训练大模型。
 
-**第一版解释**
+**课程主口径**
 
 - Item 塔：离线编码商品标题、属性和类目。
 - Query 塔：在线编码用户当前查询。
-- User 塔：把长期偏好或历史正反馈编码成用户向量。
-- 语义通道：Query 向量检索 Item 向量。
-- 个性化通道：User 向量检索 Item 向量。
-- 两路结果去重融合后，Reranker 对较小候选集精排。
+- 粗排：Query 向量检索 Item 向量并取 Top-100。
+- 精排：CrossEncoder 只对向量 Top-100 打分，再取 Top-10。
+- BM25 是词法基线；Hybrid 是可选扩展消融，两者都不进入商品召回主链。
+- 知识卡 RAG 的动态 Hybrid 权重和 Top-30 → Top-8 配置不复用于商品召回。
+- 用户画像不进入召回向量；它只作为 Planner 上下文和 ItemPicker 的约束/偏好输入。
 
 **任务**
 
-- [ ] 选择轻量预训练 Embedding，并记录选择理由。
-- [ ] 构建和持久化小型本地向量索引。
-- [ ] 实现 Query 和 Item 编码。
-- [ ] 实现 User Profile 到用户向量的确定性构造。
-- [ ] 实现双通道权重融合、去重和冷启动退化。
-- [ ] 实现一个可替换的 Reranker 接口和轻量基线。
-- [ ] 对比关键词、向量、融合、融合+精排四组结果。
-- [ ] 记录准确率与延迟，不只记录最终一组。
+- [x] 选择轻量预训练 Embedding，并记录选择理由。
+- [x] 构建和持久化小型本地向量索引。
+- [x] 实现 Query 和 Item 编码。
+- [x] 保留 BM25 基线，并把 Hybrid 融合隔离为显式扩展消融。
+- [x] 实现一个可替换的 Reranker 接口和轻量基线。
+- [x] 默认对比 BM25 基线、向量召回、向量召回+精排三组结果。
+- [x] 记录准确率与延迟，不只记录最终一组。
 
 **验收**
 
-- 无用户历史时自动退化为语义召回。
+- 在规范化 query 相同的前提下，用户画像变化不会改变双塔召回结果；画像只影响 Planner 上下文或后置 ItemPicker。
 - 用户偏好不能覆盖预算和黑名单等硬约束。
-- 向量模型或索引不可用时可以回退到关键词基线。
+- 向量模型或索引故障必须显式暴露；BM25 可作为业务降级基线，但不改变离线课程主结果的候选来源。
 - 评测报告包含消融对比和至少一个 bad case。
 
 **阶段产物**
 
 - `src/globex_agent/recall/embedding.py`
-- `src/globex_agent/recall/user_profile.py`
 - `src/globex_agent/recall/index.py`
 - `src/globex_agent/recall/fusion.py`
 - `src/globex_agent/recall/reranker.py`
 - `scripts/index/build_item_index.py`
-- `examples/04_retrieval_comparison.py`
-- `output/eval/recall_report.json`（本地生成）
+- `scripts/eval/run_retrieval_comparison.py`
+- `examples/04_semantic_retrieval.py`
+- `output/eval/retrieval_comparison.json`（本地生成）
+
+**实际实现与评测（2026-08-15，修正评测口径后）**
+
+- 双塔模型：官方 `BAAI/bge-m3`，1024 维；BGE-M3 直接编码原始 Query/Item 文本，不沿用 mE5 的 `query:`/`passage:` 前缀。
+- Item 输入删除重复 title 和字面量 `None`，Embedding 推理窗口为512；720个清洗后 Item 已在CPU离线编码。
+- 内部向量检索不再限制 Top-50，商品主链固定请求 Top-100；ItemSearch 对外契约仍限制最终返回最大 50。
+- Faiss 主索引：`IndexHNSWFlat + METRIC_INNER_PRODUCT`，向量先L2归一化；`M=32、efConstruction=200、efSearch=128`，索引清单记录模型、文本版本和全部ANN参数。NumPy精确余弦实现保留为正确性基线。
+- 精排：官方原始 `BAAI/bge-reranker-v2-m3`，由项目主环境启动 `blog_04` CUDA 11.8 常驻子进程，运行时转换FP16、batch=1、max_length=256；不是第三方FP16权重。
+- 独立 test 主结果：BGE-M3 + Faiss Recall@10 0.758333、NDCG@10 0.644830；BGE精排后 Recall@10 0.875000、MRR@10 0.875000、NDCG@10 0.788628。
+- 35-query overall 只作诊断：BGE主链 Recall@10 0.633810、NDCG@10 0.592388，不能与 test 主结果混报。
+- 候选 Recall@100：BM25 0.813810、向量/向量+精排 1.000000；逐 query 候选池只有 8～51 条，不能解释为全库 Recall@100。
+- P50 延迟：BM25 0.10 ms、BGE-M3 + Faiss 86.68 ms、BGE GPU精排主链 528.32 ms；为本机35-query整体实测，模型下载/加载预热不计入，当前阶段不以商业延迟为目标。
+- 三路输出的 ESCI judged coverage 均为 1.0；报告记录 P50/P99、回退次数和相对 BM25 的 bad case。
+- Hybrid 代码仍用于扩展研究，但评测只有在 `--include-hybrid-extension` 且显式提供两路权重时才运行；不自动采用知识卡 RAG 的动态权重。
 
 **暂缓项**
 
-三塔监督训练、Hard Negative Mining、InfoNCE 改造和 Reranker 微调只保留为后续实验，不作为 MVP 阻塞项。
+本阶段只做召回和推理评测。双塔监督训练、训练数据比例、Hard Negative Mining、InfoNCE 改造和 Reranker 微调不进入当前实现，只保留为后续实验。
 
 ---
 
-### 阶段 6：CategoryInsight 与本地 RAG
+### 阶段 6：CategoryInsight 与知识卡 RAG
 
 **目标**
 
@@ -400,21 +423,21 @@ GlobexAgentLearning/
 
 **知识卡**
 
-- 品类爆款与典型用途。
-- 关键属性及属性之间的权衡。
-- 价格带和常见陷阱。
-- 适用人群、禁忌和更新时间。
-- 数据来源和可信度。
+- `bestseller`：品类代表性商品形态及商品证据。
+- `attribute`：关键属性及其在有效样本中的分布。
+- `price_range`：便宜款、中档、高端三个有限价格区间。
+- 数据来源、生成字段和可信度放在事实表与 provenance sidecar，不扩展课程卡片 Schema。
 
 **任务**
 
-- [ ] 定义知识卡 Schema。
-- [ ] 制作小规模品类知识卡。
-- [ ] 建立字段标准化、切分、入库门禁。
-- [ ] 实现关键词 + 向量混合召回。
-- [ ] 对召回结果进行精排和答案压缩。
-- [ ] 建立 RAG 标注集与 Recall@K、MRR、NDCG 评测。
-- [ ] 实现空召回、低置信度和过期卡片提示。
+- [x] 定义课程七字段知识卡 Schema。
+- [x] 基于当前 ESCI 商品制作 12 品类、72 张可追溯知识卡。
+- [x] 建立品类归一、商品文本门禁、卡片入库门禁和 10% 抽审队列。
+- [x] 按课程用 OpenSearch 实现 BM25 + KNN Hybrid 召回。
+- [x] 对 Top-30 召回结果用 BGE 精排，并压缩为 quick Top-8 / deep Top-15。
+- [x] 建立 50 Query、每条 72 卡全判断的 RAG 标注集，并冻结 30/10/10 split 与哈希。
+- [x] 实现 Recall@K、MRR、NDCG 评测脚本并运行独立 test 基线。
+- [x] 实现向量失败→BM25、知识库失败→空结构 confidence=0、精排失败→粗排的降级；WebSearch 补充因当前无该工具而明确暂缓。
 
 **验收**
 
@@ -425,10 +448,11 @@ GlobexAgentLearning/
 
 **阶段产物**
 
-- `src/globex_agent/rag/models.py`
-- `src/globex_agent/rag/retriever.py`
+- `src/globex_agent/category_insight/models.py`
+- `src/globex_agent/recall/category_kb.py`
 - `src/globex_agent/tools/category_insight.py`
-- `data/demo/category_cards.jsonl`
+- `data/category_insight/category_cards.jsonl`
+- `data/category_insight/category_card_manifest.json`
 - `scripts/eval/run_category_recall.py`
 - `examples/05_category_insight.py`
 
@@ -498,7 +522,7 @@ GlobexAgentLearning/
 - 临时需求不写入长期 Store。
 - 记忆包含来源、置信度、创建时间和更新时间。
 - 用户可以查看、修改和删除记忆。
-- 长期记忆负责偏好表达，User 塔负责把偏好转成召回信号，两者不混为一层。
+- 长期记忆负责偏好表达，并在 Planner / ItemPicker 使用；不再构造 User 塔召回信号。
 
 **任务**
 
@@ -863,7 +887,7 @@ flowchart TD
 
 可用于简历的能力表述方向，最终数字必须在项目完成后填写：
 
-> 设计并实现离线电商搜索 Agent，构建主 AgentLoop 与按需 fork 的同质子 Agent 协同机制；完成 Query/User 双通道召回、候选融合与 Reranker 精排，并通过固定评测集对 Recall@K、MRR、NDCG 和任务成功率进行回归；基于 FastAPI 与 WebSocket 实现异步任务、实时事件流、取消和上下文隔离。
+> 设计并实现离线电商搜索 Agent，构建主 AgentLoop 与按需 fork 的同质子 Agent 协同机制；完成 Query/Item 向量 Top-100 与 Reranker Top-10 商品召回主链，并以 BM25/Hybrid 完成基线和扩展消融；通过固定评测集对 Recall@K、MRR、NDCG 和任务成功率进行回归；基于 FastAPI 与 WebSocket 实现异步任务、实时事件流、取消和上下文隔离。
 
 ## 11. 推荐节奏
 
@@ -881,4 +905,14 @@ flowchart TD
 
 ## 12. 下一步工作
 
-阶段 0～2 已完成实际验收。下一步只进入阶段 3：在已经验证的五工具业务链之上实现单 AgentLoop、Planner、ChatFallback 和脚本化模型测试；仍不提前引入同质子 Agent fork、向量库或 API。
+阶段 5/6 已关闭。淘宝检索数据断点已修复并落地：shopsimulator_retrieval_v1
+重新建池（修复 Faiss 索引位置映射顺序）、补齐标注（110 条 gpt-5.6-luna + 70 条
+deepseek-v4-flash）、冻结 15 dev + 100 test（3,763 qrel），并跑出 FTS/BGE-M3/Hybrid/
+Reranker 四路指标，Amazon 三个 locale 也补齐 Reranker（见
+docs/data/multiplatform_catalog.md 与 docs/data/shopsimulator_retrieval_v1.md）。
+商品课程主线标签保持不变：runtime fallback 固定为 ANN overfetch → canonical 去重 →
+Top-K，通用 Reranker 只保留显式注入点；知识卡默认独立动态 Hybrid，Reranker 显式 opt-in
+且失败回退。之前列出的“v5 人工翻译质量抽检”已随双语翻译夹具方案一起废弃：中文商品已改用真实
+ShopSimulator 淘宝商品，不再把英文 ESCI 机器翻译成中文充当商品。其余剩余验收已核对完成：中文 canonical 无缺口（淘宝为单 listing，canonical 去重服务于
+Amazon 跨 locale 平行 listing）；限定范围回归与文档证据一致性已通过。阶段 5/6 数据侧关闭，
+下一步进入阶段 7。
