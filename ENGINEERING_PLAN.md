@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent 完整工程计划
 
-> 状态：阶段 5/6 已关闭；淘宝检索集冻结 + 四路指标齐备 + 双语翻译方案归档，下一步进入阶段 7
+> 状态：阶段 5 已关闭；阶段 6 英文演示版已完成、中文化整改待做（见阶段 6 返工清单）；阶段 7 未开始
 > 当前阅读进度：已读完第 15 章
 > 当前代码状态：淘宝 shopsimulator_retrieval_v1 已冻结 115 query 并出 FTS/BGE-M3/Hybrid/Reranker 指标；商品 runtime 接 canonical ANN fallback，知识卡 runtime 默认动态 Hybrid 且 Reranker 显式 opt-in
 > 实施原则：离线优先、纵向切片、接口与实现解耦、每阶段必须实际运行并验收
@@ -417,6 +417,8 @@ GlobexAgentLearning/
 
 ### 阶段 6：CategoryInsight 与知识卡 RAG
 
+> **状态**：英文 ESCI 演示版已完成并提交，但偏离课程中文设计（见本节末尾「课程合规返工」）；中文化整改待做。
+
 **目标**
 
 让 Agent 在模糊品类需求下先获得可靠的选购知识，而不是直接盲搜商品。
@@ -455,6 +457,23 @@ GlobexAgentLearning/
 - `data/category_insight/category_card_manifest.json`
 - `scripts/eval/run_category_recall.py`
 - `examples/05_category_insight.py`
+
+**课程合规返工（中文化，待做）**
+
+课程第 13/13-1 章要求知识卡为中文内容 + 中文 query + ik 分词 + 真实成交价/销量。
+当前英文 ESCI 实现偏离该设计（英文卡片、英文 query、standard 分词、合成价格/销量，
+代码 `analyzer_course_difference` 已注明此偏离）。整改清单：
+
+- [ ] 决策：定首期中文品类范围（N 个普通品类）与 bestseller 代理指标（淘宝无真实销量，用同质商品数/属性覆盖度并标注 `generated_offline_proxy`）。
+- [ ] 中文 taxonomy：用淘宝 `category_path` 建中文标准品类表 + 中文标题门禁。
+- [ ] 数据生产淘宝化：重写 `build_category_cards` 淘宝适配；价格用真实 `price_cny`/规格价切三分位，属性用真实 `source_attributes` 聚合，删除固定种子合成。
+- [ ] 生成中文七字段 `CategoryCard` + 入库门禁 + 10% 抽审。
+- [ ] 中文评测集：50 条中文 query（名词/属性/气质/口语四类），每条 5 张相关卡，冻结 30/10/10。
+- [ ] ik 分词 + OpenSearch 重建：`ik_max_word`/`ik_smart` 替换 standard，重建索引，删除 `analyzer_course_difference` 偏离说明。
+- [ ] 重跑 `run_category_recall`（BM25/KNN/Hybrid/Reranker 四路）+ 更新 5 个 category 单测中文 fixture + pytest/ruff 回归。
+- [ ] 文档回滚：`category_card_data_contract.md` 改淘宝中文版、旧英文版标历史；README/ENGINEERING_PLAN 阶段 6 状态改回「中文化整改完成」。
+
+> 数据来源对照课程：bestseller=内部销售榜+平台榜单（本地无→代理指标）、attribute=商品库属性聚合（淘宝真实属性）、price_range=历史成交价分位数（淘宝真实价格）。
 
 ---
 
@@ -914,5 +933,4 @@ docs/data/multiplatform_catalog.md 与 docs/data/shopsimulator_retrieval_v1.md�
 Top-K，通用 Reranker 只保留显式注入点；知识卡默认独立动态 Hybrid，Reranker 显式 opt-in
 且失败回退。之前列出的“v5 人工翻译质量抽检”已随双语翻译夹具方案一起废弃：中文商品已改用真实
 ShopSimulator 淘宝商品，不再把英文 ESCI 机器翻译成中文充当商品。其余剩余验收已核对完成：中文 canonical 无缺口（淘宝为单 listing，canonical 去重服务于
-Amazon 跨 locale 平行 listing）；限定范围回归与文档证据一致性已通过。阶段 5/6 数据侧关闭，
-下一步进入阶段 7。
+Amazon 跨 locale 平行 listing）；限定范围回归与文档证据一致性已通过。阶段 5 数据侧关闭；阶段 6 英文演示版已完成，但需中文化整改（见阶段 6 返工清单），完成后再进入阶段 7。

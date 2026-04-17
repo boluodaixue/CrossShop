@@ -49,7 +49,8 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 完成工程阶段 3：脚本化与真实模型单 AgentLoop 闭环
 - [x] 完成工程阶段 4：BM25 检索基线、ESCI 子集与离线指标
 - [x] 淘宝多商品检索集 shopsimulator_retrieval_v1 已冻结（115 query）并跑出 FTS/BGE-M3/Hybrid/Reranker 四路指标
-- [x] 完成工程阶段 5/6：商品召回与知识卡 RAG 数据侧关闭（淘宝检索集冻结 + 两库四路指标 + 双语翻译方案归档）
+- [x] 完成工程阶段 5：商品召回（淘宝检索集冻结 + 两库四路指标 + 双语翻译方案归档）
+- [ ] 工程阶段 6 中文化整改：知识卡 RAG 英文演示版已完成，待换中文淘宝底座（见 ENGINEERING_PLAN 阶段 6 返工清单）
 - [x] 使用本地 `.env` 完成真实模型固定 case 和自由文本 smoke test
 
 ## 快速开始
