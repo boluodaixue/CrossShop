@@ -50,7 +50,7 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 完成工程阶段 4：BM25 检索基线、ESCI 子集与离线指标
 - [x] 淘宝多商品检索集 shopsimulator_retrieval_v1 已冻结（115 query）并跑出 FTS/BGE-M3/Hybrid/Reranker 四路指标
 - [x] 完成工程阶段 5：商品召回（淘宝检索集冻结 + 两库四路指标 + 双语翻译方案归档）
-- [ ] 工程阶段 6 中文化整改：知识卡 RAG 英文演示版已完成，待换中文淘宝底座（见 ENGINEERING_PLAN 阶段 6 返工清单）
+- [x] 工程阶段 6 中文化整改：知识卡 RAG 已切到真实淘宝中文底座与 ik 分词
 - [x] 使用本地 `.env` 完成真实模型固定 case 和自由文本 smoke test
 
 ## 快速开始
@@ -67,15 +67,12 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 .\.venv\Scripts\python.exe scripts\index\build_item_index.py --batch-size 4
 .\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
 .\.venv\Scripts\python.exe examples\04_semantic_retrieval.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-.\.venv\Scripts\python.exe scripts\data\build_category_cards.py
-.\.venv\Scripts\python.exe scripts\data\build_category_eval.py
+.\.venv\Scripts\python.exe scripts\data\build_category_cards_taobao_zh.py
+.\.venv\Scripts\python.exe scripts\data\build_category_eval_taobao_zh.py
 docker compose -f infra\opensearch\docker-compose.yml build
 docker compose -f infra\opensearch\docker-compose.yml up -d --wait
-.\.venv\Scripts\python.exe scripts\data\build_category_cards_v3.py
-.\.venv\Scripts\python.exe scripts\data\build_category_eval_v3.py
-.\.venv\Scripts\python.exe scripts\data\build_product_recall_v3.py
-.\.venv\Scripts\python.exe scripts\index\build_category_kb.py --local-files-only --analyzer ik_max_word --search-analyzer ik_smart --recreate
-.\.venv\Scripts\python.exe scripts\eval\run_category_recall.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
+.\.venv\Scripts\python.exe scripts\index\build_category_kb_taobao_zh.py --embedding-model D:\models\bge-m3 --local-files-only --recreate
+.\.venv\Scripts\python.exe scripts\eval\run_category_recall.py --data-dir data\category_insight\taobao_zh --index-name globex_category_kb_taobao_zh_v1 --cards-filename category_cards_taobao_zh.jsonl --cases-filename category_recall_cases_taobao_zh.jsonl --manifest-filename category_recall_manifest_taobao_zh.json --embedding-model D:\models\bge-m3 --reranker-model D:\models\bge-reranker-v2-m3 --reranker-python C:\Anaconda\envs\blog_04\python.exe --local-files-only
 .\.venv\Scripts\python.exe examples\05_category_insight.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\ruff.exe check src scripts examples tests
@@ -93,7 +90,7 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 
 阶段五主链：`recall/embedding.py` → `recall/index.py` → `scripts/index/build_item_index.py` → `recall/reranker.py` → `scripts/eval/run_retrieval_comparison.py` → `examples/04_semantic_retrieval.py`；`recall/keyword.py` 和 `recall/fusion.py` 分别是基线与可选扩展。
 
-阶段六知识卡：`data/category_insight/category_generation_specs_v3.json` → `scripts/data/build_category_cards_v3.py` → `scripts/data/build_category_eval_v3.py` → `recall/category_kb.py` → `scripts/index/build_category_kb.py` → `category_insight/reranking.py` → `category_insight/service.py` → `tools/category_insight.py` → `examples/05_category_insight.py`。
+阶段六知识卡：`data/category_insight/taobao_zh/category_taxonomy_taobao_zh.json` → `scripts/data/build_category_cards_taobao_zh.py` → `scripts/data/build_category_eval_taobao_zh.py` → `recall/category_kb.py` → `scripts/index/build_category_kb_taobao_zh.py` → `category_insight/reranking.py` → `category_insight/service.py` → `tools/category_insight.py` → `examples/05_category_insight.py`。
 
 ## 已实现模块
 
@@ -246,63 +243,55 @@ Hybrid 仅在明确要求扩展消融时启用，而且必须显式给出静态�
 .\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe --include-hybrid-extension --semantic-weight 0.4 --lexical-weight 0.6 --output output\eval\retrieval_hybrid_ablation.json
 ```
 
-## 阶段 6：CategoryInsight 商品知识卡 RAG（已完成）
+## 阶段 6：CategoryInsight 商品知识卡 RAG（中文化整改完成）
 
-知识卡与阶段五使用同一份 ESCI 商品底座，不再使用 36 条模拟商品。人工维护的
-Query→标准品类表和商品标题门禁得到 12 个品类、370 条品类—商品事实（369 个唯一
-商品），最终生成 72 张课程七字段 `CategoryCard`：24 张 bestseller、36 张
-attribute、12 张 price_range。
+当前知识卡底座是阶段五使用的真实 ShopSimulator 淘宝中文目录。首期冻结 8 个普通
+品类：乳胶枕、儿童学习椅、手机直播补光灯、汽车氛围灯、平板电脑支架、颈椎按摩器、
+羽毛球包、户外电源。每个品类生成 2 张 `bestseller`、3 张 `attribute`、1 张
+`price_range`，共 48 张课程七字段 `CategoryCard`。
 
-ESCI 没有价格和销量，因此 CNY 典型价格与 90 天订单数是固定种子生成的离线增强
-字段，均有显式 `generated_offline_not_observed` 标记；bestseller 不是 Amazon
-真实销量榜，price_range 也不是真实成交价格带。商品 ID、文本和 ESCI 标签仍保留
-公开数据集 provenance，属性分布只从文本确定性聚合。
-
-数据生产已经实际通过 Schema、置信度、长度和三类格式门禁；72 张卡片拒收 0 张，
-8 张进入稳定哈希抽审并全部复核通过；抽审中发现并修复否定短语误判和 7 条跨品类
-噪声关系。详细真值边界、文件关系、输入输出哈希和复现方法见
+淘宝目录没有真实销量，bestseller 使用同质商品数和 `source_attributes` 覆盖度作
+离线代理，并显式标记 `generated_offline_proxy`，不伪造销量。价格来自真实
+`price_cny` 或 `variants[].price_cny`，切三分位生成价格卡；卡片与 provenance
+会明确标注“挂牌/规格价，不是历史成交价”。完整口径见
 `docs/data/category_card_data_contract.md`。
 
-```bat
-.\.venv\Scripts\python.exe scripts\data\build_category_cards.py
-.\.venv\Scripts\python.exe -m pytest tests\unit\test_category_card_dataset.py -q
+```powershell
+$env:PYTHONIOENCODING = "utf-8"
+.\.venv\Scripts\python.exe scripts\data\build_category_cards_taobao_zh.py
+.\.venv\Scripts\python.exe scripts\data\build_category_eval_taobao_zh.py
 ```
 
-知识卡检索评测集也已冻结：50 条 Query，train/dev/test=30/10/10，四种 Query
-类型在每个 split 都有覆盖。每条 Query 对全局 72 张卡全部显式判断，恰有 5 张
-相关卡按重要性获得 5、4、3、2、1 gain；test 中没有未标注卡片。
+中文检索评测集冻结为 50 条 Query，覆盖名词型、属性约束型、气质/风格型和口语
+型，split 为 train/dev/test=30/10/10。每条 Query 对全局 48 张卡全部显式判断，
+恰有 5 张相关卡，按顺序获得 5、4、3、2、1 gain。
 
-历史离线评测按课程比较 OpenSearch 动态 Hybrid Top-30 与显式 BGE Reranker → quick
-Top-8 / deep Top-15；runtime 默认停在动态 Hybrid Top-K。Reranker 仅通过
-`GLOBEX_CATEGORY_RERANKER_ENABLED=true` 显式启用，可继续使用 `blog_04` CUDA 环境。
+OpenSearch 使用 `analysis-ik`，索引 `globex_category_kb_taobao_zh_v1` 以
+`ik_max_word` 建索引、`ik_smart` 查询；中文检索文本从 sidecar 写入
+`retrieval_text` 和 `retrieval_text_zh`。BGE-M3 和 BGE Reranker 分别使用本地
+`D:\models\bge-m3` 与 `D:\models\bge-reranker-v2-m3`。
 
-独立 test 的实际结果：BM25 Recall@10=0.6000、NDCG@10=0.5685；KNN
-Recall@10=0.9600、NDCG@10=0.8802；动态 Hybrid Recall@10=0.9600、
-NDCG@10=0.8725；Hybrid + BGE Reranker Recall@10=0.8000、MRR@10=0.9000、
-NDCG@10=0.7721，达到课程 Top-10 门槛。精排结果低于未精排 Hybrid，已经作为
-真实 bad case 保留：当前通用属性摘要缺少品类上下文，课程规定的 summary-only
-Cross Encoder 容易抬高跨品类同质卡片，未用 test 标签反向修卡片。
+独立 test split 的四路实测（v1 基线，按课程口径取 @8）：
 
-v2 保留上述 v1 结果，另用统一英文 `Category + knowledge type + summary` 检索文本、
-按意图分档的价格卡 gain 和 10 条全新 test Query 重建评测。配置只在 train/dev
-选择后冻结；一次性 v2 test 得到 BGE-M3 KNN Recall@10=0.9800、动态 Hybrid
-Recall@10=0.9800/NDCG@10=0.8259、contextual Reranker
-Recall@10=0.9400/MRR@10=1.0000/NDCG@10=0.8655。精排改善排序质量但牺牲 0.04
-Recall，且 AllCardTypesCoverage@10 从 1.00 降到 0.90；详细口径见
-`docs/experiments/phase6_category_insight_v2_2026-08-15.md`。
+| 方案 | Recall@8 | MRR@8 | NDCG@8 | AllCardTypes@8 |
+| --- | ---: | ---: | ---: | ---: |
+| BM25 | 1.0000 | 1.0000 | 0.8723 | 1.0000 |
+| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8695 | 1.0000 |
+| Hybrid | 1.0000 | 1.0000 | 0.8709 | 1.0000 |
+| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8531 | 1.0000 |
+| Hybrid + BGE Reranker（全量精排） | 0.9000 | 0.9500 | 0.7915 | 0.7000 |
 
-双语 v3（历史记录，商品侧机器翻译中文方案已被真实淘宝商品取代）继续版本化扩到 20 品类、1356 条品类商品事实和 200 张卡；370 条 ESCI
-事实与 986 条合成事实分栏，机器生成中文不得描述成人工标注。OpenSearch 已安装
-analysis-ik 2.19.1，使用 `ik_max_word` 建索引、`ik_smart` 查询。实现冻结后的
-160-intent/320-Query holdout 上，动态 Hybrid Recall@10=0.9750、NDCG@10=0.8643；
-Reranker Recall@10=0.9481、NDCG@10=0.8230，仍不构成默认增益。商品 synthetic
-bilingual 诊断的 ANN Recall@100=1.0、ANN Top-10 Recall=0.5700、Reranker
-Recall=0.8000；该结果不与真实 ESCI 合并。完整数据边界与切片指标见
-`docs/data/bilingual_v3_data_contract.md` 和
-`docs/experiments/phase6_bilingual_v3_2026-08-15.md`。
+全量精排在 v1 基线 48 卡封闭池上不升反降，把 Reranker 的 Recall@8 从 1.0
+拉到 0.90、NDCG 从 0.8531 拉到 0.7915，因此生产默认仍保留 0.92 首分跳过。
 
-`CategoryInsightService` 已接入 quick/deep 提炼、品类归一、普通品类空组件、
+旧英文 ESCI 演示版仍保留在 `data/category_insight/` 根目录，作为历史实验，不覆盖：
+
+- 12 个英文 ESCI 品类、72 张卡，standard 分词。
+- 50 条英文 Query 与固定种子价格/销量合成字段。
+- 历史实验记录见 `docs/experiments/phase6_category_insight_2026-08-15.md`、
+  `docs/experiments/phase6_category_insight_v2_2026-08-15.md` 和
+  `docs/experiments/phase6_bilingual_v3_2026-08-15.md`。
+
+`CategoryInsightService` 仍保留 quick/deep 提炼、品类归一、普通品类空组件、
 向量失败降级 BM25、OpenSearch 失败返回 confidence=0，以及 Reranker 失败保留粗排。
-完整环境、指标和限制见
-`docs/experiments/phase6_category_insight_2026-08-15.md`。当前尚无 WebSearch 工具，
-所以低置信度 WebSearch 补充仍是后续项。
+当前尚无 WebSearch 工具，低置信度 WebSearch 补充仍是后续项。

@@ -1,140 +1,180 @@
-# CategoryInsight 数据契约（ESCI 离线版）
+# CategoryInsight 数据契约（淘宝中文版）
 
 ## 目标与边界
 
-本数据集用于离线跑通课程第 13、13-1 章的知识卡 RAG，不表示真实 Amazon
-商品库、实时价格、历史成交价或销量榜。
+本数据集用于离线跑通课程第 13、13-1 章的中文 CategoryInsight 知识卡 RAG，
+商品底座是阶段五已经使用的真实 ShopSimulator 淘宝中文目录：
+`data/processed/catalogs/taobao/cn/items.jsonl`，共 23,421 件。
 
-商品事实的唯一真实底座是阶段五已经使用的 Amazon Shopping Queries ESCI
-英文子集：720 个商品、35 个完整标注 Query 候选池，Apache-2.0。ESCI 只提供
-商品文本和相关性标签，不提供价格、销量或官方商品类目。
-
-因此首版数据严格区分：
+当前版本只做 8 个普通商品品类，不使用食品、黄金、农资、宠物食品、仿生植物等
+不适合知识卡 RAG 的品类。淘宝目录提供中文 `category_path`、中文标题、
+`source_attributes`、`price_cny` 和 `variants[].price_cny`，但不提供真实销量。
 
 | 字段 | 性质 | 可作何种解释 |
 | --- | --- | --- |
-| `product_id`、标题、正文、ESCI 标签 | 公开数据集原始/清洗字段 | 真实公开商品文本和相关性标注 |
-| 标准品类与别名 | 人工维护 ground truth | 本项目离线分类口径 |
-| 属性分布 | 从商品标题与正文确定性抽取、聚合 | 仅代表当前有效样本，不代表市场份额 |
-| `typical_price_cny` | 固定种子生成 | 仅用于验证价格档提炼，不是真实价格 |
-| `order_count_90d` | 固定种子生成并受 ESCI 标签权重影响 | 仅用于离线 bestseller 排序，不是真实销量 |
+| `item_id`、标题、`category_path`、`source_attributes` | ShopSimulator 真实公开字段 | 淘宝商品中文事实 |
+| `price_cny` / `variants[].price_cny` | 真实观测挂牌/规格价 | 可计算品类价格档位，但不是历史成交价 |
+| bestseller 排序 | 由同质商品数与属性覆盖度生成的离线代理 | 不是真实销量榜 |
+| 标准品类、别名、热门形态、属性规则 | 人工维护 ground truth | 本项目离线分类口径 |
 
-所有生成字段均写明 `generated_offline_not_observed`，并记录固定种子
-`20260815` 和规则版本。禁止在报告中把它们描述成 Amazon 销量或成交价。
+所有生成字段明确标记。当前唯一生成字段是 `bestseller_proxy_rank`，来源标记为
+`generated_offline_proxy`。任何报告都不能把淘宝挂牌价描述成成交价，也不能把
+代理排序描述成真实销量榜。
+
+## 首期 8 个品类
+
+| 标准品类 | 卡片 slug | 淘宝叶子类目 |
+| --- | --- | --- |
+| 乳胶枕 | `latex-pillow` | 乳胶枕 |
+| 儿童学习椅 | `children-study-chair` | 儿童学习椅 |
+| 手机直播补光灯 | `phone-live-fill-light` | 手机直播补光灯 |
+| 汽车氛围灯 | `car-ambient-light` | 汽车氛围灯/装饰灯/日行灯 |
+| 平板电脑支架 | `tablet-stand` | 平板电脑支架 |
+| 颈椎按摩器 | `neck-massager` | 颈椎按摩器/枕 |
+| 羽毛球包 | `badminton-bag` | 羽毛球包 |
+| 户外电源 | `portable-power-station` | 户外电源/移动电站 |
+
+标准品类名取有语义的中文叶子名。`汽车氛围灯`、`颈椎按摩器`、`户外电源` 是
+淘宝组合叶子名的收敛写法，完整 `category_path` 保留在 facts/provenance 中。
 
 ## 三种卡片的意义
 
-`bestseller`、`attribute`、`price_range` 是三种卡片类型，并非每个品类只有
-三张卡。本版 12 个品类各生成 2 张 bestseller、3 张 attribute、1 张
-price_range，共 72 张。
-
-- `bestseller`：提供代表性商品形态和最多 6 条商品证据。当前排序依据为明确
-  标记的离线生成热度；`raw_evidence` 严格使用 `name | price | reason`。
-- `attribute`：只统计标题/正文命中规则的有效样本，分母与计数写入 provenance；
-  没有命中属性的商品不进入该属性分母。
-- `price_range`：根据生成的 CNY 价格事实按三分位切成有限的 budget、mid、
-  premium 区间，避免课程示例 `400+` 与 `tuple[float, float]` 解析不一致。
-
-当前 12 个品类都是普通商品品类，不是套装品类。bestseller `summary` 中的三个
-短语用于检索和拆分商品形态；后续提炼时必须读取 provenance 中的
-`category_kind=ordinary`，不得把这些短语误写入“套装组件”结果。
-
-## 品类归并
-
-人工维护表位于 `data/category_insight/category_taxonomy.json`。它把 35 个 ESCI
-Query group 归并到 12 个标准品类，并用商品标题 `required_terms/excluded_terms` 做
-第二道包含/排除门禁。
-
-Query `52717` 的 Exact 结果同时包含图书、仿真植物和标语商品，无法形成可信的
-单一品类，因此显式排除。其余相关标签只允许 Exact、Substitute、Complement；
-Irrelevant 不参加知识事实聚合。标题门禁共拒绝 37 条关系，其中抽审后新增排除 7
-条明显噪声：标签耗材、go-kart 配件、通用车库座椅和自行车专用工具。
-
-这个归并只服务于知识卡数据生产。它不能作为无偏线上类目分类器，也不能把同一
-批 ESCI Query 直接当作阶段六最终测试集；知识卡检索评测需要单独构造、完整判断
-并冻结 train/dev/test。
-
-## 文件契约
-
-课程索引文档只读取 `category_cards.jsonl`，每行严格只有七个字段：
+每类各生成 2 张 `bestseller`、3 张 `attribute`、1 张 `price_range`，8 类共 48
+张。每张卡片严格只有课程七字段：
 
 ```text
 card_id, category, card_type, summary, raw_evidence, last_updated, confidence
 ```
 
-其余信息放在 sidecar，避免污染课程 Schema：
+- `bestseller`：`summary` 使用 `category：形式 / 形式 / 形式`，证据严格使用
+  `title | price | reason`。排序使用 `homogeneous_item_count` 和
+  `attribute_coverage` 的离线代理，不生成销量。
+- `attribute`：从真实 `source_attributes` 按人工维护的三条属性规则聚合，取前
+  两个主值，其余合并为“其他”，百分比按有效样本归一为 100%。
+- `price_range`：真实观测价格做三分位。单规格商品取顶层 `price_cny`，多规格
+  商品取全部真实 `variants[].price_cny`；卡片只表示挂牌/规格价，不是成交价。
+
+## 标题门禁与入库门禁
+
+品类归属采用两层：淘宝叶子类目必须命中 `source_leaf_names`，且中文标题必须
+命中该品类的 `required_terms`。本版标题门禁拒绝 121 条关系，主要原因是叶子
+类目相同但标题缺少标准品类词，避免跨品类噪声进入知识事实。
+
+卡片入库继续沿用课程门禁：Schema 严格校验、`confidence >= 0.5`、summary 长度
+不超过 200、evidence 数量 1–3 且每条不超过 80，三类 summary 格式分别校验。
+48 张卡片拒收 0 张；稳定哈希抽审 5 张，比例不低于 10%。
+
+## 文件契约
+
+目录：`data/category_insight/taobao_zh/`
 
 | 文件 | 用途 |
 | --- | --- |
-| `category_taxonomy.json` | 标准品类、别名、Query 映射、属性规则和生成价格边界 |
-| `category_item_facts.jsonl` | 商品—品类事实、文本属性、生成字段及来源 |
-| `category_cards.jsonl` | 允许写入知识库的课程 Schema 卡片 |
-| `category_card_provenance.jsonl` | 每张卡的商品 ID、样本量、字段来源和生成声明 |
-| `rejected_memberships.jsonl` | 未通过商品文本品类门禁的关系 |
-| `rejected_cards.jsonl` | 未通过 Schema/置信度/格式门禁的卡片 |
-| `audit_queue.jsonl` | 稳定哈希抽取的不低于 10% 人工审核队列 |
-| `audit_results.jsonl` | 逐卡审核检查项、结论、修正说明和所审核卡片语料哈希 |
-| `category_card_manifest.json` | 数量、规则、输入输出 SHA-256 和真值边界 |
+| `category_taxonomy_taobao_zh.json` | 8 品类、中文别名、slug、叶子类目、标题门禁、热门形态、属性规则 |
+| `category_item_facts_taobao_zh.jsonl` | 815 条品类—商品事实、真实价格观测、属性命中和代理字段 |
+| `category_cards_taobao_zh.jsonl` | 48 张允许写入知识库的课程七字段卡片 |
+| `category_card_provenance_taobao_zh.jsonl` | 每张卡的来源商品、样本量、价格口径和代理声明 |
+| `rejected_memberships_taobao_zh.jsonl` | 121 条未通过中文标题门禁的关系 |
+| `rejected_cards_taobao_zh.jsonl` | 未通过卡片门禁的草卡 |
+| `audit_queue_taobao_zh.jsonl` | 稳定哈希抽取的人工抽审队列 |
+| `category_retrieval_texts_taobao_zh.jsonl` | 每张卡的中文派生检索文本 |
+| `category_card_manifest_taobao_zh.json` | 数量、规则、输入输出 SHA-256 和真值边界 |
 
 ## 知识卡检索评测契约
 
-`eval_query_annotations.jsonl` 人工编写并冻结了 50 条英文知识卡 Query，覆盖名词型、
-属性约束型、气质/风格型和完全口语型。它们没有逐字复用阶段五的 ESCI Query。
+50 条中文 Query 覆盖名词型、属性约束型、气质/风格型和口语型。Query 文本由
+课程口径的确定性模板生成，不复用历史 ESCI Query。每条 Query 对全局 48 张卡
+全部显式判断，恰有 5 张相关卡，按顺序获得 5、4、3、2、1 的 NDCG gain。
 
-生成后的 `category_recall_cases.jsonl` 使用全局 72 张卡作为每条 Query 的封闭候选
-池。每条 Query 恰有 5 张相关卡，按重要性获得 5、4、3、2、1 的 NDCG gain；其余
-67 张卡均显式写为 `not_relevant`。因此 test split 中不存在未标注卡片，也不会把
-“召回后才出现的未知卡片”临时当作负例。
-
-固定拆分为 train/dev/test=30/10/10，三个 split 都覆盖四种 Query 类型。权重、
-阈值和规则只能使用 train/dev；配置冻结后 test 只报告一次。当前标注是人为构造的
-课程离线真值，只能评测这 72 张知识卡，不能外推线上市场效果。
-
-### v2 修订契约
-
-v1 文件继续保留作为历史实验，不覆盖。v2 使用以下版本化文件：
-
-| 文件 | 用途 |
-| --- | --- |
-| `eval_query_annotations_v2.jsonl` | 40 条原 train/dev 标注与 10 条新 test 标注 |
-| `category_recall_cases_v2.jsonl` | 50 Query×72 卡的完整判断矩阵 |
-| `category_recall_manifest_v2.json` | v2 数量、口径和输入/输出 SHA-256 |
-| `category_recall_v2_freeze.json` | 在读取新 test 之前冻结的检索与精排配置 |
-
-v1 的 10 条 test 只作为历史诊断，不进入 v2；v2 test 的 Query ID 与文本均为新建，
-构建脚本会把历史 test 复用视为错误。train/dev 仍为原来的 30/10 条及原 split，
-其中 3 条名词型 Query 增加明确的 `price ranges/price tiers` 意图，用于在非 test
-数据上验证价格卡语义。
-
-每条 Query 仍恰有 5 张正例，并必须包含本品类价格卡，但价格卡不是固定同一顺位：
-
-- 明确价格、预算、档位意图：`strong`，gain 4～5；
-- 宽泛品类洞察：`medium`，gain 2～3；
-- 属性、风格和使用场景：`coverage_weak`，gain 1。
-
-其余四张正例按 Query 与卡片实际内容选择，不使用固定卡片类型配额。评测额外报告
-`BestsellerCoverage@K`、`AttributeCoverage@K`、`PriceRangeCoverage@K` 和
-`AllCardTypesCoverage@K`；这些是观测指标，不参与强制插卡或结果配额。
-
-知识卡七字段 Schema 不变。索引时派生统一英文检索文本，不写回卡片本体：
+固定拆分：
 
 ```text
-Category: {category}. Knowledge type: {natural-language type}. Summary: {English-normalized summary}.
+train/dev/test = 30/10/10
+noun/attribute_constraint/style/colloquial = 14/12/12/12
 ```
 
-该文本同时供 BGE-M3、BM25 和 contextual Reranker 使用。价格摘要会从中文档位模板
-转换为带 `price tiers / Budget tier / mid-range tier / premium tier / CNY` 的英文文本，
-使只包含数字区间的卡片也具有可检索语义。`raw_evidence` 不进入检索文本。
+每个 split 都覆盖四种 Query 类型。权重、阈值和规则只在 train/dev 选择，test
+只报告一次。相关卡集合按 Query 类型选择：
+
+- 名词型：价格卡、2 张 bestseller、2 张 attribute。
+- 属性约束型：2 张 attribute、2 张 bestseller、价格卡。
+- 气质型：2 张 attribute、2 张 bestseller、价格卡。
+- 口语型：价格卡、2 张 bestseller、2 张 attribute。
+
+## OpenSearch 索引
+
+索引名：`globex_category_kb_taobao_zh_v1`
+
+```text
+analyzer      = ik_max_word
+search_analyzer = ik_smart
+dimension     = 1024
+embedding     = BAAI/bge-m3，本地 D:\models\bge-m3
+reranker      = BAAI/bge-reranker-v2-m3，本地 D:\models\bge-reranker-v2-m3
+```
+
+知识卡七字段不扩展。中文派生检索文本以 sidecar 形式写入 `retrieval_text` 和
+`retrieval_text_zh`，同时供 BM25、BGE-M3 和 contextual Reranker 使用。
 
 ## 生成与验证
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\data\build_category_cards.py
-.\.venv\Scripts\python.exe scripts\data\build_category_eval.py
-.\.venv\Scripts\python.exe -m pytest tests\unit\test_category_card_dataset.py -q
+$env:PYTHONIOENCODING = "utf-8"
+.\.venv\Scripts\python.exe scripts\data\build_category_cards_taobao_zh.py
+.\.venv\Scripts\python.exe scripts\data\build_category_eval_taobao_zh.py
 ```
 
-当前固定产出：370 条品类—商品事实、369 个唯一商品、72 张通过门禁的卡片、
-0 张拒收卡片。8 张稳定哈希样本已全部完成实质复核；首次抽审发现 `No Drain
-Holes` 否定短语误判及 7 条跨品类噪声，修正并重建数据后全部通过。只有重新运行后
-哈希、审核语料哈希与测试一致，才视为可复现。
+当前固定产出：815 条品类—商品事实、48 张通过门禁的卡片、0 张拒收卡片、5 张
+稳定抽审样本、50 条中文 Query 完整判断集。
+
+OpenSearch 索引与四路召回复现：
+
+```powershell
+docker compose -f infra\opensearch\docker-compose.yml up -d --wait
+.\.venv\Scripts\python.exe scripts\index\build_category_kb_taobao_zh.py `
+  --embedding-model D:\models\bge-m3 --device cpu --batch-size 8 `
+  --max-seq-length 512 --local-files-only --recreate
+
+.\.venv\Scripts\python.exe scripts\eval\run_category_recall.py `
+  --data-dir data\category_insight\taobao_zh `
+  --index-name globex_category_kb_taobao_zh_v1 `
+  --cards-filename category_cards_taobao_zh.jsonl `
+  --cases-filename category_recall_cases_taobao_zh.jsonl `
+  --manifest-filename category_recall_manifest_taobao_zh.json `
+  --embedding-model D:\models\bge-m3 --device cpu --max-seq-length 512 `
+  --reranker-model D:\models\bge-reranker-v2-m3 `
+  --reranker-python C:\Anaconda\envs\blog_04\python.exe `
+  --reranker-device cuda:0 --reranker-batch-size 4 `
+  --reranker-max-length 256 --local-files-only `
+  --coarse-k 30 --top-k 10 --splits train dev test `
+  --reranker-modes contextual `
+  --output output\eval\category_recall_taobao_zh.json
+```
+
+独立 test split 实测（v1 基线，按课程口径取 @8）：
+
+| 方案 | Recall@8 | MRR@8 | NDCG@8 | AllCardTypes@8 |
+| --- | ---: | ---: | ---: | ---: |
+| BM25 | 1.0000 | 1.0000 | 0.8723 | 1.0000 |
+| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8695 | 1.0000 |
+| Hybrid | 1.0000 | 1.0000 | 0.8709 | 1.0000 |
+| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8531 | 1.0000 |
+| Hybrid + BGE Reranker（全量精排） | 0.9000 | 0.9500 | 0.7915 | 0.7000 |
+
+全量精排的 BGE Reranker 在 v1 基线 48 卡封闭池上没有提升，反而把 Recall@8
+从 1.0 拉到 0.90、NDCG 从 0.8531 拉到 0.7915；0.92 首分跳过的默认策略既省
+延迟，也避免把粗排正确卡片挤出 Top-10。
+
+## 历史英文 ESCI 版
+
+旧英文 ESCI 演示版文件仍保留在 `data/category_insight/` 根目录，作为历史实验，
+不覆盖、不混入淘宝中文版：
+
+- `category_cards.jsonl`、`category_item_facts.jsonl`、`category_card_manifest.json`
+- `category_recall_cases.jsonl`、`category_recall_manifest.json`
+- `docs/experiments/phase6_category_insight_2026-08-15.md`
+- `docs/experiments/phase6_category_insight_v2_2026-08-15.md`
+- `docs/experiments/phase6_bilingual_v3_2026-08-15.md`
+
+英文版使用 ESCI 商品文本、standard 分词、固定种子合成价格和销量。它不再作为
+当前 CategoryInsight 数据契约。

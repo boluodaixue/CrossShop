@@ -26,7 +26,7 @@ def rerank_category_hits(
     reranker: RawTextPairReranker,
     *,
     final_k: int,
-    bypass_top_score: float = RERANK_BYPASS_TOP_SCORE,
+    bypass_top_score: float | None = RERANK_BYPASS_TOP_SCORE,
     document_mode: RerankerDocumentMode = "summary_only",
 ) -> CategoryRerankResult:
     if final_k < 1:
@@ -41,7 +41,10 @@ def rerank_category_hits(
             False,
             "candidate count is not greater than final_k",
         )
-    if coarse_hits[0].score >= bypass_top_score:
+    if (
+        bypass_top_score is not None
+        and coarse_hits[0].score >= bypass_top_score
+    ):
         return CategoryRerankResult(
             _renumber(coarse_hits[:final_k]),
             False,

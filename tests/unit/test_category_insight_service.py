@@ -65,9 +65,9 @@ def _taxonomy() -> CategoryTaxonomy:
         {
             "categories": [
                 {
-                    "category": "home ventilation fans",
+                    "category": "乳胶枕",
                     "category_kind": "ordinary",
-                    "aliases": ["bathroom fan"],
+                    "aliases": ["乳胶枕头"],
                 }
             ]
         }
@@ -83,7 +83,7 @@ def _card(
 ) -> CategoryCard:
     return CategoryCard(
         card_id=card_id,
-        category="home ventilation fans",
+        category="乳胶枕",
         card_type=card_type,
         summary=summary,
         raw_evidence=evidence,
@@ -97,28 +97,31 @@ def _hits() -> tuple[CategoryCardHit, ...]:
         _card(
             "b1",
             "bestseller",
-            "home ventilation fans：bathroom exhaust fan / ceiling fan",
-            ["Fan A | 500 | generated orders=20", "Fan B | 800 | generated orders=10"],
+            "乳胶枕：特拉雷乳胶枕 / 泰国天然乳胶枕 / 儿童乳胶枕",
+            [
+                "商品A | 399 | 同质商品数=12，属性覆盖=0.80",
+                "商品B | 599 | 同质商品数=10，属性覆盖=0.70",
+            ],
         ),
         _card(
             "b2",
             "bestseller",
-            "home ventilation fans：ceiling fan / heat recovery ventilator",
-            ["Fan C | 1200 | generated orders=8"],
+            "乳胶枕：成人护颈乳胶枕 / 记忆棉乳胶枕 / 可水洗乳胶枕",
+            ["商品C | 699 | 同质商品数=9，属性覆盖=0.70"],
         ),
-        _card("a1", "attribute", "Mounting：ceiling 75.0% / wall 25.0%", ["e1"]),
+        _card("a1", "attribute", "材质：泰国天然乳胶 75.0% / 记忆棉 25.0%", ["e1"]),
         _card(
             "a2",
             "attribute",
-            "Control：without light 60.0% / motion sensor 40.0%",
+            "功能：护颈椎 60.0% / 助睡眠 40.0%",
             ["e2"],
         ),
-        _card("a3", "attribute", "Product form：exhaust fan 100.0%", ["e3"]),
+        _card("a3", "attribute", "适用人群：成人 100.0%", ["e3"]),
         _card(
             "p1",
             "price_range",
-            "便宜款 250-600 / 中档 600-1500 / 高端 1500-3500",
-            ["generated CNY prices"],
+            "便宜款 100-400 / 中档 400-800 / 高端 800-1500",
+            ["观察价格样本 n=963"],
         ),
     ]
     return tuple(
@@ -131,14 +134,14 @@ def test_quick_mode_returns_bestsellers_and_price_but_not_attributes() -> None:
     service = CategoryInsightService(
         _taxonomy(), FakeEncoder(), FakeKnowledgeBase(_hits()), FakeReranker()
     )
-    run = service.insight("bathroom fan", depth="quick")
+    run = service.insight("乳胶枕头", depth="quick")
 
-    assert run.output.category == "home ventilation fans"
+    assert run.output.category == "乳胶枕"
     assert run.output.components == []
-    assert [item.name for item in run.output.bestsellers] == ["Fan A", "Fan B", "Fan C"]
+    assert [item.name for item in run.output.bestsellers] == ["商品A", "商品B", "商品C"]
     assert run.output.attributes == []
     assert [tier.tier for tier in run.output.price_tiers] == ["budget", "mid", "premium"]
-    assert run.output.price_tiers[2].range_cny == (1500.0, 3500.0)
+    assert run.output.price_tiers[2].range_cny == (800.0, 1500.0)
     assert run.output.confidence == 0.7
     assert run.diagnostics.final_count == 6
 
@@ -151,15 +154,15 @@ def test_reranker_is_optional_and_hybrid_order_is_the_default() -> None:
         FakeKnowledgeBase(hits),
     )
 
-    run = service.insight("bathroom fan", depth="quick")
+    run = service.insight("乳胶枕", depth="quick")
 
     assert run.diagnostics.recall_mode == "hybrid"
     assert run.diagnostics.reranked is False
     assert run.diagnostics.final_count == len(hits)
     assert [item.name for item in run.output.bestsellers] == [
-        "Fan A",
-        "Fan B",
-        "Fan C",
+        "商品A",
+        "商品B",
+        "商品C",
     ]
 
 
@@ -167,14 +170,17 @@ def test_deep_mode_extracts_attribute_distributions() -> None:
     service = CategoryInsightService(
         _taxonomy(), FakeEncoder(), FakeKnowledgeBase(_hits()), FakeReranker()
     )
-    run = service.insight("home ventilation fans", depth="deep")
+    run = service.insight("乳胶枕", depth="deep")
 
     assert [attribute.name for attribute in run.output.attributes] == [
-        "Mounting",
-        "Control",
-        "Product form",
+        "材质",
+        "功能",
+        "适用人群",
     ]
-    assert run.output.attributes[0].distribution == {"ceiling": 0.75, "wall": 0.25}
+    assert run.output.attributes[0].distribution == {
+        "泰国天然乳胶": 0.75,
+        "记忆棉": 0.25,
+    }
 
 
 def test_vector_failure_degrades_to_bm25() -> None:
@@ -182,7 +188,7 @@ def test_vector_failure_degrades_to_bm25() -> None:
     service = CategoryInsightService(
         _taxonomy(), FakeEncoder(fail=True), knowledge_base, FakeReranker()
     )
-    run = service.insight("bathroom fan")
+    run = service.insight("乳胶枕")
 
     assert knowledge_base.bm25_calls == 1
     assert run.diagnostics.recall_mode == "bm25_fallback"
@@ -194,9 +200,9 @@ def test_opensearch_failure_returns_course_empty_fallback() -> None:
     service = CategoryInsightService(
         _taxonomy(), FakeEncoder(), FakeKnowledgeBase((), fail=True), FakeReranker()
     )
-    run = service.insight("bathroom fan")
+    run = service.insight("乳胶枕")
 
-    assert run.output.category == "home ventilation fans"
+    assert run.output.category == "乳胶枕"
     assert run.output.bestsellers == []
     assert run.output.price_tiers == []
     assert run.output.confidence == 0

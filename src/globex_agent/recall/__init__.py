@@ -24,6 +24,7 @@ from globex_agent.recall.category_kb import (
     OpenSearchHttpClient,
     category_document_text,
     category_retrieval_text,
+    category_retrieval_text_zh,
     classify_category_query,
     setup_category_index,
 )
@@ -106,6 +107,7 @@ __all__ = [
     "WEIGHTS_BY_QUERY_TYPE",
     "category_document_text",
     "category_retrieval_text",
+    "category_retrieval_text_zh",
     "classify_category_query",
     "clean_product_body",
     "document_text",

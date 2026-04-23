@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from globex_agent.category_insight import rerank_category_hits
+from globex_agent.category_insight.reranking import RERANK_BYPASS_TOP_SCORE
 from globex_agent.eval import RankingMetrics, aggregate_metrics, evaluate_ranking
 from globex_agent.recall.category_kb import (
     DEFAULT_CATEGORY_INDEX,
@@ -88,6 +89,11 @@ def main() -> None:
         default=["contextual"],
     )
     parser.add_argument(
+        "--rerank-all",
+        action="store_true",
+        help="rerank every coarse hit instead of using the top-score bypass",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=PROJECT_ROOT / "output" / "eval" / "category_recall_v2.json",
@@ -119,6 +125,7 @@ def main() -> None:
         top_k=args.top_k,
         splits=tuple(dict.fromkeys(args.splits)),
         reranker_modes=tuple(dict.fromkeys(args.reranker_modes)),
+        rerank_all=args.rerank_all,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
@@ -150,6 +157,7 @@ def run_evaluation(
     top_k: int,
     splits: tuple[str, ...],
     reranker_modes: tuple[str, ...],
+    rerank_all: bool = False,
 ) -> dict[str, Any]:
     cards_path = data_dir / cards_filename
     cases_path = data_dir / cases_filename
@@ -280,6 +288,9 @@ def run_evaluation(
                     reranker,
                     final_k=top_k,
                     document_mode=mode,
+                    bypass_top_score=(
+                        None if rerank_all else RERANK_BYPASS_TOP_SCORE
+                    ),
                 )
                 rerank_ms = hybrid_ms + (time.perf_counter() - started) * 1000
                 scheme_name = f"hybrid_bge_reranker_{mode}"
@@ -306,10 +317,9 @@ def run_evaluation(
                 scheme_metrics[scheme].append((case, metric, ranked_ids))
                 latencies[scheme].append(timings[scheme])
 
-            for mode in reranker_modes:
-                scheme_name = f"hybrid_bge_reranker_{mode}"
-                quick_name = f"{scheme_name}_quick_top8"
-                quick_ids = rankings[scheme_name][:QUICK_TOP_K]
+            for scheme, ranked_ids in rankings.items():
+                quick_name = f"{scheme}_quick_top8"
+                quick_ids = ranked_ids[:QUICK_TOP_K]
                 quick_metric = evaluate_ranking(
                     quick_ids,
                     case["relevance"],
@@ -317,7 +327,7 @@ def run_evaluation(
                     ndcg_relevance=case["graded_relevance"],
                 )
                 scheme_metrics[quick_name].append((case, quick_metric, quick_ids))
-                latencies[quick_name].append(timings[scheme_name])
+                latencies[quick_name].append(timings[scheme])
             per_query.append(
                 {
                     "query_id": case["query_id"],
@@ -404,9 +414,13 @@ def run_evaluation(
             "reranker_max_length": reranker_max_length,
             "reranker_document_modes": list(reranker_modes),
             "contextual_document_policy": (
-                "the versioned retrieval_text stored in OpenSearch; bilingual in v3"
+                "the versioned retrieval_text stored in OpenSearch; language policy "
+                "comes from the index sidecar"
             ),
-            "rerank_bypass_top_score": 0.92,
+            "rerank_all": rerank_all,
+            "rerank_bypass_top_score": (
+                None if rerank_all else RERANK_BYPASS_TOP_SCORE
+            ),
         },
         "schemes": schemes,
         "query_type_classifier": {
@@ -562,6 +576,12 @@ def _validate_cases(
     card_ids = {card["card_id"] for card in cards}
     if len(cases) != manifest["query_count"] or len(cards) != manifest["card_count"]:
         raise ValueError("manifest counts do not match checked-in data")
+    positive_policy = manifest["positive_count_per_query"]
+    if isinstance(positive_policy, dict):
+        min_positives = int(positive_policy["min"])
+        max_positives = int(positive_policy["max"])
+    else:
+        min_positives = max_positives = int(positive_policy)
     for case in cases:
         candidate_ids = set(case["candidate_ids"])
         if not (
@@ -572,8 +592,11 @@ def _validate_cases(
             == set(case["judgments"])
         ):
             raise ValueError(f"query {case['query_id']} contains unjudged cards")
-        if len(case["relevant_card_ids"]) != 5:
-            raise ValueError(f"query {case['query_id']} must have five positives")
+        if not min_positives <= len(case["relevant_card_ids"]) <= max_positives:
+            raise ValueError(
+                f"query {case['query_id']} must have between {min_positives} "
+                f"and {max_positives} positives"
+            )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

@@ -20,7 +20,8 @@ from globex_agent.category_insight.models import CategoryCard
 DEFAULT_CATEGORY_INDEX = "globex_category_kb"
 DEFAULT_VECTOR_DIMENSION = 1024
 DEFAULT_COARSE_K = 30
-DEFAULT_ANALYZER = "standard"
+DEFAULT_ANALYZER = "ik_max_word"
+DEFAULT_SEARCH_ANALYZER = "ik_smart"
 _SAFE_INDEX_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
@@ -137,6 +138,11 @@ _CARD_TYPE_LABELS = {
     "attribute": "product attribute distribution",
     "price_range": "price tiers",
 }
+_CARD_TYPE_LABELS_ZH = {
+    "bestseller": "热门商品形态",
+    "attribute": "商品属性分布",
+    "price_range": "价格档位",
+}
 _PRICE_SUMMARY_PATTERN = re.compile(
     r"便宜款\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*/\s*"
     r"中档\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*/\s*"
@@ -152,6 +158,16 @@ def category_retrieval_text(card: CategoryCard) -> str:
     return (
         f"Category: {card.category}. Knowledge type: {knowledge_type}. "
         f"Summary: {summary}"
+    )
+
+
+def category_retrieval_text_zh(card: CategoryCard) -> str:
+    """Build a Chinese, context-complete retrieval text for course-compliant cards."""
+
+    return (
+        f"品类：{card.category}。"
+        f"知识类型：{_CARD_TYPE_LABELS_ZH[card.card_type]}。"
+        f"摘要：{card.summary}"
     )
 
 
@@ -184,7 +200,7 @@ def build_category_index_mapping(
     dimension: int = DEFAULT_VECTOR_DIMENSION,
     *,
     analyzer: str = DEFAULT_ANALYZER,
-    search_analyzer: str | None = None,
+    search_analyzer: str | None = DEFAULT_SEARCH_ANALYZER,
 ) -> dict[str, Any]:
     if dimension < 1:
         raise ValueError("dimension must be positive")
@@ -264,7 +280,7 @@ def setup_category_index(
     *,
     index_name: str = DEFAULT_CATEGORY_INDEX,
     analyzer: str = DEFAULT_ANALYZER,
-    search_analyzer: str | None = None,
+    search_analyzer: str | None = DEFAULT_SEARCH_ANALYZER,
     retrieval_texts: Sequence[str] | None = None,
     retrieval_texts_en: Sequence[str] | None = None,
     retrieval_texts_zh: Sequence[str] | None = None,

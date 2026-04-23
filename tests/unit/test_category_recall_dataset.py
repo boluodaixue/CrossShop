@@ -5,6 +5,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "category_insight"
+TAOBAO_DIR = DATA_DIR / "taobao_zh"
 ESCI_DIR = PROJECT_ROOT / "data" / "eval"
 
 
@@ -196,3 +197,72 @@ def test_v2_manifest_matches_versioned_cases() -> None:
     assert manifest["cases_sha256"] == hashlib.sha256(
         cases_path.read_bytes()
     ).hexdigest()
+
+
+def test_taobao_zh_recall_set_has_expected_split_and_query_type_coverage() -> None:
+    cases = _read_jsonl(TAOBAO_DIR / "category_recall_cases_taobao_zh.jsonl")
+
+    assert len(cases) == 50
+    assert len({case["query_id"] for case in cases}) == 50
+    assert len({case["query"] for case in cases}) == 50
+    assert Counter(case["split"] for case in cases) == {
+        "train": 30,
+        "dev": 10,
+        "test": 10,
+    }
+    assert Counter(case["query_type"] for case in cases) == {
+        "noun": 14,
+        "attribute_constraint": 12,
+        "style": 12,
+        "colloquial": 12,
+    }
+    for split in ("train", "dev", "test"):
+        assert {case["query_type"] for case in cases if case["split"] == split} == {
+            "noun",
+            "attribute_constraint",
+            "style",
+            "colloquial",
+        }
+
+
+def test_taobao_zh_every_query_explicitly_judges_the_entire_48_card_pool() -> None:
+    cards = _read_jsonl(TAOBAO_DIR / "category_cards_taobao_zh.jsonl")
+    cases = _read_jsonl(TAOBAO_DIR / "category_recall_cases_taobao_zh.jsonl")
+    card_by_id = {card["card_id"]: card for card in cards}
+    card_ids = set(card_by_id)
+    assert len(card_ids) == 48
+
+    for case in cases:
+        assert case["language"] == "zh"
+        assert set(case["candidate_ids"]) == card_ids
+        assert set(case["relevance"]) == card_ids
+        assert set(case["graded_relevance"]) == card_ids
+        assert set(case["judgments"]) == card_ids
+        assert len(case["relevant_card_ids"]) == len(set(case["relevant_card_ids"])) == 5
+        assert [
+            case["graded_relevance"][card_id]
+            for card_id in case["relevant_card_ids"]
+        ] == [5.0, 4.0, 3.0, 2.0, 1.0]
+        assert all(
+            card_by_id[card_id]["category"] == case["category"]
+            for card_id in case["relevant_card_ids"]
+        )
+
+
+def test_taobao_zh_manifest_matches_frozen_cases() -> None:
+    manifest = json.loads(
+        (TAOBAO_DIR / "category_recall_manifest_taobao_zh.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cases_path = TAOBAO_DIR / "category_recall_cases_taobao_zh.jsonl"
+    digest = hashlib.sha256(cases_path.read_bytes()).hexdigest()
+
+    assert manifest["dataset_version"] == "category-card-recall-taobao-zh-v1"
+    assert manifest["language"] == "zh"
+    assert manifest["query_count"] == 50
+    assert manifest["card_count"] == 48
+    assert manifest["positive_count_per_query"] == 5
+    assert manifest["closed_pool"] is True
+    assert manifest["unjudged_policy"] == "forbidden"
+    assert manifest["cases_sha256"] == digest

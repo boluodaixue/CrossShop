@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent 完整工程计划
 
-> 状态：阶段 5 已关闭；阶段 6 英文演示版已完成、中文化整改待做（见阶段 6 返工清单）；阶段 7 未开始
+> 状态：阶段 5 已关闭；阶段 6 中文淘宝版整改完成（v1 基线 + 全量精排对照）；阶段 7 未开始
 > 当前阅读进度：已读完第 15 章
 > 当前代码状态：淘宝 shopsimulator_retrieval_v1 已冻结 115 query 并出 FTS/BGE-M3/Hybrid/Reranker 指标；商品 runtime 接 canonical ANN fallback，知识卡 runtime 默认动态 Hybrid 且 Reranker 显式 opt-in
 > 实施原则：离线优先、纵向切片、接口与实现解耦、每阶段必须实际运行并验收
@@ -417,7 +417,7 @@ GlobexAgentLearning/
 
 ### 阶段 6：CategoryInsight 与知识卡 RAG
 
-> **状态**：英文 ESCI 演示版已完成并提交，但偏离课程中文设计（见本节末尾「课程合规返工」）；中文化整改待做。
+> **状态**：中文淘宝版整改完成。英文 ESCI 演示版保留为历史实验，不再作为当前知识卡底座。
 
 **目标**
 
@@ -433,11 +433,11 @@ GlobexAgentLearning/
 **任务**
 
 - [x] 定义课程七字段知识卡 Schema。
-- [x] 基于当前 ESCI 商品制作 12 品类、72 张可追溯知识卡。
+- [x] 基于淘宝中文目录制作 8 品类、48 张可追溯知识卡；旧 ESCI 12 品类、72 卡保留为历史实验。
 - [x] 建立品类归一、商品文本门禁、卡片入库门禁和 10% 抽审队列。
 - [x] 按课程用 OpenSearch 实现 BM25 + KNN Hybrid 召回。
 - [x] 对 Top-30 召回结果用 BGE 精排，并压缩为 quick Top-8 / deep Top-15。
-- [x] 建立 50 Query、每条 72 卡全判断的 RAG 标注集，并冻结 30/10/10 split 与哈希。
+- [x] 建立 50 条中文 Query、每条 48 卡全判断的 RAG 标注集，并冻结 30/10/10 split 与哈希。
 - [x] 实现 Recall@K、MRR、NDCG 评测脚本并运行独立 test 基线。
 - [x] 实现向量失败→BM25、知识库失败→空结构 confidence=0、精排失败→粗排的降级；WebSearch 补充因当前无该工具而明确暂缓。
 
@@ -457,21 +457,26 @@ GlobexAgentLearning/
 - `data/category_insight/category_card_manifest.json`
 - `scripts/eval/run_category_recall.py`
 - `examples/05_category_insight.py`
+- `scripts/data/build_category_cards_taobao_zh.py`
+- `scripts/data/build_category_eval_taobao_zh.py`
+- `scripts/index/build_category_kb_taobao_zh.py`
+- `data/category_insight/taobao_zh/`
 
-**课程合规返工（中文化，待做）**
+**课程合规返工（中文化，已完成）**
 
-课程第 13/13-1 章要求知识卡为中文内容 + 中文 query + ik 分词 + 真实成交价/销量。
-当前英文 ESCI 实现偏离该设计（英文卡片、英文 query、standard 分词、合成价格/销量，
-代码 `analyzer_course_difference` 已注明此偏离）。整改清单：
+课程第 13/13-1 章要求知识卡为中文内容 + 中文 query + ik 分词 + 真实价格/销量口径。
+淘宝目录没有真实销量，因此 bestseller 采用同质商品数与属性覆盖度作为离线代理，
+并显式标记 `generated_offline_proxy`，不伪造销量。整改清单：
 
-- [ ] 决策：定首期中文品类范围（N 个普通品类）与 bestseller 代理指标（淘宝无真实销量，用同质商品数/属性覆盖度并标注 `generated_offline_proxy`）。
-- [ ] 中文 taxonomy：用淘宝 `category_path` 建中文标准品类表 + 中文标题门禁。
-- [ ] 数据生产淘宝化：重写 `build_category_cards` 淘宝适配；价格用真实 `price_cny`/规格价切三分位，属性用真实 `source_attributes` 聚合，删除固定种子合成。
-- [ ] 生成中文七字段 `CategoryCard` + 入库门禁 + 10% 抽审。
-- [ ] 中文评测集：50 条中文 query（名词/属性/气质/口语四类），每条 5 张相关卡，冻结 30/10/10。
-- [ ] ik 分词 + OpenSearch 重建：`ik_max_word`/`ik_smart` 替换 standard，重建索引，删除 `analyzer_course_difference` 偏离说明。
-- [ ] 重跑 `run_category_recall`（BM25/KNN/Hybrid/Reranker 四路）+ 更新 5 个 category 单测中文 fixture + pytest/ruff 回归。
-- [ ] 文档回滚：`category_card_data_contract.md` 改淘宝中文版、旧英文版标历史；README/ENGINEERING_PLAN 阶段 6 状态改回「中文化整改完成」。
+- [x] 决策：首期 8 个普通中文品类（乳胶枕、儿童学习椅、手机直播补光灯、汽车氛围灯、平板电脑支架、颈椎按摩器、羽毛球包、户外电源）。
+- [x] 中文 taxonomy：用淘宝 `category_path` 建标准品类表 + 中文标题门禁。
+- [x] 数据生产淘宝化：新增 `build_category_cards_taobao_zh.py`；价格用真实 `price_cny`/规格价切三分位，属性用真实 `source_attributes` 聚合，删除固定种子合成。
+- [x] 生成中文七字段 `CategoryCard` + 入库门禁 + 10% 抽审。
+- [x] 中文评测集：50 条中文 query（名词/属性/气质/口语四类），每条 5 张相关卡，冻结 30/10/10。
+- [x] ik 分词 + OpenSearch 重建：`ik_max_word`/`ik_smart` 替换 standard，重建 `globex_category_kb_taobao_zh_v1`。
+- [x] 重跑 `run_category_recall`（BM25/KNN/Hybrid/Reranker 四路）+ 更新 5 个 category 单测中文 fixture + pytest/ruff 回归。
+- [x] 文档回滚：`category_card_data_contract.md` 改淘宝中文版、旧英文版标历史；README/ENGINEERING_PLAN 阶段 6 状态改为「中文整改完成」。
+- [x] Rerank 全量精排对照：v1 基线上不升反降，生产默认保留 0.92 首分跳过。
 
 > 数据来源对照课程：bestseller=内部销售榜+平台榜单（本地无→代理指标）、attribute=商品库属性聚合（淘宝真实属性）、price_range=历史成交价分位数（淘宝真实价格）。
 
@@ -933,4 +938,5 @@ docs/data/multiplatform_catalog.md 与 docs/data/shopsimulator_retrieval_v1.md�
 Top-K，通用 Reranker 只保留显式注入点；知识卡默认独立动态 Hybrid，Reranker 显式 opt-in
 且失败回退。之前列出的“v5 人工翻译质量抽检”已随双语翻译夹具方案一起废弃：中文商品已改用真实
 ShopSimulator 淘宝商品，不再把英文 ESCI 机器翻译成中文充当商品。其余剩余验收已核对完成：中文 canonical 无缺口（淘宝为单 listing，canonical 去重服务于
-Amazon 跨 locale 平行 listing）；限定范围回归与文档证据一致性已通过。阶段 5 数据侧关闭；阶段 6 英文演示版已完成，但需中文化整改（见阶段 6 返工清单），完成后再进入阶段 7。
+Amazon 跨 locale 平行 listing）；限定范围回归与文档证据一致性已通过。阶段 5 数据侧关闭；
+阶段 6 中文淘宝知识卡整改已完成，旧英文 ESCI 版本保留为历史实验，可进入阶段 7。

@@ -8,6 +8,7 @@ from globex_agent.category_insight import CategoryCard, admit_card
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "category_insight"
+TAOBAO_DIR = DATA_DIR / "taobao_zh"
 ESCI_DIR = PROJECT_ROOT / "data" / "eval"
 
 
@@ -328,3 +329,87 @@ def test_v3_final_holdout_is_new_balanced_and_fully_judged() -> None:
         assert {case["language"] for case in pair} == {"en", "zh"}
         assert pair[0]["candidate_ids"] == pair[1]["candidate_ids"]
         assert pair[0]["graded_relevance"] == pair[1]["graded_relevance"]
+
+
+def test_taobao_zh_taxonomy_defines_eight_ordinary_categories() -> None:
+    taxonomy = json.loads(
+        (TAOBAO_DIR / "category_taxonomy_taobao_zh.json").read_text(encoding="utf-8")
+    )
+    categories = taxonomy["categories"]
+
+    assert len(categories) == 8
+    assert len({category["category"] for category in categories}) == 8
+    assert len({category["slug"] for category in categories}) == 8
+    assert all(category.get("category_kind", taxonomy["category_kind"]) == "ordinary"
+               for category in categories)
+    assert all(len(category["popular_forms"]) == 6 for category in categories)
+    assert all(len(category["attribute_rules"]) == 3 for category in categories)
+
+
+def test_taobao_zh_cards_pass_course_admission_and_use_real_observed_prices() -> None:
+    cards = _read_jsonl(TAOBAO_DIR / "category_cards_taobao_zh.jsonl")
+    provenance = _read_jsonl(TAOBAO_DIR / "category_card_provenance_taobao_zh.jsonl")
+
+    assert len(cards) == 48
+    assert len({card["card_id"] for card in cards}) == len(cards)
+    assert Counter(card["card_type"] for card in cards) == {
+        "bestseller": 16,
+        "attribute": 24,
+        "price_range": 8,
+    }
+    assert set(Counter(card["category"] for card in cards).values()) == {6}
+    assert {row["card_id"] for row in provenance} == {card["card_id"] for card in cards}
+
+    for raw in cards:
+        assert set(raw) == {
+            "card_id",
+            "category",
+            "card_type",
+            "summary",
+            "raw_evidence",
+            "last_updated",
+            "confidence",
+        }
+        card = CategoryCard.model_validate(raw)
+        assert admit_card(raw).accepted
+        assert len(card.summary) <= 200
+        assert 1 <= len(card.raw_evidence) <= 3
+        assert all(len(evidence) <= 80 for evidence in card.raw_evidence)
+        if card.card_type == "attribute":
+            percentages = [
+                float(token.strip().rsplit(" ", 1)[1].rstrip("%"))
+                for token in card.summary.split("：", 1)[1].split("/")
+            ]
+            assert 99.8 <= sum(percentages) <= 100.2
+
+    price_provenance = [
+        row for row in provenance if row.get("price_measure") == "observed_listed_prices_cny"
+    ]
+    assert len(price_provenance) == 8
+    assert all(row["listed_price_not_transaction"] for row in price_provenance)
+    assert all(row["sample_count"] > 0 for row in price_provenance)
+
+
+def test_taobao_zh_bestseller_proxy_and_audit_queue_are_explicit() -> None:
+    facts = _read_jsonl(TAOBAO_DIR / "category_item_facts_taobao_zh.jsonl")
+    provenance = _read_jsonl(TAOBAO_DIR / "category_card_provenance_taobao_zh.jsonl")
+    audit_queue = _read_jsonl(TAOBAO_DIR / "audit_queue_taobao_zh.jsonl")
+    manifest = json.loads(
+        (TAOBAO_DIR / "category_card_manifest_taobao_zh.json").read_text(encoding="utf-8")
+    )
+
+    assert len(facts) == 815
+    assert all(
+        fact["proxy_fields"]["bestseller_proxy_source"] == "generated_offline_proxy"
+        for fact in facts
+    )
+    assert all(fact["price_source"] == "observed" for fact in facts)
+    bestseller_provenance = [
+        row
+        for row in provenance
+        if row.get("evidence_source", "").startswith("generated_offline_proxy")
+    ]
+    assert len(bestseller_provenance) == 16
+    assert all("generated_offline_proxy" in row["evidence_source"] for row in bestseller_provenance)
+    assert len(audit_queue) == math.ceil(48 * 0.10)
+    assert manifest["truth_boundary"]["generated"] == ["bestseller_proxy_rank"]

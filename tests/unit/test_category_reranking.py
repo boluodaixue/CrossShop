@@ -23,11 +23,11 @@ def _hits(count: int, *, top_score: float = 0.8) -> tuple[CategoryCardHit, ...]:
         CategoryCardHit(
             card=CategoryCard(
                 card_id=f"cc-{index:02d}",
-                category="test category",
+                category="乳胶枕",
                 card_type="attribute",
-                summary=f"Feature：value {index + 1}.0%",
-                raw_evidence=[f"item-{index}"],
-                last_updated="2026-08-15T00:00:00+08:00",
+                summary=f"功能：护颈椎 {index + 1}.0%",
+                raw_evidence=[f"淘宝商品-{index}"],
+                last_updated="2026-08-18T00:00:00+08:00",
                 confidence=0.6,
             ),
             score=top_score - index * 0.01,
@@ -41,7 +41,7 @@ def test_category_reranker_scores_query_against_summary_only() -> None:
     hits = _hits(3)
     reranker = FakeRawTextReranker((0.1, 0.9, 0.3))
     result = rerank_category_hits(
-        "test query", hits, reranker, final_k=2, bypass_top_score=0.92
+        "护颈椎乳胶枕", hits, reranker, final_k=2, bypass_top_score=0.92
     )
 
     assert result.reranked is True
@@ -90,6 +90,21 @@ def test_category_reranker_applies_both_course_bypasses() -> None:
     assert high_score.bypass_reason == "coarse top score >= 0.92"
     assert short_list.reranked is False
     assert short_list.bypass_reason == "candidate count is not greater than final_k"
+
+
+def test_category_reranker_can_disable_the_top_score_bypass() -> None:
+    reranker = FakeRawTextReranker((0.3, 0.9, 0.1))
+    result = rerank_category_hits(
+        "query",
+        _hits(3, top_score=0.99),
+        reranker,
+        final_k=2,
+        bypass_top_score=None,
+    )
+
+    assert result.reranked is True
+    assert result.bypass_reason is None
+    assert [hit.card.card_id for hit in result.hits] == ["cc-01", "cc-00"]
 
 
 def test_category_reranker_falls_back_to_coarse_order() -> None:

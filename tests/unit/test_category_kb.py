@@ -14,6 +14,7 @@ from globex_agent.recall.category_kb import (
     build_search_pipeline,
     category_document_text,
     category_retrieval_text,
+    category_retrieval_text_zh,
     classify_category_query,
     pipeline_name,
     setup_category_index,
@@ -254,4 +255,21 @@ def test_price_card_retrieval_text_explains_numeric_tiers_in_english() -> None:
         "Category: test products. Knowledge type: price tiers. "
         "Summary: Budget tier CNY 100-420; mid-range tier CNY 420-1040; "
         "premium tier CNY 1040-1510"
+    )
+
+
+def test_chinese_retrieval_text_matches_taobao_course_format() -> None:
+    card = CategoryCard(
+        card_id="cc-latex-pillow-attribute-01",
+        category="乳胶枕",
+        card_type="attribute",
+        summary="材质：泰国天然乳胶 96.2% / 记忆棉 3.8%",
+        raw_evidence=["泰国天然乳胶: taobao:cn:747848614498 梦洁宝贝泰国乳胶枕头"],
+        last_updated="2026-08-18T00:00:00+08:00",
+        confidence=0.84,
+    )
+
+    assert category_retrieval_text_zh(card) == (
+        "品类：乳胶枕。知识类型：商品属性分布。"
+        "摘要：材质：泰国天然乳胶 96.2% / 记忆棉 3.8%"
     )
