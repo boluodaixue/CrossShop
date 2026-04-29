@@ -1,6 +1,6 @@
 """Stable data contracts shared by Globex components."""
 
-from globex_agent.domain.models import (
+from globex_agent.domain.catalog.models import (
     Candidate,
     Currency,
     DataProvenance,
@@ -23,7 +23,7 @@ from globex_agent.domain.models import (
     ToolIssue,
     UserProfile,
 )
-from globex_agent.domain.retrieval import (
+from globex_agent.domain.catalog.retrieval import (
     RelevanceJudgment,
     RetrievalQuery,
     ShoppingTask,

@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from globex_agent.domain import ShoppingTask, StandardItem
-from globex_agent.domain.models import NonEmptyText, StrictModel
+from globex_agent.domain.catalog.models import NonEmptyText, StrictModel
 
 DATASET_VERSION = "shopsimulator-retrieval-zh-v1"
 LABEL_GAINS = {

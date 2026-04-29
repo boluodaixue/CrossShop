@@ -10,7 +10,7 @@ from statistics import median
 
 from pydantic import ValidationError
 
-from globex_agent.domain.models import Platform, StandardItem
+from globex_agent.domain.catalog.models import Platform, StandardItem
 
 MAX_CATEGORY_PRICE_RATIO = Decimal("50")
 

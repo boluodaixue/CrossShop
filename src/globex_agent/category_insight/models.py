@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints
 
-from globex_agent.domain.models import NonEmptyText, StrictModel
+from globex_agent.domain.catalog.models import NonEmptyText, StrictModel
 
 CategoryCardType = Literal["bestseller", "attribute", "price_range"]
 CategoryInsightDepth = Literal["quick", "deep"]

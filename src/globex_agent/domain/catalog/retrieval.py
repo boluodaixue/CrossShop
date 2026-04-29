@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from globex_agent.domain.models import (
+from globex_agent.domain.catalog.models import (
     MarketLocale,
     NonEmptyText,
     Platform,
