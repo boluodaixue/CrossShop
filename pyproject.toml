@@ -9,7 +9,10 @@ description = "Course-driven learning implementation of the Globex ecommerce sea
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = [
+    "aiosqlite>=0.22.1",
     "faiss-cpu>=1.8,<2",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "langchain>=1,<2",
     "langchain-openai>=1,<2",
     "langgraph>=1,<2",
@@ -18,7 +21,10 @@ dependencies = [
     "pydantic>=2.8,<3",
     "python-dotenv>=1,<2",
     "pyyaml>=6,<7",
+    "redis>=8.1.0",
     "sentence-transformers>=3,<6",
+    "sqlalchemy[asyncio]>=2.0.52",
+    "uvicorn[standard]>=0.52.3",
 ]
 
 [dependency-groups]
