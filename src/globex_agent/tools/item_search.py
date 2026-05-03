@@ -17,7 +17,7 @@ from globex_agent.domain import (
     StandardItem,
     ToolIssue,
 )
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     CanonicalDedupSearchBackend,
     CanonicalListing,
     KeywordSearchBackend,

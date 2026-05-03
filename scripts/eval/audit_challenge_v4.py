@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from globex_agent.eval import RankingMetrics, aggregate_metrics, evaluate_ranking
-from globex_agent.recall import KeywordSearchBackend
-from globex_agent.recall.keyword import tokenize
-from globex_agent.recall.persistence import load_search_documents_jsonl
+from globex_agent.infrastructure.recall import KeywordSearchBackend
+from globex_agent.infrastructure.recall.keyword import tokenize
+from globex_agent.infrastructure.recall.persistence import load_search_documents_jsonl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

@@ -15,13 +15,13 @@ from globex_agent.category_insight import (
     CategoryInsightService,
     CategoryTaxonomy,
 )
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     DEFAULT_CATEGORY_INDEX,
     OpenSearchCategoryKnowledgeBase,
     OpenSearchHttpClient,
 )
-from globex_agent.recall.embedding import SentenceTransformerTextEncoder
-from globex_agent.recall.reranker import (
+from globex_agent.infrastructure.recall.embedding import SentenceTransformerTextEncoder
+from globex_agent.infrastructure.recall.reranker import (
     CrossEncoderReranker,
     SubprocessCrossEncoderReranker,
 )

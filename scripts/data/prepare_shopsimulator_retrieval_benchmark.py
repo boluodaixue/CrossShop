@@ -42,12 +42,12 @@ from globex_agent.eval.shopsimulator_retrieval import (
     stable_audit_query_ids,
     validate_annotation_for_case,
 )
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MODEL,
     SentenceTransformerTextEncoder,
     SQLiteFtsSearchBackend,
 )
-from globex_agent.recall.persistence import load_standard_item_documents_jsonl
+from globex_agent.infrastructure.recall.persistence import load_standard_item_documents_jsonl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROCESSED = PROJECT_ROOT / "data" / "processed"

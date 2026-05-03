@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from globex_agent.domain import StandardItem
-from globex_agent.recall.base import SearchDocument
-from globex_agent.recall.embedding import clean_product_body
+from globex_agent.infrastructure.recall.base import SearchDocument
+from globex_agent.infrastructure.recall.embedding import clean_product_body
 
 
 def load_search_documents_jsonl(path: Path) -> list[SearchDocument]:

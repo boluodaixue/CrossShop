@@ -1,5 +1,5 @@
 from globex_agent.category_insight import CategoryCard, rerank_category_hits
-from globex_agent.recall.category_kb import CategoryCardHit
+from globex_agent.infrastructure.recall.category_kb import CategoryCardHit
 
 
 class FakeRawTextReranker:

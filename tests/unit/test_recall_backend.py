@@ -1,4 +1,4 @@
-from globex_agent.recall import KeywordSearchBackend, SearchDocument
+from globex_agent.infrastructure.recall import KeywordSearchBackend, SearchDocument
 
 
 def test_keyword_backend_ranks_title_match_and_is_deterministic() -> None:

@@ -5,7 +5,7 @@ import pytest
 
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import MarketLocale, Platform
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     CatalogPartition,
     LocalizedFusionSearchBackend,
     PartitionedSearchBackendRouter,

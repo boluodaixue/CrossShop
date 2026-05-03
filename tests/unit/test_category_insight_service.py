@@ -4,7 +4,7 @@ import numpy as np
 
 from globex_agent.category_insight import CategoryCard
 from globex_agent.category_insight.service import CategoryInsightService, CategoryTaxonomy
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     CategoryCardHit,
     CategoryQueryType,
     CategorySearchResult,

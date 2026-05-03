@@ -1,18 +1,18 @@
 """Replaceable retrieval backends used by ItemSearch and offline evaluation."""
 
-from globex_agent.recall.base import (
+from globex_agent.infrastructure.recall.base import (
     RecallHit,
     RecallResult,
     SearchBackend,
     SearchDocument,
 )
-from globex_agent.recall.canonical import (
+from globex_agent.infrastructure.recall.canonical import (
     CanonicalDedupSearchBackend,
     CanonicalListing,
     ListingLanguage,
     PreferredLanguageSearchBackend,
 )
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     DEFAULT_CATEGORY_INDEX,
     DEFAULT_COARSE_K,
     WEIGHTS_BY_QUERY_TYPE,
@@ -28,7 +28,7 @@ from globex_agent.recall.category_kb import (
     classify_category_query,
     setup_category_index,
 )
-from globex_agent.recall.embedding import (
+from globex_agent.infrastructure.recall.embedding import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     ITEM_TEXT_FORMAT_VERSION,
@@ -39,20 +39,20 @@ from globex_agent.recall.embedding import (
     embedding_document_text,
     reranker_document_text,
 )
-from globex_agent.recall.fusion import (
+from globex_agent.infrastructure.recall.fusion import (
     FusionWeights,
     LocalizedFusionSearchBackend,
     WeightedFusionSearchBackend,
 )
-from globex_agent.recall.index import (
+from globex_agent.infrastructure.recall.index import (
     EmbeddingSearchBackend,
     ExactVectorIndex,
     FaissHNSWIndex,
     VectorIndex,
 )
-from globex_agent.recall.keyword import KeywordSearchBackend
-from globex_agent.recall.persistence import standard_item_to_search_document
-from globex_agent.recall.reranker import (
+from globex_agent.infrastructure.recall.keyword import KeywordSearchBackend
+from globex_agent.infrastructure.recall.persistence import standard_item_to_search_document
+from globex_agent.infrastructure.recall.reranker import (
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
     CrossEncoderReranker,
@@ -61,8 +61,11 @@ from globex_agent.recall.reranker import (
     RerankedSearchBackend,
     SubprocessCrossEncoderReranker,
 )
-from globex_agent.recall.router import CatalogPartition, PartitionedSearchBackendRouter
-from globex_agent.recall.sqlite_fts import SQLiteFtsSearchBackend
+from globex_agent.infrastructure.recall.router import (
+    CatalogPartition,
+    PartitionedSearchBackendRouter,
+)
+from globex_agent.infrastructure.recall.sqlite_fts import SQLiteFtsSearchBackend
 
 __all__ = [
     "DEFAULT_EMBEDDING_MAX_SEQ_LENGTH",

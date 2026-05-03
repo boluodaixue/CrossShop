@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from globex_agent.eval import RankingMetrics, aggregate_metrics, evaluate_ranking
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_RERANKER_MAX_LENGTH,
@@ -33,7 +33,7 @@ from globex_agent.recall import (
     SubprocessCrossEncoderReranker,
     WeightedFusionSearchBackend,
 )
-from globex_agent.recall.persistence import (
+from globex_agent.infrastructure.recall.persistence import (
     load_search_documents_jsonl,
     sha256,
     write_index_manifest,

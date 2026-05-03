@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from globex_agent.recall.category_kb import CategoryCardHit, category_retrieval_text
-from globex_agent.recall.reranker import RawTextPairReranker
+from globex_agent.infrastructure.recall.category_kb import CategoryCardHit, category_retrieval_text
+from globex_agent.infrastructure.recall.reranker import RawTextPairReranker
 
 RERANK_BYPASS_TOP_SCORE = 0.92
 RerankerDocumentMode = Literal["summary_only", "contextual"]

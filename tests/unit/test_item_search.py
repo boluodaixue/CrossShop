@@ -1,6 +1,6 @@
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import Platform, ResultStatus, SearchRequest
-from globex_agent.recall import RecallHit, RecallResult, SearchDocument
+from globex_agent.infrastructure.recall import RecallHit, RecallResult, SearchDocument
 from globex_agent.tools.item_search import search_items
 
 

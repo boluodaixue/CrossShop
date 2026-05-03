@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from globex_agent.domain import MarketLocale, Platform, StandardItem
-from globex_agent.recall import standard_item_to_search_document
+from globex_agent.infrastructure.recall import standard_item_to_search_document
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROCESSED_ROOT = PROJECT_ROOT / "data" / "processed"

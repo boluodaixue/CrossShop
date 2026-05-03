@@ -1,4 +1,4 @@
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     CanonicalDedupSearchBackend,
     CanonicalListing,
     PreferredLanguageSearchBackend,

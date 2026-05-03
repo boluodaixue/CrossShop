@@ -9,13 +9,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from globex_agent.recall.base import (
+from globex_agent.infrastructure.recall.base import (
     RecallHit,
     RecallResult,
     SearchBackend,
     SearchDocument,
 )
-from globex_agent.recall.embedding import reranker_document_text
+from globex_agent.infrastructure.recall.embedding import reranker_document_text
 
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 DEFAULT_RERANKER_MAX_LENGTH = 256

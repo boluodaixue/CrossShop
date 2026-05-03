@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     ITEM_TEXT_FORMAT_VERSION,
@@ -16,7 +16,7 @@ from globex_agent.recall import (
     FaissHNSWIndex,
     SentenceTransformerTextEncoder,
 )
-from globex_agent.recall.persistence import (
+from globex_agent.infrastructure.recall.persistence import (
     load_standard_item_documents_jsonl,
     sha256,
     write_index_manifest,

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from globex_agent.domain import MarketLocale, Platform
-from globex_agent.recall.base import RecallHit, RecallResult
+from globex_agent.infrastructure.recall.base import RecallHit, RecallResult
 
 _WORD_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
 _CJK_LOCALES = frozenset({MarketLocale.CN, MarketLocale.JP})

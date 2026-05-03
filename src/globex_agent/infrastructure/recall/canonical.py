@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from globex_agent.recall.base import RecallHit, RecallResult, SearchBackend
+from globex_agent.infrastructure.recall.base import RecallHit, RecallResult, SearchBackend
 
 ListingLanguage = Literal["en", "es", "ja", "zh"]
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     ITEM_TEXT_FORMAT_VERSION,
     EmbeddingSearchBackend,
     SentenceTransformerTextEncoder,
 )
-from globex_agent.recall.persistence import (
+from globex_agent.infrastructure.recall.persistence import (
     load_search_documents_jsonl,
     write_index_manifest,
 )

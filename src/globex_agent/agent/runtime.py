@@ -19,7 +19,7 @@ from globex_agent.domain import (
     ShoppingSummaryOutput,
     UserProfile,
 )
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     ListingLanguage,
     PairReranker,
     PartitionedSearchBackendRouter,

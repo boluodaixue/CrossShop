@@ -11,14 +11,14 @@ from typing import Any
 
 from globex_agent.domain import MarketLocale, Platform, RelevanceJudgment, RetrievalQuery
 from globex_agent.eval import RankingMetrics, aggregate_metrics, evaluate_ranking
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MODEL,
     EmbeddingSearchBackend,
     LocalizedFusionSearchBackend,
     SentenceTransformerTextEncoder,
     SQLiteFtsSearchBackend,
 )
-from globex_agent.recall.persistence import load_standard_item_documents_jsonl
+from globex_agent.infrastructure.recall.persistence import load_standard_item_documents_jsonl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

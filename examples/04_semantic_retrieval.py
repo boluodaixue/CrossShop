@@ -7,7 +7,7 @@ from pathlib import Path
 
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import Platform
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_RERANKER_MODEL,
     CrossEncoderReranker,

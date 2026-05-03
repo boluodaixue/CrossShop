@@ -9,8 +9,8 @@ from typing import Any, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from globex_agent.recall.base import RecallHit, RecallResult, SearchDocument
-from globex_agent.recall.embedding import TextEncoder, embedding_document_text
+from globex_agent.infrastructure.recall.base import RecallHit, RecallResult, SearchDocument
+from globex_agent.infrastructure.recall.embedding import TextEncoder, embedding_document_text
 
 
 class VectorIndex(Protocol):

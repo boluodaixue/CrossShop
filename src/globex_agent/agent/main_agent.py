@@ -20,7 +20,7 @@ from globex_agent.agent.runtime import AgentRuntime, agent_runtime_scope
 from globex_agent.agent.tool_registry import FULL_TOOL_SET, TERMINAL_TOOLS
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import SearchRequest, UserProfile
-from globex_agent.recall import (
+from globex_agent.infrastructure.recall import (
     ListingLanguage,
     PairReranker,
     PartitionedSearchBackendRouter,

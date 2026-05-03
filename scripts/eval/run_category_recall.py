@@ -14,19 +14,19 @@ from typing import Any
 from globex_agent.category_insight import rerank_category_hits
 from globex_agent.category_insight.reranking import RERANK_BYPASS_TOP_SCORE
 from globex_agent.eval import RankingMetrics, aggregate_metrics, evaluate_ranking
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     DEFAULT_CATEGORY_INDEX,
     CategoryQueryType,
     OpenSearchCategoryKnowledgeBase,
     OpenSearchHttpClient,
     classify_category_query,
 )
-from globex_agent.recall.embedding import (
+from globex_agent.infrastructure.recall.embedding import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     SentenceTransformerTextEncoder,
 )
-from globex_agent.recall.reranker import (
+from globex_agent.infrastructure.recall.reranker import (
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
     CrossEncoderReranker,

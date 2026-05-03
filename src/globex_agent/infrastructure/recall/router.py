@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from globex_agent.domain import MarketLocale, Platform
-from globex_agent.recall.base import SearchBackend
+from globex_agent.infrastructure.recall.base import SearchBackend
 
 
 @dataclass(frozen=True, slots=True)

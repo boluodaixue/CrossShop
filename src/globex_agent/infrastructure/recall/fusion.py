@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from globex_agent.recall.base import RecallHit, RecallResult, SearchBackend
+from globex_agent.infrastructure.recall.base import RecallHit, RecallResult, SearchBackend
 
 
 @dataclass(frozen=True, slots=True)

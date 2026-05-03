@@ -1,0 +1,1 @@
+"""Embedding infrastructure adapters."""

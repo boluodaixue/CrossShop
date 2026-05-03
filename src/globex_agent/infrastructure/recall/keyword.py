@@ -7,7 +7,7 @@ import re
 from collections import Counter
 from unicodedata import normalize
 
-from globex_agent.recall.base import RecallHit, RecallResult, SearchDocument
+from globex_agent.infrastructure.recall.base import RecallHit, RecallResult, SearchDocument
 
 _ASCII_TOKEN = re.compile(r"[a-z0-9%]+")
 _CJK_SEGMENT = re.compile(r"[\u3400-\u9fff]+")

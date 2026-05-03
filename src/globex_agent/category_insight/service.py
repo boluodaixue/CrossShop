@@ -21,14 +21,14 @@ from globex_agent.category_insight.reranking import (
     RerankerDocumentMode,
     rerank_category_hits,
 )
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     DEFAULT_COARSE_K,
     CategoryCardHit,
     CategoryQueryType,
     CategorySearchResult,
 )
-from globex_agent.recall.embedding import TextEncoder
-from globex_agent.recall.reranker import RawTextPairReranker
+from globex_agent.infrastructure.recall.embedding import TextEncoder
+from globex_agent.infrastructure.recall.reranker import RawTextPairReranker
 
 FINE_K_QUICK = 8
 FINE_K_DEEP = 15

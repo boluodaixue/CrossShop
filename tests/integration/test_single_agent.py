@@ -5,7 +5,7 @@ from globex_agent.agent import ScriptedShoppingModel, run_agent
 from globex_agent.agent.runtime import AgentRuntime, agent_runtime_scope
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain import SearchRequest, UserProfile
-from globex_agent.recall import RecallHit, RecallResult
+from globex_agent.infrastructure.recall import RecallHit, RecallResult
 from globex_agent.tools.agent_tools import item_search_tool
 
 

@@ -8,13 +8,13 @@ import json
 from pathlib import Path
 
 from globex_agent.category_insight import CategoryCard, admit_card
-from globex_agent.recall.category_kb import (
+from globex_agent.infrastructure.recall.category_kb import (
     DEFAULT_ANALYZER,
     DEFAULT_SEARCH_ANALYZER,
     OpenSearchHttpClient,
     setup_category_index,
 )
-from globex_agent.recall.embedding import (
+from globex_agent.infrastructure.recall.embedding import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
     SentenceTransformerTextEncoder,
