@@ -30,6 +30,9 @@ logs/
 artifacts/
 models/
 output/
+node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
 uploaded/
 data/raw/
 data/processed/
