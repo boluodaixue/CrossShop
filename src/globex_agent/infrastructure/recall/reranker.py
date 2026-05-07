@@ -136,7 +136,7 @@ class SubprocessCrossEncoderReranker:
             raise ValueError("max_length must be at least 8")
         self._python_executable = python_executable
         self._worker_path = worker_path or (
-            Path(__file__).resolve().parents[3]
+            Path(__file__).resolve().parents[4]
             / "scripts"
             / "reranker"
             / "bge_reranker_worker.py"

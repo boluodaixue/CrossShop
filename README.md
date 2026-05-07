@@ -4,6 +4,16 @@
 
 完整实施路线见 [ENGINEERING_PLAN.md](ENGINEERING_PLAN.md)。
 
+## 当前架构
+
+项目已迁移为 **LangGraph + DDD 洋葱架构**：
+
+- `src/globex_agent/domain/`：`StandardItem`、`CategoryCard`、Money、订单状态机、关税运费规则与端口。
+- `src/globex_agent/application/`：`catalog_search` / `order_usecases`、业务工具、Main/Search/Trade Agent 与编排器。
+- `src/globex_agent/infrastructure/`：召回（BGE-M3 + Faiss）、CategoryInsight OpenSearch 路径、事件总线、缓存、队列、JSON/SQL 仓储与韧性组件。
+- `src/globex_agent/presentation/`：FastAPI + WebSocket；`frontend/` 为 React 对话界面。
+- 主 Agent 默认单干，需要时通过批量 `task_dispatch(dispatches)` 并行调用 `search_agent` / `trade_agent`。
+
 Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构建记录见
 [docs/data/multiplatform_catalog.md](docs/data/multiplatform_catalog.md)。
 
@@ -38,6 +48,10 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 
 ## 当前状态
 
+- [x] LangGraph + DDD 架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地
+- [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
+- [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
+
 - [x] 初始化独立项目目录
 - [x] 建立 Codex 项目规则
 - [x] 关联课程资料路径
@@ -64,6 +78,9 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 .\.venv\Scripts\python.exe examples\03_single_agent.py --case 1
 .\.venv\Scripts\python.exe examples\03_single_agent.py --real --query "500元以内防泼水、不要真皮的通勤背包"
 .\.venv\Scripts\python.exe scripts\eval\run_recall_eval.py --prepare
+.\.venv\Scripts\python.exe -m uvicorn globex_agent.presentation.server:app --port 8000
+.\.venv\Scripts\python.exe scripts\smoke_e2e.py
+.\.venv\Scripts\python.exe scripts\eval_regression.py
 .\.venv\Scripts\python.exe scripts\index\build_item_index.py --batch-size 4
 .\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
 .\.venv\Scripts\python.exe examples\04_semantic_retrieval.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe

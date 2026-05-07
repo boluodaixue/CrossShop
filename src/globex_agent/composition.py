@@ -20,6 +20,10 @@ from globex_agent.application.usecases.order_usecases import (
     QueryOrderUseCase,
 )
 from globex_agent.catalog import LocalCatalog
+from globex_agent.category_insight import (
+    CategoryInsightService,
+    CategoryTaxonomy,
+)
 from globex_agent.infrastructure.cache.redis_cache import RedisCache
 from globex_agent.infrastructure.cache.semantic_cache import SemanticCache
 from globex_agent.infrastructure.embedding.bge_m3_embedding import BgeM3EmbeddingClient
@@ -45,11 +49,19 @@ from globex_agent.infrastructure.queue.redis_stream_queue import (
     RedisEventBackplane,
     RedisStreamTaskQueue,
 )
+from globex_agent.infrastructure.recall.category_kb import (
+    OpenSearchCategoryKnowledgeBase,
+    OpenSearchHttpClient,
+)
+from globex_agent.infrastructure.recall.embedding import SentenceTransformerTextEncoder
+from globex_agent.infrastructure.recall.reranker import (
+    CrossEncoderReranker,
+    SubprocessCrossEncoderReranker,
+)
 from globex_agent.infrastructure.rerank.bge_reranker import BgeReranker
 from globex_agent.infrastructure.resilience import CircuitBreakerRegistry
 from globex_agent.infrastructure.settings import Settings, load_settings
 from globex_agent.infrastructure.vector.faiss_product_index import FaissProductIndex
-from globex_agent.tools.category_insight import get_default_category_insight_service
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +167,7 @@ async def build_container() -> Container:
         settings,
         catalog_search,
         bus,
-        get_default_category_insight_service(),
+        _build_category_insight_service(settings),
         circuit_registry,
     )
     trade_factory = TradeAgentFactory(
@@ -196,4 +208,40 @@ async def build_container() -> Container:
         embedder=embedder,
         vector_index=vector_index,
         db_engine=db_engine,
+    )
+
+
+def _build_category_insight_service(settings: Settings) -> CategoryInsightService:
+    taxonomy_path = settings.category_taxonomy
+    if not taxonomy_path.is_absolute():
+        taxonomy_path = PROJECT_ROOT / taxonomy_path
+    encoder = SentenceTransformerTextEncoder(
+        local_files_only=settings.models_local_only
+    )
+    knowledge_base = OpenSearchCategoryKnowledgeBase(
+        OpenSearchHttpClient(settings.opensearch_endpoint, timeout=30),
+        index_name=settings.category_index,
+    )
+    reranker = None
+    if settings.category_reranker_enabled:
+        if settings.category_reranker_python:
+            reranker = SubprocessCrossEncoderReranker(
+                Path(settings.category_reranker_python),
+                device=settings.category_reranker_device,
+                batch_size=settings.category_reranker_batch_size,
+                use_fp16=not settings.category_reranker_fp32,
+                local_files_only=settings.models_local_only,
+            )
+        else:
+            reranker = CrossEncoderReranker(
+                device="cpu",
+                batch_size=1,
+                local_files_only=settings.models_local_only,
+            )
+    return CategoryInsightService(
+        CategoryTaxonomy.from_json(taxonomy_path),
+        encoder,
+        knowledge_base,
+        reranker,
+        reranker_document_mode=settings.category_reranker_document_mode,
     )

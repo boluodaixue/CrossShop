@@ -16,8 +16,8 @@ from globex_agent.infrastructure.recall import (
     RerankedSearchBackend,
     SentenceTransformerTextEncoder,
     SubprocessCrossEncoderReranker,
+    standard_item_to_search_document,
 )
-from globex_agent.tools.item_search import item_to_search_document, search_items
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = PROJECT_ROOT / "data" / "demo" / "products.jsonl"
@@ -38,18 +38,13 @@ def main() -> None:
     parser.add_argument("--reranker-python", type=Path)
     parser.add_argument("--reranker-device", default="cuda:0")
     parser.add_argument("--reranker-fp32", action="store_true")
-    parser.add_argument(
-        "--runtime-reranker",
-        action="store_true",
-        help="Explicitly opt in to Reranker inside runtime ItemSearch.",
-    )
     parser.add_argument("--local-files-only", action="store_true")
     args = parser.parse_args()
 
     platform = Platform(args.platform)
     catalog = LocalCatalog.from_jsonl(CATALOG_PATH, strict=True).catalog
     documents = [
-        item_to_search_document(item)
+        standard_item_to_search_document(item)
         for item in catalog.items
         if item.platform is platform and item.is_available
     ]
@@ -102,18 +97,6 @@ def main() -> None:
             for hit in result.hits
         )
         print(f"{name}: {ranking}")
-
-    item_search_output = search_items(
-        catalog,
-        args.query,
-        platform,
-        top_k=args.top_k,
-        backend=embedding,
-        reranker=pair_reranker if args.runtime_reranker else None,
-    )
-    print("ItemSearch candidates:")
-    for candidate in item_search_output.candidates:
-        print(f"- {candidate.item_id}: {candidate.title}")
 
 
 if __name__ == "__main__":

@@ -37,6 +37,9 @@ uploaded/
 data/raw/
 data/processed/
 data/traces/
+data/preferences/
+data/sessions/
+data/conversations/
 *.faiss
 *.index
 *.log

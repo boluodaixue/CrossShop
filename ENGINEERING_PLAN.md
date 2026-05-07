@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent 完整工程计划
 
-> 状态：阶段 5 已关闭；阶段 6 中文淘宝版整改完成（v1 基线 + 全量精排对照）；阶段 7 未开始
+> 状态：阶段 5 已关闭；阶段 6 中文淘宝版整改完成（v1 基线 + 全量精排对照）；架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地
 > 当前阅读进度：已读完第 15 章
 > 当前代码状态：淘宝 shopsimulator_retrieval_v1 已冻结 115 query 并出 FTS/BGE-M3/Hybrid/Reranker 指标；商品 runtime 接 canonical ANN fallback，知识卡 runtime 默认动态 Hybrid 且 Reranker 显式 opt-in
 > 实施原则：离线优先、纵向切片、接口与实现解耦、每阶段必须实际运行并验收
@@ -8,6 +8,10 @@
 ## 1. 项目目标
 
 实现一个可独立演示、可评测、可继续演进的电商搜索 Agent。用户用自然语言描述预算、用途和偏好后，系统能够：
+
+架构迁移以 `docs/architecture_migration_handoff.md` 为唯一执行依据：主 Agent 默认单干，
+批量 `task_dispatch` 并行调度 `search_agent` / `trade_agent`；商品继续用 `StandardItem`，
+知识卡继续用 `CategoryCard`；不引入 AgentScope / Qdrant / Product-Sku 领域模型。
 
 1. 理解并结构化购物需求。
 2. 从本地商品数据中召回候选商品。

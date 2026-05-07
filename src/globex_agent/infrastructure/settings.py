@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 
@@ -67,13 +67,22 @@ def load_settings() -> Settings:
 
     data_dir = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data"))).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
-    return Settings(
-        llm_base_url=os.getenv(
-            "LLM_BASE_URL",
+    llm_base_url = os.getenv(
+        "LLM_BASE_URL",
+        os.getenv(
+            "OPENAI_BASE_URL",
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ),
-        llm_api_key=os.getenv("LLM_API_KEY", ""),
-        llm_model=os.getenv("LLM_MODEL", "qwen3-max"),
+    )
+    llm_api_key = os.getenv(
+        "LLM_API_KEY",
+        os.getenv("OPENAI_API_KEY", ""),
+    )
+    llm_model = os.getenv("LLM_MODEL", os.getenv("LLM_MAIN", "qwen3-max"))
+    return Settings(
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
         llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL", "qwen-plus"),
         llm_judge=os.getenv("LLM_JUDGE", ""),
         port=int(os.getenv("PORT", "8000")),

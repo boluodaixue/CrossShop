@@ -1,0 +1,104 @@
+# Globex 全栈编排：app + worker + Redis + OpenSearch + React 前端
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen3-max}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
+      LLM_JUDGE: ${LLM_JUDGE:-}
+      DATABASE_URL: ${DATABASE_URL:-file}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
+      QUEUE_ENABLED: ${QUEUE_ENABLED:-0}
+      GLOBEX_OPENSEARCH_ENDPOINT: http://opensearch:9200
+      GLOBEX_CATEGORY_INDEX: ${GLOBEX_CATEGORY_INDEX:-globex_category_kb_taobao_zh_v1}
+      DATA_DIR: /app/data
+      CORS_ORIGINS: http://localhost:5173
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "globex_agent.worker"]
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen3-max}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
+      DATABASE_URL: ${DATABASE_URL:-file}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
+      QUEUE_ENABLED: "1"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      GLOBEX_OPENSEARCH_ENDPOINT: http://opensearch:9200
+      DATA_DIR: /app/data
+    volumes:
+      - app-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      bootstrap.memory_lock: "true"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    restart: unless-stopped
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE: http://localhost:8000
+    volumes:
+      - ../frontend:/app
+      - frontend-modules:/app/node_modules
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  app-data:
+  redis-data:
+  opensearch-data:
+  frontend-modules:
