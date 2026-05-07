@@ -19,6 +19,11 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return raw.strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _local_model_dir(name: str, fallback: str) -> str:
+    path = Path(name)
+    return str(path) if path.is_dir() else fallback
+
+
 @dataclass(frozen=True)
 class Settings:
     llm_base_url: str
@@ -154,10 +159,16 @@ def load_settings() -> Settings:
             "GLOBEX_CATEGORY_RERANKER_DOCUMENT_MODE",
             "contextual",
         ),
-        bge_m3_model=os.getenv("BGE_M3_MODEL", "BAAI/bge-m3"),
+        bge_m3_model=os.getenv(
+            "BGE_M3_MODEL",
+            _local_model_dir("D:/models/bge-m3", "BAAI/bge-m3"),
+        ),
         bge_reranker_model=os.getenv(
             "BGE_RERANKER_MODEL",
-            "BAAI/bge-reranker-v2-m3",
+            _local_model_dir(
+                "D:/models/bge-reranker-v2-m3",
+                "BAAI/bge-reranker-v2-m3",
+            ),
         ),
         bge_reranker_python=os.getenv("BGE_RERANKER_PYTHON", ""),
         faiss_index_path=Path(

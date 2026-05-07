@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from globex_agent.application.agents.base import LangGraphAgent
@@ -52,5 +53,6 @@ class TradeAgentFactory:
             model or create_chat_model(self._settings),
             tools=self.build_tools(),
             prompt=prompts["system_prompt"],
+            checkpointer=InMemorySaver(),
         )
         return LangGraphAgent(prompts["name"], graph)

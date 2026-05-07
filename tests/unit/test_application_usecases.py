@@ -73,6 +73,17 @@ class TestCatalogSearch:
         assert all("US" in hit["ships_to"] for hit in result["hits"])
         assert result.get("filtered_out")
 
+    async def test_cn_ship_to_keeps_aliexpress_catalog(self, item_repo) -> None:
+        usecase = CatalogSearchUseCase(item_repo)
+        result = await usecase.execute(
+            ProductSearchSpec(
+                normalized_query="Budget Wave H1 头戴式降噪耳机",
+                ship_to="CN",
+                top_k=5,
+            )
+        )
+        assert any(hit["item_id"].startswith("aliexpress:") for hit in result["hits"])
+
     async def test_no_hit_returns_empty(self, item_repo) -> None:
         result = await CatalogSearchUseCase(item_repo).execute(
             ProductSearchSpec(normalized_query="quantum flux capacitor")

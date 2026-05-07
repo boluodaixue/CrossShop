@@ -137,6 +137,47 @@ class ScriptedMigrationModel(BaseChatModel):
         )
 
 
+class RecallChatModel(BaseChatModel):
+    """Return the previous assistant message on the second turn."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "globex-recall-model"
+
+    def bind_tools(
+        self,
+        tools,
+        *,
+        tool_choice: str | None = None,
+        **kwargs,
+    ) -> Runnable:
+        del tools, tool_choice, kwargs
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager=None,
+        **kwargs,
+    ) -> ChatResult:
+        del stop, run_manager, kwargs
+        for message in reversed(messages):
+            if isinstance(message, AIMessage) and message.content:
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(
+                                content=f"recalled:{message.content}"
+                            )
+                        )
+                    ]
+                )
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="first"))]
+        )
+
+
 class FakeSubAgent:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -197,3 +238,13 @@ class TestMainAgentPaths:
             model=ScriptedMigrationModel()
         )
         assert await agent.reply("派发下单子代理") == "派发完成"
+
+    async def test_multiturn_context_retained_with_checkpointer(self) -> None:
+        agent = _build_main_factory(RecallChatModel()).build(
+            model=RecallChatModel()
+        )
+        assert await agent.reply("first", thread_id="same-thread") == "first"
+        assert (
+            await agent.reply("second", thread_id="same-thread")
+            == "recalled:first"
+        )

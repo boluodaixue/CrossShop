@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from globex_agent.application.agents.main_agent import (
     MainAgentFactory,
     SessionRegistry,
@@ -24,6 +26,7 @@ from globex_agent.category_insight import (
     CategoryInsightService,
     CategoryTaxonomy,
 )
+from globex_agent.domain.catalog.ports.item_repository import ItemRepository
 from globex_agent.infrastructure.cache.redis_cache import RedisCache
 from globex_agent.infrastructure.cache.semantic_cache import SemanticCache
 from globex_agent.infrastructure.embedding.bge_m3_embedding import BgeM3EmbeddingClient
@@ -45,6 +48,9 @@ from globex_agent.infrastructure.persistence.sql.repositories import (
     bootstrap_schema,
     create_engine,
 )
+from globex_agent.infrastructure.persistence.sqlite_item_repository import (
+    SqliteItemRepository,
+)
 from globex_agent.infrastructure.queue.redis_stream_queue import (
     RedisEventBackplane,
     RedisStreamTaskQueue,
@@ -54,6 +60,7 @@ from globex_agent.infrastructure.recall.category_kb import (
     OpenSearchHttpClient,
 )
 from globex_agent.infrastructure.recall.embedding import SentenceTransformerTextEncoder
+from globex_agent.infrastructure.recall.index import FaissHNSWIndex
 from globex_agent.infrastructure.recall.reranker import (
     CrossEncoderReranker,
     SubprocessCrossEncoderReranker,
@@ -61,12 +68,21 @@ from globex_agent.infrastructure.recall.reranker import (
 from globex_agent.infrastructure.rerank.bge_reranker import BgeReranker
 from globex_agent.infrastructure.resilience import CircuitBreakerRegistry
 from globex_agent.infrastructure.settings import Settings, load_settings
-from globex_agent.infrastructure.vector.faiss_product_index import FaissProductIndex
+from globex_agent.infrastructure.vector.faiss_product_index import (
+    FaissProductIndex,
+    PartitionedFaissProductIndex,
+)
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEMO_PRODUCTS_PATH = PROJECT_ROOT / "data" / "demo" / "products.jsonl"
+_PARTITIONS = (
+    ("amazon", "us"),
+    ("amazon", "es"),
+    ("amazon", "jp"),
+    ("taobao", "cn"),
+)
 
 
 @dataclass
@@ -80,9 +96,9 @@ class Container:
     backplane: RedisEventBackplane | None
     query_order: QueryOrderUseCase
     cancel_order: CancelOrderUseCase
-    item_repo: InMemoryItemRepository
+    item_repo: ItemRepository
     embedder: BgeM3EmbeddingClient
-    vector_index: FaissProductIndex
+    vector_index: FaissProductIndex | PartitionedFaissProductIndex
     db_engine: object | None
 
     async def startup(self) -> None:
@@ -112,14 +128,13 @@ async def build_container() -> Container:
         model_name=settings.bge_m3_model,
         local_files_only=settings.models_local_only,
     )
-    vector_index = FaissProductIndex()
+    vector_index = _build_vector_index()
     reranker = BgeReranker(
         model_name=settings.bge_reranker_model,
         local_files_only=settings.models_local_only,
     )
 
-    catalog = LocalCatalog.from_jsonl(DEMO_PRODUCTS_PATH, strict=True).catalog
-    item_repo = InMemoryItemRepository(list(catalog.items))
+    item_repo = _build_item_repository()
     catalog_search = CatalogSearchUseCase(
         item_repo,
         embedder=embedder,
@@ -209,6 +224,51 @@ async def build_container() -> Container:
         vector_index=vector_index,
         db_engine=db_engine,
     )
+
+
+def _build_item_repository() -> ItemRepository:
+    database_paths = [
+        PROJECT_ROOT / "data" / "processed" / "databases" / "taobao" / "catalog.sqlite3",
+        PROJECT_ROOT / "data" / "processed" / "databases" / "amazon" / "catalog.sqlite3",
+    ]
+    existing = [path for path in database_paths if path.exists()]
+    if existing:
+        return SqliteItemRepository(existing)
+    catalog = LocalCatalog.from_jsonl(DEMO_PRODUCTS_PATH, strict=True).catalog
+    return InMemoryItemRepository(list(catalog.items))
+
+
+def _build_vector_index() -> FaissProductIndex | PartitionedFaissProductIndex:
+    vector_index = PartitionedFaissProductIndex()
+    loaded = False
+    for platform, locale in _PARTITIONS:
+        partition_id = f"{platform}:{locale}"
+        faiss_path = (
+            PROJECT_ROOT
+            / "output"
+            / "index"
+            / "catalog"
+            / platform
+            / locale
+            / "bge-m3-hnsw-ip.faiss"
+        )
+        embeddings_path = (
+            PROJECT_ROOT
+            / "output"
+            / "embeddings"
+            / "catalog"
+            / platform
+            / locale
+            / "bge-m3-items.npz"
+        )
+        if not faiss_path.exists() or not embeddings_path.exists():
+            continue
+        with np.load(embeddings_path, allow_pickle=False) as payload:
+            document_ids = payload["document_ids"].astype(str).tolist()
+        index = FaissHNSWIndex.load(faiss_path, document_ids)
+        vector_index.add_partition(partition_id, index)
+        loaded = True
+    return vector_index if loaded else FaissProductIndex()
 
 
 def _build_category_insight_service(settings: Settings) -> CategoryInsightService:

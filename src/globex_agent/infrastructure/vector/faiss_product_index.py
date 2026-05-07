@@ -105,3 +105,55 @@ class FaissProductIndex(ItemVectorIndex):
     async def close(self) -> None:
         self._index = None
         self._items = {}
+
+
+class PartitionedFaissProductIndex(ItemVectorIndex):
+    """Search multiple saved platform/locale Faiss indexes and merge results."""
+
+    def __init__(self) -> None:
+        self._partitions: list[tuple[str, FaissHNSWIndex]] = []
+
+    def add_partition(self, partition_id: str, index: FaissHNSWIndex) -> None:
+        self._partitions.append((partition_id, index))
+
+    async def ensure_ready(self, vector_dim: int) -> None:
+        return None
+
+    async def upsert_items(
+        self,
+        items: list[StandardItem],
+        embeddings: list[list[float]],
+    ) -> None:
+        raise RuntimeError("PartitionedFaissProductIndex is read-only")
+
+    async def search(
+        self,
+        embedding: list[float],
+        top_n: int,
+    ) -> list[VectorHit]:
+        return await asyncio.to_thread(self._search_sync, embedding, top_n)
+
+    def _search_sync(
+        self,
+        embedding: list[float],
+        top_n: int,
+    ) -> list[VectorHit]:
+        rows: list[tuple[float, str]] = []
+        vector = np.asarray(embedding, dtype=np.float32)
+        for _partition_id, index in self._partitions:
+            hits = index.search(vector, top_k=max(1, top_n))
+            rows.extend((hit.score, hit.document_id) for hit in hits)
+        rows.sort(key=lambda row: (-row[0], row[1]))
+        seen: set[str] = set()
+        ranked: list[VectorHit] = []
+        for score, item_id in rows:
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            ranked.append(VectorHit(item_id=item_id, score=score))
+            if len(ranked) >= top_n:
+                break
+        return ranked
+
+    async def close(self) -> None:
+        self._partitions.clear()

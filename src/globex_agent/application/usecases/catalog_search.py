@@ -151,7 +151,8 @@ class CatalogSearchUseCase:
     def _reject_reason(self, item: StandardItem, spec: ProductSearchSpec) -> str | None:
         if not item.is_available:
             return "item_unavailable"
-        if spec.ship_to and spec.ship_to not in derived_ships_to(item):
+        ships_to, _ = derived_ships_to(item)
+        if spec.ship_to and spec.ship_to not in ships_to:
             return "ship_to_unavailable"
         if not self._within_price_cap(item, spec):
             return "over_price_cap"
