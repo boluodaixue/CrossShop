@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent 完整工程计划
 
-> 状态：阶段 5 已关闭；阶段 6 中文淘宝版整改完成（v1 基线 + 全量精排对照）；架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地
+> 状态：阶段 5 已关闭；阶段 6 中文淘宝版整改完成（v1 基线 + 全量精排对照）；架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地；运行时已接入 SQLite + Faiss + Reranker，最新应用级回归 10/13 PASS（平均 0.883）
 > 当前阅读进度：已读完第 15 章
 > 当前代码状态：淘宝 shopsimulator_retrieval_v1 已冻结 115 query 并出 FTS/BGE-M3/Hybrid/Reranker 指标；商品 runtime 接 canonical ANN fallback，知识卡 runtime 默认动态 Hybrid 且 Reranker 显式 opt-in
 > 实施原则：离线优先、纵向切片、接口与实现解耦、每阶段必须实际运行并验收

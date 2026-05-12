@@ -51,6 +51,8 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] LangGraph + DDD 架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地
 - [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
 - [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
+- [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
+- [x] 最新应用级回归 `10/13 PASS`，平均分 `0.883`，报告见 [eval/report-20260819-053845.md](eval/report-20260819-053845.md)
 
 - [x] 初始化独立项目目录
 - [x] 建立 Codex 项目规则
