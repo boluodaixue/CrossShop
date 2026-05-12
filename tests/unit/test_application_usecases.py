@@ -63,6 +63,7 @@ class TestCatalogSearch:
             "ebay",
         }
         assert result["recall_strategy"] == "keyword_bm25"
+        assert result["hits"][0]["price_source"] == "observed"
 
     async def test_ship_to_filter_and_top_k(self, item_repo) -> None:
         usecase = CatalogSearchUseCase(item_repo)

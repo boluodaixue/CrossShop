@@ -16,7 +16,6 @@ import yaml
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from globex_agent.catalog import LocalCatalog  # noqa: E402
 from globex_agent.domain.catalog.exchange_rate import ExchangeRateTable  # noqa: E402
 from globex_agent.infrastructure.transient import is_transient_error  # noqa: E402
 
@@ -38,15 +37,14 @@ JUDGE_SYSTEM_PROMPT = (
 
 
 def build_ground_truth() -> str:
-    catalog = LocalCatalog.from_jsonl(
-        PROJECT_ROOT / "data" / "demo" / "products.jsonl",
-        strict=True,
-    ).catalog
+    with (PROJECT_ROOT / "eval" / "cases.yaml").open(encoding="utf-8") as source:
+        cases_data = yaml.safe_load(source)
+    facts = cases_data.get("facts", [])
     lines = ["| item_id | 标题 | 品类 | 价格 |", "|---|---|---|---|"]
-    for item in catalog.items:
+    for fact in facts:
         lines.append(
-            f"| {item.item_id} | {item.title} | {' / '.join(item.category_path)} "
-            f"| {item.price_cny} CNY |"
+            f"| {fact['item_id']} | {fact['title']} | {fact['category']} "
+            f"| {fact['price_cny']} CNY |"
         )
     rates = ExchangeRateTable()
     rate_text = ", ".join(
@@ -55,6 +53,10 @@ def build_ground_truth() -> str:
     )
     lines.append("")
     lines.append(f"系统汇率表：{rate_text}")
+    lines.append(
+        "系统运费/关税规则：寄往中国，单件基础运费 25 元；"
+        "关税按商品小计超出免税额度的部分计算，个人物品免税额度内关税为 0。"
+    )
     return "\n".join(lines)
 
 

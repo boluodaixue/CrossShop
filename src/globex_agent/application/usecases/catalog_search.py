@@ -51,6 +51,7 @@ class ProductCard:
     ships_to: list[str]
     ships_to_source: str
     price_major: float | None
+    price_source: str
     currency: str
     highlights: list[str]
     variants: list[dict]
@@ -69,6 +70,7 @@ class ProductCard:
             "ships_to": self.ships_to,
             "ships_to_source": self.ships_to_source,
             "price_major": self.price_major,
+            "price_source": self.price_source,
             "currency": self.currency,
             "highlights": self.highlights,
             "variants": self.variants,
@@ -254,6 +256,7 @@ class CatalogSearchUseCase:
             ships_to=list(ships_to),
             ships_to_source=ships_source,
             price_major=price.to_major_units() if price is not None else None,
+            price_source=item.price_source.value,
             currency=item.currency_raw.value if item.currency_raw else "CNY",
             highlights=[
                 f"{key}: {value}"

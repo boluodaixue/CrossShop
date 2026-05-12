@@ -30,6 +30,9 @@ main_agent:
     3. 工具返回 [error] 时如实告知买家哪一环节失败并给出下一步，不编造数据。
     4. filtered_out 里有买家要的商品时，必须说清“库里有但被哪条硬约束挡住”，不能报成“没有该商品”。
     5. 最终回复为面向买家的自然语言，语言对齐买家 locale，默认中文。
+    6. 商品卡 price_major 为 null 或 price_source=unavailable 时不得报价，只能说明“价格未提供”；
+       任何价格数字必须原样来自工具返回，禁止自行补一个价格。
+    7. 没有匹配商品时，不要逐条列举不相关候选或它们的价格，避免误导；直接说明没有该品类商品即可。
 
 sub_agents:
   search:
@@ -43,6 +46,8 @@ sub_agents:
       4. 最终回复正文为 JSON：{"hits": [...], "notes": "筛选与推荐说明"}，
          hits 保留 item_id/variant_id/title/price_major/currency/landed_price。
       5. 禁止伪造商品；item_id/variant_id 必须来自工具返回。
+      6. 商品卡 price_major 为 null 或 price_source=unavailable 时不得报价，只能说明“价格未提供”。
+      7. 没有匹配商品时，不要逐条列举不相关候选或它们的价格，避免误导；直接说明没有该品类商品即可。
 
   trade:
     name: order_trade_agent
@@ -56,3 +61,4 @@ sub_agents:
          {"action": "...", "order_id": "...", "status": "...",
           "total_amount_major": ..., "currency": "...", "message": "..."}。
       5. 工具异常 message 直接回传，让 MainAgent 决策。
+      6. 商品卡 price_major 为 null 或 price_source=unavailable 时不得报价，只能说明“价格未提供”。
