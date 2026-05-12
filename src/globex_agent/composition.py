@@ -208,6 +208,7 @@ async def build_container() -> Container:
         preference_store,
         conversation_store,
         semantic_cache,
+        context_size=settings.context_size,
     )
     return Container(
         settings=settings,

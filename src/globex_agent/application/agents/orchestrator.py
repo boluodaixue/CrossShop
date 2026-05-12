@@ -51,12 +51,14 @@ class MainAgentOrchestrator:
         preference_store: PreferenceStore,
         conversation_store: ConversationStore | None = None,
         semantic_cache: SemanticCache | None = None,
+        context_size: int = 128000,
     ) -> None:
         self._sessions = sessions
         self._bus = bus
         self._preference_store = preference_store
         self._conversation_store = conversation_store
         self._semantic_cache = semantic_cache
+        self._context_size = context_size
 
     async def handle_intent(self, intent: SubmitIntentInput) -> SubmitIntentOutput:
         session_id = intent.shopping_session_id
@@ -71,7 +73,7 @@ class MainAgentOrchestrator:
         trace = self._bus.subscribe(session_id) if self._conversation_store else None
         final_text = ""
         try:
-            has_history = False
+            has_history = await self._has_history(session_id)
             cached = await self._lookup_cache(intent, has_history)
             if cached is not None:
                 final_text = cached
@@ -79,6 +81,17 @@ class MainAgentOrchestrator:
                 return SubmitIntentOutput(session_id, final_text)
 
             agent = await self._sessions.get_or_create(session_id)
+            if has_history:
+                compressed = agent.compress_context(
+                    session_id,
+                    max_messages=max(4, self._context_size // 1000),
+                )
+                if compressed:
+                    self._bus.publish(
+                        session_id,
+                        "context.compressed",
+                        compressed,
+                    )
             query = await self._build_query(intent)
             final_text = await self._reply_with_retry(
                 session_id,
@@ -102,6 +115,16 @@ class MainAgentOrchestrator:
                 trace,
             )
             ShoppingContext.reset(token)
+
+    async def _has_history(self, session_id: str) -> bool:
+        if self._conversation_store is None:
+            return False
+        try:
+            turns = await self._conversation_store.list_turns(session_id, limit=1)
+        except Exception as err:  # noqa: BLE001 - cache safety must not block reply
+            logger.warning("读取会话历史失败，按无历史处理：%s", err)
+            return False
+        return bool(turns)
 
     async def _build_query(self, intent: SubmitIntentInput) -> str:
         try:
@@ -130,7 +153,11 @@ class MainAgentOrchestrator:
         last_error: Exception | None = None
         for attempt in range(_MAX_TURN_RETRIES + 1):
             try:
-                return await agent.reply(query, thread_id=session_id)
+                return await agent.reply(
+                    query,
+                    thread_id=session_id,
+                    event_sink=self._publish_event,
+                )
             except Exception as err:  # noqa: BLE001
                 if not is_transient_error(err) or attempt >= _MAX_TURN_RETRIES:
                     raise
@@ -146,6 +173,10 @@ class MainAgentOrchestrator:
                 )
                 await asyncio.sleep(delay)
         raise last_error if last_error else RuntimeError("reply 重试耗尽")
+
+    async def _publish_event(self, event_type: str, payload: dict) -> None:
+        session_id = ShoppingContext.current_session_id()
+        self._bus.publish(session_id, event_type, payload)
 
     async def _lookup_cache(self, intent: SubmitIntentInput, has_history: bool) -> str | None:
         if self._semantic_cache is None:

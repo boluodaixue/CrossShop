@@ -13,6 +13,7 @@ from globex_agent.application.tools.order_tools import (
     build_create_order_tool,
     build_query_order_tool,
 )
+from globex_agent.application.tools.resilient import wrap_tool
 from globex_agent.application.usecases.order_usecases import (
     CancelOrderUseCase,
     PlaceOrderUseCase,
@@ -41,17 +42,24 @@ class TradeAgentFactory:
         self._circuit_registry = circuit_registry
 
     def build_tools(self):
-        return [
+        tools = [
             build_create_order_tool(self._place_order, self._bus),
             build_query_order_tool(self._query_order, self._bus),
             build_cancel_order_tool(self._cancel_order, self._bus),
         ]
+        return tools
 
     def build(self, model: BaseChatModel | None = None) -> LangGraphAgent:
         prompts = load_prompts()["sub_agents"]["trade"]
+        tools = self.build_tools()
+        if self._circuit_registry is not None:
+            tools = [
+                wrap_tool(tool, self._circuit_registry, self._bus)
+                for tool in tools
+            ]
         graph = create_react_agent(
-            model or create_chat_model(self._settings),
-            tools=self.build_tools(),
+            model or create_chat_model(self._settings, self._bus),
+            tools=tools,
             prompt=prompts["system_prompt"],
             checkpointer=InMemorySaver(),
         )

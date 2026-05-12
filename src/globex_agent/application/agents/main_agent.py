@@ -13,6 +13,7 @@ from globex_agent.application.prompts.loader import load_prompts
 from globex_agent.application.tools.remember_preference_tool import (
     build_remember_preference_tool,
 )
+from globex_agent.application.tools.resilient import wrap_tool
 from globex_agent.application.tools.task_dispatch_tool import (
     build_task_dispatch_tool,
 )
@@ -45,18 +46,27 @@ class MainAgentFactory:
         tools = [
             *self._search_factory.build_tools(),
             *self._trade_factory.build_tools(),
+        ]
+        tools.append(
             build_task_dispatch_tool(
                 self._search_factory,
                 self._trade_factory,
                 self._bus,
-            ),
+            )
+        )
+        tools.append(
             build_remember_preference_tool(
                 self._preference_store,
                 self._bus,
-            ),
+            )
+        )
+        if self._circuit_registry is not None:
+            tools = [
+                wrap_tool(tool, self._circuit_registry, self._bus)
+                for tool in tools
         ]
         graph = create_react_agent(
-            model or create_chat_model(self._settings),
+            model or create_chat_model(self._settings, self._bus),
             tools=tools,
             prompt=prompts["system_prompt"],
             checkpointer=InMemorySaver(),
@@ -78,14 +88,20 @@ class SessionRegistry:
 
     async def get_or_create(self, shopping_session_id: str) -> LangGraphAgent:
         if shopping_session_id not in self._agents:
-            self._agents[shopping_session_id] = self._main_factory.build()
+            agent = self._main_factory.build()
+            state_json = await self._session_store.load(shopping_session_id)
+            if state_json:
+                agent.restore_checkpoint_state(
+                    state_json,
+                    shopping_session_id,
+                )
+            self._agents[shopping_session_id] = agent
         return self._agents[shopping_session_id]
 
     async def persist(self, shopping_session_id: str) -> None:
-        """Persist a lightweight marker; message state lives in the graph checkpointer."""
+        """Persist the latest LangGraph checkpoint for this shopping session."""
 
-        if shopping_session_id in self._agents:
-            await self._session_store.save(
-                shopping_session_id,
-                '{"session_id":' f'"{shopping_session_id}"' "}",
-            )
+        agent = self._agents.get(shopping_session_id)
+        if agent is not None:
+            state_json = agent.checkpoint_state(shopping_session_id)
+            await self._session_store.save(shopping_session_id, state_json)

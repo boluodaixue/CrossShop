@@ -14,6 +14,7 @@ from globex_agent.application.tools.category_insight_tool import (
 from globex_agent.application.tools.product_search_tool import (
     build_product_search_tool,
 )
+from globex_agent.application.tools.resilient import wrap_tool
 from globex_agent.application.tools.web_search_tool import build_web_search_tool
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
 from globex_agent.category_insight.service import CategoryInsightService
@@ -51,9 +52,15 @@ class SearchAgentFactory:
 
     def build(self, model: BaseChatModel | None = None) -> LangGraphAgent:
         prompts = load_prompts()["sub_agents"]["search"]
+        tools = self.build_tools()
+        if self._circuit_registry is not None:
+            tools = [
+                wrap_tool(tool, self._circuit_registry, self._bus)
+                for tool in tools
+            ]
         graph = create_react_agent(
-            model or create_chat_model(self._settings),
-            tools=self.build_tools(),
+            model or create_chat_model(self._settings, self._bus),
+            tools=tools,
             prompt=prompts["system_prompt"],
             checkpointer=InMemorySaver(),
         )

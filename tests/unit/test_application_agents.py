@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -10,7 +11,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from pydantic import PrivateAttr
 
-from globex_agent.application.agents.main_agent import MainAgentFactory
+from globex_agent.application.agents.main_agent import (
+    MainAgentFactory,
+    SessionRegistry,
+)
 from globex_agent.application.agents.search_agent import SearchAgentFactory
 from globex_agent.application.agents.trade_agent import TradeAgentFactory
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
@@ -178,12 +182,66 @@ class RecallChatModel(BaseChatModel):
         )
 
 
+class FirstHumanRecallModel(BaseChatModel):
+    """Return the first human message from history to prove checkpoint isolation."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "globex-first-human-recall-model"
+
+    def bind_tools(
+        self,
+        tools,
+        *,
+        tool_choice: str | None = None,
+        **kwargs,
+    ) -> Runnable:
+        del tools, tool_choice, kwargs
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager=None,
+        **kwargs,
+    ) -> ChatResult:
+        del stop, run_manager, kwargs
+        humans = [
+            message.content
+            for message in messages
+            if isinstance(message, HumanMessage)
+        ]
+        if humans:
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(content=f"recalled:{humans[0]}")
+                    )
+                ]
+            )
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="first"))]
+        )
+
+
 class FakeSubAgent:
     def __init__(self, name: str) -> None:
         self.name = name
 
     async def reply(self, query: str, *, thread_id: str | None = None) -> str:
         return f"{self.name}-done"
+
+
+class DictSessionStore:
+    def __init__(self, data: dict[str, str] | None = None) -> None:
+        self._data = data if data is not None else {}
+
+    async def save(self, session_id: str, state_json: str) -> None:
+        self._data[session_id] = state_json
+
+    async def load(self, session_id: str) -> str | None:
+        return self._data.get(session_id)
 
 
 def _build_main_factory(model: ScriptedMigrationModel) -> MainAgentFactory:
@@ -248,3 +306,74 @@ class TestMainAgentPaths:
             await agent.reply("second", thread_id="same-thread")
             == "recalled:first"
         )
+
+    async def test_checkpoint_roundtrip_restores_context(self) -> None:
+        first = _build_main_factory(RecallChatModel()).build(
+            model=RecallChatModel()
+        )
+        assert await first.reply("first", thread_id="restore-thread") == "first"
+
+        state_json = first.checkpoint_state("restore-thread")
+        second = _build_main_factory(RecallChatModel()).build(
+            model=RecallChatModel()
+        )
+        second.restore_checkpoint_state(state_json, "restore-thread")
+        assert (
+            await second.reply("second", thread_id="restore-thread")
+            == "recalled:first"
+        )
+
+    async def test_stream_reply_emits_token_delta(self) -> None:
+        agent = _build_main_factory(ScriptedMigrationModel()).build(
+            model=ScriptedMigrationModel()
+        )
+        events: list[tuple[str, dict]] = []
+
+        async def sink(event_type: str, payload: dict) -> None:
+            events.append((event_type, payload))
+
+        await agent.reply("帮我找降噪耳机", thread_id="s1", event_sink=sink)
+        assert any(event_type == "token.delta" for event_type, _ in events)
+
+
+class TestSessionRegistryPersistence:
+    async def test_restart_restores_session_context(self) -> None:
+        shared: dict[str, str] = {}
+        factory = _build_main_factory(RecallChatModel())
+        original_build = factory.build
+        factory.build = lambda model=None: original_build(
+            model or RecallChatModel()
+        )
+        first_registry = SessionRegistry(factory, DictSessionStore(shared))
+        first_agent = await first_registry.get_or_create("restart-session")
+        assert (
+            await first_agent.reply("first", thread_id="restart-session")
+            == "first"
+        )
+        await first_registry.persist("restart-session")
+
+        second_registry = SessionRegistry(factory, DictSessionStore(shared))
+        restored_agent = await second_registry.get_or_create("restart-session")
+        assert (
+            await restored_agent.reply("second", thread_id="restart-session")
+            == "recalled:first"
+        )
+
+    async def test_concurrent_sessions_do_not_cross_talk(self) -> None:
+        factory = _build_main_factory(FirstHumanRecallModel())
+        original_build = factory.build
+        factory.build = lambda model=None: original_build(
+            model or FirstHumanRecallModel()
+        )
+        registry = SessionRegistry(factory, DictSessionStore())
+        agent_a = await registry.get_or_create("session-a")
+        agent_b = await registry.get_or_create("session-b")
+        assert agent_a is not agent_b
+
+        await agent_a.reply("alpha", thread_id="session-a")
+        await agent_b.reply("beta", thread_id="session-b")
+        results = await asyncio.gather(
+            agent_a.reply("again-a", thread_id="session-a"),
+            agent_b.reply("again-b", thread_id="session-b"),
+        )
+        assert results == ["recalled:alpha", "recalled:beta"]

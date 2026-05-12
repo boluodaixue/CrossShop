@@ -29,6 +29,20 @@ def build_task_dispatch_tool(
         if not dispatches:
             return "[error] dispatches 不能为空"
         session_id = ShoppingContext.current_session_id()
+        bus.publish(
+            session_id,
+            "plan.update",
+            {
+                "tasks": [
+                    {
+                        "subject": str(dispatch.get("subagent_type", "unknown")),
+                        "state": "queued",
+                        "demands": str(dispatch.get("demands", "")),
+                    }
+                    for dispatch in dispatches
+                ]
+            },
+        )
 
         async def run_one(dispatch: dict) -> dict:
             subagent_type = str(dispatch.get("subagent_type", ""))
@@ -53,7 +67,11 @@ def build_task_dispatch_tool(
                     worker = trade_factory.build()
                 else:
                     raise ValueError(f"未知 subagent_type：{subagent_type}")
-                output = await worker.reply(demands, thread_id=thread_id)
+                output = await worker.reply(
+                    demands,
+                    thread_id=thread_id,
+                    event_sink=_publish_subagent_event,
+                )
             except Exception as err:  # noqa: BLE001 - subagent failure must not kill others
                 output = f"[error] {err}"
             finished_at = datetime.now(timezone.utc).isoformat()
@@ -78,6 +96,9 @@ def build_task_dispatch_tool(
                 "finished_at": finished_at,
                 "elapsed_ms": elapsed_ms,
             }
+
+        async def _publish_subagent_event(event_type: str, payload: dict) -> None:
+            bus.publish(session_id, event_type, payload)
 
         results = await asyncio.gather(
             *(run_one(dispatch) for dispatch in dispatches),
