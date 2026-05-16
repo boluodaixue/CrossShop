@@ -8,6 +8,7 @@ from globex_agent.infrastructure.settings import load_settings
 def test_defaults_use_json_file_storage_and_no_queue(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("QUEUE_ENABLED", raising=False)
+    monkeypatch.delenv("SEMANTIC_CACHE_ENABLED", raising=False)
     settings = load_settings()
     assert settings.database_url == "file"
     assert settings.queue_enabled is False

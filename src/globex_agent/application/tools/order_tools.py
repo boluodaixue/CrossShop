@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from langchain_core.tools import tool
 
@@ -22,15 +23,77 @@ def _buyer_id() -> str:
     return snapshot.buyer_id if snapshot else "anonymous"
 
 
+_COUNTRY_ALIASES = {
+    "中国": "CN",
+    "中华人民共和国": "CN",
+}
+_CITY_PATTERN = re.compile(r"([\u4e00-\u9fff]+?市)")
+_DISTRICT_PATTERN = re.compile(r"([\u4e00-\u9fff]+?区|[\u4e00-\u9fff]+?县)")
+
+
+def _pick(payload: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _split_city_and_state(address_line: str) -> tuple[str, str]:
+    """Extract a Chinese city and province/state from a full address line."""
+
+    city_match = _CITY_PATTERN.search(address_line)
+    if city_match is None:
+        return "", ""
+    city = city_match.group(1)
+    prefix = address_line[: city_match.start()].strip()
+    district_match = _DISTRICT_PATTERN.search(address_line, city_match.end())
+    if district_match is not None:
+        district = district_match.group(1)
+        if district not in prefix:
+            prefix = f"{prefix} {district}".strip()
+    return city, prefix
+
+
 def _address(payload: dict) -> Address:
+    recipient_name = _pick(payload, ("recipient_name", "recipient", "name"))
+    country = _pick(payload, ("country", "country_code"))
+    state = _pick(payload, ("state", "province", "region"))
+    city = _pick(payload, ("city", "city_name"))
+    address_line = _pick(
+        payload,
+        (
+            "address_line",
+            "address",
+            "street",
+            "street_address",
+            "address1",
+            "detail_address",
+        ),
+    )
+    district = _pick(payload, ("district", "area"))
+    if district and district not in state:
+        state = f"{state} {district}".strip()
+    if not city and address_line:
+        parsed_city, parsed_state = _split_city_and_state(address_line)
+        if parsed_city:
+            city = parsed_city
+        if parsed_state and not state:
+            state = parsed_state
     return Address(
-        recipient_name=payload.get("recipient_name", ""),
-        country=payload.get("country", ""),
-        state=payload.get("state", ""),
-        city=payload.get("city", ""),
-        address_line=payload.get("address_line", ""),
-        postal_code=payload.get("postal_code", ""),
-        phone=payload.get("phone", ""),
+        recipient_name=recipient_name,
+        country=_COUNTRY_ALIASES.get(country, country),
+        state=state,
+        city=city,
+        address_line=address_line,
+        postal_code=_pick(
+            payload,
+            ("postal_code", "postcode", "zip", "zip_code"),
+        ),
+        phone=_pick(
+            payload,
+            ("phone", "telephone", "mobile", "phone_number"),
+        ),
     )
 
 
@@ -42,6 +105,8 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
         Args:
             items: 订单行列表，每项含 item_id / variant_id / quantity。
             shipping_address: 收货地址字典。
+                推荐字段：recipient_name / country / province / city /
+                district / address_line / postal_code / phone。
         """
         session_id = ShoppingContext.current_session_id()
         buyer_id = _buyer_id()
@@ -50,7 +115,11 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
             "tool.invoke",
             {
                 "tool": "create_order_tool",
-                "args": {"buyer_id": buyer_id, "items": items},
+                "args": {
+                    "buyer_id": buyer_id,
+                    "items": items,
+                    "shipping_address": shipping_address,
+                },
             },
         )
         try:

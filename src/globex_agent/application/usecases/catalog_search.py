@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _RECALL_TOP_N = 8
 _FILTERED_OUT_LIMIT = 3
+_TITLE_PREFIX_BONUS = 0.2
+_TITLE_PREFIX_MIN_LEN = 3
 
 _PLATFORM_SHIP_TO: dict[Platform, tuple[str, ...]] = {
     Platform.AMAZON: ("US",),
@@ -129,6 +132,8 @@ class CatalogSearchUseCase:
                 logger.warning("rerank 不可用，按向量分排序：%s", err)
         elif not scored:
             scored = await self._keyword_recall(spec)
+        if scored:
+            scored = self._boost_title_prefix(spec, scored)
 
         filtered: list[tuple[float, StandardItem]] = []
         filtered_out: list[dict] = []
@@ -212,6 +217,36 @@ class CatalogSearchUseCase:
         ]
         reranked.sort(key=lambda pair: pair[0], reverse=True)
         return reranked
+
+    def _boost_title_prefix(
+        self,
+        spec: ProductSearchSpec,
+        scored: list[tuple[float, StandardItem]],
+    ) -> list[tuple[float, StandardItem]]:
+        """Lift items whose title starts with an explicit query term."""
+
+        query_terms: set[str] = set()
+        for chunk in re.split(r"\W+", spec.normalized_query.casefold()):
+            if not chunk:
+                continue
+            for start in range(len(chunk)):
+                for end in range(start + _TITLE_PREFIX_MIN_LEN, len(chunk) + 1):
+                    query_terms.add(chunk[start:end])
+        if not query_terms:
+            return scored
+
+        boosted: list[tuple[float, StandardItem]] = []
+        for score, item in scored:
+            title = item.title.casefold()
+            prefix_len = max(
+                (len(term) for term in query_terms if title.startswith(term)),
+                default=0,
+            )
+            if prefix_len >= _TITLE_PREFIX_MIN_LEN:
+                score += _TITLE_PREFIX_BONUS + min(prefix_len, 6) * 0.02
+            boosted.append((score, item))
+        boosted.sort(key=lambda pair: pair[0], reverse=True)
+        return boosted
 
     async def _keyword_recall(self, spec: ProductSearchSpec) -> list[tuple[float, StandardItem]]:
         query_terms = tokenize(spec.normalized_query)

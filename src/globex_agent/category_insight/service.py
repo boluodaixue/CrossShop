@@ -76,13 +76,16 @@ class CategoryTaxonomy:
         categories = payload.get("categories")
         if not isinstance(categories, list):
             raise ValueError("taxonomy must contain a categories list")
+        self._default_kind = str(payload.get("category_kind", "ordinary"))
         self._aliases: dict[str, str] = {}
         self._kinds: dict[str, str] = {}
         for raw in categories:
             if not isinstance(raw, dict):
                 raise ValueError("taxonomy category entries must be objects")
             category = str(raw["category"])
-            self._kinds[category.casefold()] = str(raw["category_kind"])
+            self._kinds[category.casefold()] = str(
+                raw.get("category_kind", self._default_kind)
+            )
             aliases = raw.get("aliases", [])
             if not isinstance(aliases, list):
                 raise ValueError("taxonomy aliases must be a list")

@@ -232,6 +232,7 @@ async def main() -> None:
     await _guard_semantic_cache(args.allow_semantic_cache)
     with open(args.cases, encoding="utf-8") as source:
         cases = yaml.safe_load(source)["cases"]
+    run_namespace = uuid.uuid4().hex[:6] if args.only is None else ""
     if args.only:
         cases = [case for case in cases if case["id"] == args.only]
 
@@ -240,8 +241,12 @@ async def main() -> None:
     async with httpx.AsyncClient() as client:
         for case in cases:
             print(f"== 评测 {case['id']} ...", flush=True)
+            buyer_id = case.get("buyer_id") or f"eval-buyer-{case['id']}"
+            if run_namespace and case.get("buyer_id"):
+                buyer_id = f"{buyer_id}-{run_namespace}"
             try:
                 result = await run_case(client, case, ground_truth)
+                result["buyer_id"] = buyer_id
             except Exception as err:  # noqa: BLE001
                 result = {
                     "id": case["id"],
@@ -251,6 +256,7 @@ async def main() -> None:
                     "verdict": "ERROR",
                     "judged": {},
                     "transcript": f"执行异常：{err}",
+                    "buyer_id": buyer_id,
                 }
             print(f"   -> {result['verdict']}（{result['score']}）", flush=True)
             results.append(result)
