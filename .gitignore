@@ -31,6 +31,7 @@ artifacts/
 models/
 output/
 node_modules/
+frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
 uploaded/
@@ -43,3 +44,6 @@ data/conversations/
 *.faiss
 *.index
 *.log
+
+# Local tooling scratch directories with restricted ACLs
+/tmp*/

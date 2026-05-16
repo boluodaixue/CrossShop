@@ -48,7 +48,7 @@
 
 顺序：**domain → infrastructure → application → presentation/composition → 评测/部署**（详见方案文档 §7，含每个文件的来源标注「搬/保留/新写」和验收标准）。
 
-**当前进度：方案已定稿并存档，代码迁移尚未开始（阶段 1 domain/ 还没动）。**
+**当前进度：代码迁移已完成首轮，Phase 0-5 均有提交；search-budget / no-fabrication / long-context-memory 回归已通过，order-full-cycle 已修复并单独重跑通过；事件流、熔断、重启恢复与并发会话隔离测试已补齐。Docker daemon 恢复后还需完成容器 build/up 验证。**
 
 ## 六、工作纪律
 

@@ -48,11 +48,14 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 
 ## 当前状态
 
-- [x] LangGraph + DDD 架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已落地
+- [x] LangGraph + DDD 架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已完成首轮落地
 - [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
 - [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
 - [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
-- [x] 最新应用级回归 `10/13 PASS`，平均分 `0.883`，报告见 [eval/report-20260819-053845.md](eval/report-20260819-053845.md)
+- [x] 最新应用级回归全量 `12/13 PASS`（平均分 `0.910`）；瞬时 ERROR 的 `order-full-cycle` 单独重跑 `1/1 PASS`，当前 13 条均有通过记录。
+  报告：[eval/report-20260819-205649.md](eval/report-20260819-205649.md)、[eval/report-20260819-205837.md](eval/report-20260819-205837.md)
+- [x] 真实 LLM smoke 通过；补充 `model.fallback`、`plan.update`、`context.compressed`、熔断、重启恢复与并发会话隔离测试，pytest `159 passed`
+- [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Docker daemon 尚未启动，`docker compose config` 已通过
 
 - [x] 初始化独立项目目录
 - [x] 建立 Codex 项目规则
@@ -76,9 +79,6 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 ```bat
 .\.venv\Scripts\python.exe examples\00_smoke.py
 .\.venv\Scripts\python.exe examples\01_load_catalog.py
-.\.venv\Scripts\python.exe examples\02_deterministic_pipeline.py --case 1
-.\.venv\Scripts\python.exe examples\03_single_agent.py --case 1
-.\.venv\Scripts\python.exe examples\03_single_agent.py --real --query "500元以内防泼水、不要真皮的通勤背包"
 .\.venv\Scripts\python.exe scripts\eval\run_recall_eval.py --prepare
 .\.venv\Scripts\python.exe -m uvicorn globex_agent.presentation.server:app --port 8000
 .\.venv\Scripts\python.exe scripts\smoke_e2e.py
@@ -101,15 +101,15 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 
 在 VS Code 中阅读代码，建议按这条路径：
 
-阶段一、二：`data/demo/products.jsonl` → `domain/models.py` → `catalog/local_catalog.py` → `tools/item_search.py` → `tools/price_compare.py` → `tools/shipping_calc.py` → `tools/item_picker.py` → `tools/shopping_summary.py` → `pipeline/deterministic.py` → `examples/02_deterministic_pipeline.py`
+阶段一、二历史代码已删除，可查看 `git show main:src/globex_agent/tools/item_search.py` 等旧版本。
 
-阶段三：`prompt/prompts.yml` → `agent/prompts.py` → `agent/llm.py` → `tools/planner.py` / `tools/chat_fallback.py` → `tools/agent_tools.py` → `agent/tool_registry.py` → `agent/main_agent.py` → `agent/scripted_model.py` → `examples/03_single_agent.py`
+迁移后主链：`application/prompts/globex.yml` → `application/agents/main_agent.py` → `application/agents/search_agent.py` / `trade_agent.py` → `application/tools/*` → `application/agents/orchestrator.py`。
 
-阶段四：`recall/base.py` → `recall/keyword.py` → `tools/item_search.py` → `eval/recall_metrics.py` → `scripts/data/prepare_esci_subset.py` → `scripts/eval/run_recall_eval.py` → `data/eval/recall_manifest.json`
+阶段四：`infrastructure/recall/base.py` → `infrastructure/recall/keyword.py` → `src/globex_agent/eval/recall_metrics.py` → `scripts/data/prepare_esci_subset.py` → `scripts/eval/run_recall_eval.py` → `data/eval/recall_manifest.json`
 
-阶段五主链：`recall/embedding.py` → `recall/index.py` → `scripts/index/build_item_index.py` → `recall/reranker.py` → `scripts/eval/run_retrieval_comparison.py` → `examples/04_semantic_retrieval.py`；`recall/keyword.py` 和 `recall/fusion.py` 分别是基线与可选扩展。
+阶段五主链：`infrastructure/recall/embedding.py` → `infrastructure/recall/index.py` → `scripts/index/build_item_index.py` → `infrastructure/recall/reranker.py` → `scripts/eval/run_retrieval_comparison.py` → `examples/04_semantic_retrieval.py`。
 
-阶段六知识卡：`data/category_insight/taobao_zh/category_taxonomy_taobao_zh.json` → `scripts/data/build_category_cards_taobao_zh.py` → `scripts/data/build_category_eval_taobao_zh.py` → `recall/category_kb.py` → `scripts/index/build_category_kb_taobao_zh.py` → `category_insight/reranking.py` → `category_insight/service.py` → `tools/category_insight.py` → `examples/05_category_insight.py`。
+阶段六知识卡：`data/category_insight/taobao_zh/category_taxonomy_taobao_zh.json` → `scripts/data/build_category_cards_taobao_zh.py` → `scripts/data/build_category_eval_taobao_zh.py` → `infrastructure/recall/category_kb.py` → `scripts/index/build_category_kb_taobao_zh.py` → `category_insight/reranking.py` → `category_insight/service.py` → `application/tools/category_insight_tool.py` → `examples/05_category_insight.py`。
 
 ## 已实现模块
 

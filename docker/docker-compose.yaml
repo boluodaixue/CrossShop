@@ -20,8 +20,13 @@ services:
       GLOBEX_CATEGORY_INDEX: ${GLOBEX_CATEGORY_INDEX:-globex_category_kb_taobao_zh_v1}
       DATA_DIR: /app/data
       CORS_ORIGINS: http://localhost:5173
+      BGE_M3_MODEL: /models/bge-m3
+      BGE_RERANKER_MODEL: /models/bge-reranker-v2-m3
+      GLOBEX_MODELS_LOCAL_ONLY: "1"
     volumes:
       - app-data:/app/data
+      - D:/models/bge-m3:/models/bge-m3:ro
+      - D:/models/bge-reranker-v2-m3:/models/bge-reranker-v2-m3:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -46,8 +51,13 @@ services:
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
       GLOBEX_OPENSEARCH_ENDPOINT: http://opensearch:9200
       DATA_DIR: /app/data
+      BGE_M3_MODEL: /models/bge-m3
+      BGE_RERANKER_MODEL: /models/bge-reranker-v2-m3
+      GLOBEX_MODELS_LOCAL_ONLY: "1"
     volumes:
       - app-data:/app/data
+      - D:/models/bge-m3:/models/bge-m3:ro
+      - D:/models/bge-reranker-v2-m3:/models/bge-reranker-v2-m3:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -69,7 +79,11 @@ services:
     restart: unless-stopped
 
   opensearch:
-    image: opensearchproject/opensearch:2.15.0
+    build:
+      context: ../infra/opensearch
+      args:
+        OPENSEARCH_VERSION: "2.19.1"
+    image: globex/opensearch-ik:2.19.1
     ports:
       - "9200:9200"
     environment:
