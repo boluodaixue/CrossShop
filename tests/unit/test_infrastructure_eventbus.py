@@ -98,3 +98,17 @@ class TestResilience:
         result = await middleware.run("slow_tool", slow)
         assert result.startswith("[error]")
         assert registry.status("slow_tool") == "open"
+
+    def test_circuit_half_open_success_resets(self) -> None:
+        registry = CircuitBreakerRegistry(
+            failure_threshold=1,
+            reset_seconds=60,
+        )
+
+        registry.record_failure("tool", now=100)
+        assert not registry.allow("tool", now=100)
+        assert registry.allow("tool", now=160)
+        assert registry.status("tool") == "half_open"
+
+        registry.record_success("tool")
+        assert registry.status("tool") == "closed"

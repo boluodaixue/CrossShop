@@ -74,6 +74,20 @@ def _taxonomy() -> CategoryTaxonomy:
     )
 
 
+def test_taxonomy_uses_top_level_kind_when_category_entry_missing() -> None:
+    taxonomy = CategoryTaxonomy(
+        {
+            "category_kind": "bundle",
+            "categories": [
+                {"category": "礼盒", "aliases": ["礼盒套装"]}
+            ],
+        }
+    )
+
+    assert taxonomy.category_kind("礼盒") == "bundle"
+    assert taxonomy.is_known("礼盒")
+
+
 def _card(
     card_id: str,
     card_type: str,

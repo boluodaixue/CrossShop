@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from globex_agent.application.agents.orchestrator import (
     MainAgentOrchestrator,
     SubmitIntentInput,
@@ -24,6 +26,12 @@ class FailingPrimary:
     async def ainvoke(self, input, config=None, **kwargs):
         del input, config, kwargs
         raise RuntimeError("Too many concurrent requests")
+
+
+class NonTransientPrimary:
+    async def ainvoke(self, input, config=None, **kwargs):
+        del input, config, kwargs
+        raise RuntimeError("库存不足")
 
 
 class WorkingFallback:
@@ -106,6 +114,21 @@ class TestModelFallbackEvent:
         assert event.payload["from"] == "primary-model"
         assert event.payload["to"] == "fallback-model"
         assert "Too many concurrent requests" in event.payload["reason"]
+
+    async def test_non_transient_error_propagates_without_fallback_event(self) -> None:
+        bus = TradeEventBus()
+        queue = bus.subscribe("s1")
+        runnable = _FallbackRunnable(
+            NonTransientPrimary(),
+            WorkingFallback(),
+            bus,
+            "primary-model",
+            "fallback-model",
+        )
+
+        with pytest.raises(RuntimeError, match="库存不足"):
+            await runnable.ainvoke({})
+        assert queue.empty()
 
 
 class TestContextCompressedEvent:

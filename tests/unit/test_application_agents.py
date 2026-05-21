@@ -335,6 +335,22 @@ class TestMainAgentPaths:
         await agent.reply("帮我找降噪耳机", thread_id="s1", event_sink=sink)
         assert any(event_type == "token.delta" for event_type, _ in events)
 
+    async def test_compress_context_trims_old_messages(self) -> None:
+        agent = _build_main_factory(RecallChatModel()).build(
+            model=RecallChatModel()
+        )
+        for index in range(6):
+            await agent.reply(f"turn-{index}", thread_id="compress-thread")
+
+        result = agent.compress_context("compress-thread", max_messages=4)
+        assert result is not None
+        assert result["removed"] > 0
+
+        state = await agent._graph.aget_state(
+            {"configurable": {"thread_id": "compress-thread"}}
+        )
+        assert len(state.values["messages"]) <= 4
+
 
 class TestSessionRegistryPersistence:
     async def test_restart_restores_session_context(self) -> None:

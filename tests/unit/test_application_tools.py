@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from globex_agent.application.tools.order_tools import (
+    build_cancel_order_tool,
     build_create_order_tool,
+    build_query_order_tool,
 )
 from globex_agent.application.tools.product_search_tool import (
     build_product_search_tool,
@@ -17,7 +19,11 @@ from globex_agent.application.tools.task_dispatch_tool import (
     build_task_dispatch_tool,
 )
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
-from globex_agent.application.usecases.order_usecases import PlaceOrderUseCase
+from globex_agent.application.usecases.order_usecases import (
+    CancelOrderUseCase,
+    PlaceOrderUseCase,
+    QueryOrderUseCase,
+)
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain.catalog.models import StandardItem
 from globex_agent.infrastructure.context import (
@@ -128,12 +134,21 @@ class TestOrderTools:
         )
         variant_id = str(item.variants[0]["variant_id"])
         order_repo = InMemoryOrderRepository()
+        bus = TradeEventBus()
         tool = build_create_order_tool(
             PlaceOrderUseCase(
                 InMemoryItemRepository([item]),
                 order_repo,
             ),
-            TradeEventBus(),
+            bus,
+        )
+        query_tool = build_query_order_tool(
+            QueryOrderUseCase(order_repo),
+            bus,
+        )
+        cancel_tool = build_cancel_order_tool(
+            CancelOrderUseCase(order_repo),
+            bus,
         )
         token = ShoppingContext.set(
             ShoppingContextSnapshot(
@@ -162,13 +177,24 @@ class TestOrderTools:
                     },
                 }
             )
+            snapshot = json.loads(text)
+            query_text = await query_tool.ainvoke(
+                {"order_id": snapshot["order_id"]}
+            )
+            cancel_text = await cancel_tool.ainvoke(
+                {
+                    "order_id": snapshot["order_id"],
+                    "reason": "买家改主意",
+                }
+            )
         finally:
             ShoppingContext.reset(token)
 
-        snapshot = json.loads(text)
         assert snapshot["order_id"].startswith("GBX-")
         assert snapshot["status"] == "CONFIRMED"
         assert "杭州市" in snapshot["shipping_address"]
+        assert json.loads(query_text)["status"] == "CONFIRMED"
+        assert json.loads(cancel_text)["status"] == "CANCELLED"
 
 
 class TestTaskDispatchParallel:
