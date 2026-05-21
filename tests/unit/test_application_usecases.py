@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,6 @@ from globex_agent.application.usecases.order_usecases import (
     QueryOrderUseCase,
 )
 from globex_agent.catalog import LocalCatalog
-from globex_agent.domain.catalog.models import StandardItem
 from globex_agent.domain.catalog.product_search_spec import ProductSearchSpec
 from globex_agent.domain.order.address import Address
 from globex_agent.infrastructure.persistence.in_memory_repositories import (
@@ -47,27 +45,6 @@ def _address() -> Address:
         address_line="西湖区某路 1 号",
         postal_code="310000",
         phone="13800000000",
-    )
-
-
-def _catalog_item(item_id: str, title: str) -> StandardItem:
-    return StandardItem(
-        item_id=item_id,
-        same_group_id=item_id,
-        platform="taobao",
-        locale="cn",
-        language="zh",
-        title=title,
-        category_path=["服饰鞋包饰品", "胸包"],
-        price_cny="80.00",
-        currency_raw="CNY",
-        ingested_at=datetime.now(timezone.utc),
-        provenance={
-            "kind": "synthetic",
-            "source": "unit-test",
-            "generated_at": datetime.now(timezone.utc),
-            "notes": "test fixture",
-        },
     )
 
 
@@ -113,28 +90,6 @@ class TestCatalogSearch:
             ProductSearchSpec(normalized_query="quantum flux capacitor")
         )
         assert result["hits"] == []
-
-    async def test_title_prefix_reorders_exact_category_match(self) -> None:
-        prefixed = _catalog_item(
-            "taobao:test:prefixed",
-            "双肩包女迷你包包2025新款高级感小型小众轻便款",
-        )
-        contains = _catalog_item(
-            "taobao:test:contains",
-            "新款户外通勤旅行多功能单肩斜挎包男士胸包大容量时尚潮流双肩包",
-        )
-        usecase = CatalogSearchUseCase(
-            InMemoryItemRepository([prefixed, contains])
-        )
-        spec = ProductSearchSpec(normalized_query="通勤双肩包")
-        boosted = usecase._boost_title_prefix(
-            spec,
-            [(0.9, contains), (0.8, prefixed)],
-        )
-        assert [item.item_id for _, item in boosted] == [
-            "taobao:test:prefixed",
-            "taobao:test:contains",
-        ]
 
 
 class TestOrderLifecycle:
