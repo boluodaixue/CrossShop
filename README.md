@@ -52,8 +52,7 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
 - [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
 - [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
-- [x] 最新应用级回归全量 `12/13 PASS`（平均分 `0.910`）；瞬时 ERROR 的 `order-full-cycle` 单独重跑 `1/1 PASS`，当前 13 条均有通过记录。
-  报告：[eval/report-20260819-205649.md](eval/report-20260819-205649.md)、[eval/report-20260819-205837.md](eval/report-20260819-205837.md)
+- [x] 最新完整真实模型回归 `13/13 PASS`（平均分 `1.000`），报告见 [eval/report-20260819-223705.md](eval/report-20260819-223705.md)
 - [x] 真实 LLM smoke 通过；补充 `model.fallback`、`plan.update`、`context.compressed`、熔断、重启恢复与并发会话隔离测试，pytest `159 passed`
 - [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Docker daemon 尚未启动，`docker compose config` 已通过
 
