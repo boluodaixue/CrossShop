@@ -36,8 +36,9 @@ JUDGE_SYSTEM_PROMPT = (
 )
 
 
-def build_ground_truth() -> str:
-    with (PROJECT_ROOT / "eval" / "cases.yaml").open(encoding="utf-8") as source:
+def build_ground_truth(cases_path: str | None = None) -> str:
+    path = Path(cases_path) if cases_path else PROJECT_ROOT / "eval" / "cases.yaml"
+    with path.open(encoding="utf-8") as source:
         cases_data = yaml.safe_load(source)
     facts = cases_data.get("facts", [])
     lines = ["| item_id | 标题 | 品类 | 价格 |", "|---|---|---|---|"]
@@ -237,7 +238,7 @@ async def main() -> None:
         cases = [case for case in cases if case["id"] == args.only]
 
     results: list[dict] = []
-    ground_truth = build_ground_truth()
+    ground_truth = build_ground_truth(args.cases)
     async with httpx.AsyncClient() as client:
         for case in cases:
             print(f"== 评测 {case['id']} ...", flush=True)
