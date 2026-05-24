@@ -53,7 +53,7 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
 - [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
 - [x] 最新完整真实模型回归 `13/13 PASS`（平均分 `1.000`），报告见 [eval/report-20260819-223705.md](eval/report-20260819-223705.md)
-- [x] 新增 flow query 真实模型评测：9 条 RAG/召回/ESCI query 已跑完整流程；per-case LLM rubric 脚本已就绪，待联网运行后补结果，详见 [docs/experiments/flow_query_eval_20260820.md](docs/experiments/flow_query_eval_20260820.md)
+- [x] 新增 flow query 真实模型评测：9 条 RAG/召回/ESCI query 已跑完整流程；per-case LLM rubric 评测 `4/9 PASS`，详见 [docs/experiments/flow_query_eval_20260820.md](docs/experiments/flow_query_eval_20260820.md)
 - [x] 真实 LLM smoke 通过；补充 `model.fallback`、`plan.update`、`context.compressed`、熔断、重启恢复与并发会话隔离测试，pytest `159 passed`
 - [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Docker daemon 尚未启动，`docker compose config` 已通过
 

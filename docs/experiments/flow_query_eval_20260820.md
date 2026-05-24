@@ -2,7 +2,7 @@
 
 > 日期：2026-08-20
 > 分支：`codex/migrate-langgraph-ddd`
-> 状态：基础 13 条回归已完成；flow query 流程运行已完成；per-case LLM rubric 评测脚本已就绪，尚待一次联网运行。
+> 状态：基础 13 条回归已完成；flow query 流程运行已完成；per-case LLM rubric 评测已完成。
 
 ## 背景
 
@@ -60,23 +60,37 @@
 
 脚本已完成本地解析自检：9 条 flow 会话全部能正确还原。
 
-## 待运行
+### 5. Per-case LLM rubric 正式结果
 
-`scripts/eval_flow_rubric.py` 尚未完成正式联网运行，原因是 Codex 自动审批层连续返回 `guardian assessment was not valid JSON`，导致需要访问外部 LLM API 的命令被拦下。
-
-待执行命令：
+运行命令：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\eval_flow_rubric.py
 ```
 
-如果中途断网：
+结果：`4/9 PASS`，平均分 `0.628`
 
-```powershell
-.\.venv\Scripts\python.exe scripts\eval_flow_rubric.py --resume
-```
+报告：`eval/flow-rubric-20260820-003923.md`
 
-预期产物：`eval/flow-rubric-YYYYMMDD-HHMMSS.md`，包含每条 query 的生成 rubric、Judge 判定、分数和 PASS/FAIL。
+| query | 结果 | 分数 |
+|---|---|---|
+| category 羽毛球包：大容量单肩 | PASS | 0.883 |
+| category 羽毛球包：靠谱省心 | PASS | 0.812 |
+| category 羽毛球包：选购指南 | PASS | 0.825 |
+| esci：toddler turtleneck girls purple | FAIL | 0.502 |
+| esci：weird items | FAIL | 0.698 |
+| esci：woman ski pants | FAIL | 0.300 |
+| shopsim：乳头保护罩 | FAIL | 0.623 |
+| shopsim：篮球近视护目镜 | FAIL | 0.225 |
+| shopsim：运动鞋 | PASS | 0.788 |
+
+主要失败模式：
+
+- 省略或错误处理系统运费/关税规则
+- 对“价格不可用”的商品给出价格范围或具体数字
+- 添加商品库事实表中不存在的店铺、库存、尺码建议等信息
+- 商品库无匹配结果时仍声称“存在但超预算”
+- 只展示 1 个候选，未按生成的 rubric 要求列出全部符合条件商品
 
 ## 附带修复
 
@@ -85,6 +99,6 @@
 
 ## 后续
 
-1. 完成 `eval_flow_rubric.py` 正式运行并记录 per-case rubric 结果
+1. 按失败模式修正 Agent 提示词或工具输出，再重跑 flow rubric
 2. 对比基础 13 条与 flow query 的分数口径，确认两套评测是否可比
 3. 如需更严格核验，可把 `tool.result` 也作为 Judge 输入（当前基础 13 条也未包含）
