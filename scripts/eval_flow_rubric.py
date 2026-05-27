@@ -88,7 +88,7 @@ async def _chat_json(
         "temperature": temperature,
     }
     last_error: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             response = await client.post(
                 f"{_base_url().rstrip('/')}/chat/completions",
@@ -100,11 +100,11 @@ async def _chat_json(
             content = response.json()["choices"][0]["message"]["content"]
             return json.loads(content)
         except Exception as err:  # noqa: BLE001 - transient judge failures retried
-            if attempt == 3:
+            if attempt == 5:
                 raise
             last_error = err
             print(f"   LLM 调用第 {attempt + 1} 次失败，稍后重试：{err}", flush=True)
-            await asyncio.sleep(8 * (2**attempt))
+            await asyncio.sleep(10 * (2**attempt))
     raise last_error if last_error else RuntimeError("LLM 重试耗尽")
 
 
@@ -268,10 +268,11 @@ async def main() -> None:
         default=str(PROJECT_ROOT / "eval" / "flow-rubric-progress.json"),
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--prefix", default="flow")
     args = parser.parse_args()
 
     conv_dir = Path(args.conversations)
-    paths = sorted(conv_dir.glob("flow-*.jsonl"))
+    paths = sorted(conv_dir.glob(f"{args.prefix}-*.jsonl"))
     if args.limit:
         paths = paths[: args.limit]
     items = [parse_conversation(path) for path in paths]
@@ -283,7 +284,11 @@ async def main() -> None:
     done: dict[str, dict] = {}
     if args.resume and progress_path.exists():
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
-        done = {item["source"]: item for item in progress}
+        done = {
+            item["source"]: item
+            for item in progress
+            if item.get("score") is not None and item.get("judged") is not None
+        }
 
     print(f"== 共 {len(items)} 条 flow query", flush=True)
     async with httpx.AsyncClient() as client:

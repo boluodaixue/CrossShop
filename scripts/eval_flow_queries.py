@@ -162,9 +162,14 @@ def _load_queries(path: Path) -> list[dict]:
     return queries
 
 
-async def run_one(client: httpx.AsyncClient, base_url: str, item: dict) -> dict:
+async def run_one(
+    client: httpx.AsyncClient,
+    base_url: str,
+    item: dict,
+    prefix: str,
+) -> dict:
     session_id = (
-        f"flow-{item['source']}-{item['query_id']}-{uuid.uuid4().hex[:6]}"
+        f"{prefix}-{item['source']}-{item['query_id']}-{uuid.uuid4().hex[:6]}"
     )
     started = time.monotonic()
     try:
@@ -259,6 +264,7 @@ async def main() -> None:
     parser.add_argument("--out", default=None)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--judge", action="store_true")
+    parser.add_argument("--prefix", default="flow")
     args = parser.parse_args()
 
     all_items: list[dict] = []
@@ -285,7 +291,7 @@ async def main() -> None:
                 f"{item['source']} {item['query_id']} ...",
                 flush=True,
             )
-            result = await run_one(client, args.base_url, item)
+            result = await run_one(client, args.base_url, item, args.prefix)
             if args.judge:
                 result["judged"] = await call_judge(client, result)
                 result["score"], result["p0_pass"] = score_case(

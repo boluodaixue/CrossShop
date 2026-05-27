@@ -92,6 +92,44 @@
 - 商品库无匹配结果时仍声称“存在但超预算”
 - 只展示 1 个候选，未按生成的 rubric 要求列出全部符合条件商品
 
+### 6. 真实 OpenSearch + CategoryInsight RAG 完整链路
+
+已有 OpenSearch 容器 `globex-category-opensearch` 在 `127.0.0.1:9200` 运行，知识卡索引 `globex_category_kb_taobao_zh_v1` 存在且包含 48 张卡。
+
+新增串联脚本：`scripts/eval_flow_with_rubric.py`
+
+流程：
+
+1. 从 `data/category_insight/taobao_zh/category_recall_cases_taobao_zh.jsonl` 自动挑选各品类 query
+2. 通过真实 Agent 服务跑完整流程，生成会话和 flow report
+3. 对同一次会话执行 per-case LLM rubric
+
+本次运行 8 条 CategoryInsight RAG query：
+
+- flow 阶段：`8/8` 正常完成，平均耗时 33.5 秒/条
+- rubric 阶段：`3/8 PASS`，平均分 `0.667`
+
+报告：
+
+- `eval/flow-report-20260820-021422.md`
+- `eval/flow-rubric-20260820-023633.md`
+
+通过：
+
+- 羽毛球包：大容量单肩（1.0）
+- 乳胶枕：泰国天然乳胶 + 护颈椎（0.775）
+- 颈椎按摩器（1.0）
+
+失败：
+
+- 汽车氛围灯（0.2）：把警示爆闪灯说成防水氛围灯
+- 儿童学习椅（0.7）：对价格不可用商品给出 408-488 元
+- 手机直播补光灯（0.487）：虚构价格区间与店铺
+- 户外电源（0.7）：对价格不可用商品给出 655-855 元
+- 平板电脑支架（0.475）：遗漏候选、虚构价格
+
+该批次确认了真实 OpenSearch 知识卡检索已接入完整 Agent 流程；失败项仍集中在价格不可用处理、候选完整性和属性准确识别。
+
 ## 附带修复
 
 - `scripts/eval_regression.py`：修复 `--cases` 指定自定义 case 文件时，商品库事实表仍读取默认 `cases.yaml` 的问题
