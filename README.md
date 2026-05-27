@@ -79,6 +79,8 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 当前 VS Code 项目已经有 `.venv`。在 VS Code 的 CMD 终端中直接执行：
 
 ```bat
+.\scripts\start_dev.ps1
+.\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe examples\00_smoke.py
 .\.venv\Scripts\python.exe examples\01_load_catalog.py
 .\.venv\Scripts\python.exe scripts\eval\run_recall_eval.py --prepare
@@ -97,6 +99,12 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 .\.venv\Scripts\python.exe examples\05_category_insight.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\ruff.exe check src scripts examples tests
+```
+
+`start_dev.ps1` 会同时启动后端和前端，等待 `/health` 通过后打印访问地址；按 `Ctrl+C` 会一起停止。也可只启动后端：
+
+```powershell
+.\scripts\start_dev.ps1 -SkipFrontend
 ```
 
 如果 CMD 中中文乱码，先执行 `set PYTHONUTF8=1`；PowerShell 对应写法才是 `$env:PYTHONUTF8 = "1"`。需要重建环境时再使用 `python -m uv sync`。
