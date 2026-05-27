@@ -4,6 +4,8 @@
 
 完整实施路线见 [ENGINEERING_PLAN.md](ENGINEERING_PLAN.md)。
 
+当前整体设计与各模块实现说明见 [ARCHITECTURE_AND_IMPLEMENTATION.md](docs/ARCHITECTURE_AND_IMPLEMENTATION.md)。
+
 ## 当前架构
 
 项目已迁移为 **LangGraph + DDD 洋葱架构**：
