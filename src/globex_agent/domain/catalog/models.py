@@ -5,6 +5,11 @@ The names follow chapters 09-1, 11, 12, and 14: platform-level products use
 tool outputs then flow through Candidate -> PricePoint -> LandedCost -> PickedItem.
 """
 
+from __future__ import annotations
+
+import hashlib
+import json
+import unicodedata
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -82,6 +87,129 @@ class PriceSource(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class AvailabilityStatus(str, Enum):
+    """Explicit three-state sale status; missing facts remain unknown."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
+MATERIAL_TAXONOMY_VERSION = "material-taxonomy-v1"
+
+
+class ProductAttribute(StrictModel):
+    """A shared, non-transactional long-tail technical attribute."""
+
+    code: NonEmptyText
+    name: NonEmptyText
+    value: str | int | float | bool
+    unit: NonEmptyText | None = None
+
+
+class MaterialComponent(StrictModel):
+    """A normalized material fact; unresolved source text keeps code=None."""
+
+    code: NonEmptyText | None = None
+    name: NonEmptyText
+    percentage: Annotated[Decimal, Field(ge=0, le=100, max_digits=5, decimal_places=2)] | None = (
+        None
+    )
+    part: NonEmptyText | None = None
+    taxonomy_version: NonEmptyText = MATERIAL_TAXONOMY_VERSION
+
+
+class VariantOption(StrictModel):
+    code: NonEmptyText | None = None
+    name: NonEmptyText
+    value: NonEmptyText
+
+
+def normalize_variant_text(value: str) -> str:
+    """Return the canonical comparison form for a user-selectable option."""
+
+    normalized = unicodedata.normalize("NFKC", str(value))
+    return " ".join(normalized.split()).casefold()
+
+
+def canonical_options_serialization(options: list[VariantOption]) -> str:
+    """Serialize options independently of source order, price, or stock."""
+
+    values = sorted(
+        (
+            {
+                "name": normalize_variant_text(option.name),
+                "value": normalize_variant_text(option.value),
+            }
+            for option in options
+        ),
+        key=lambda value: (value["name"], value["value"]),
+    )
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+
+
+def canonical_variant_id(
+    platform: Platform | str, item_id: str, options: list[VariantOption]
+) -> str:
+    """Build a stable internal SKU ID from platform, item, and normalized options."""
+
+    platform_value = platform.value if isinstance(platform, Platform) else str(platform)
+    payload = (
+        f"{normalize_variant_text(platform_value)}|{normalize_variant_text(item_id)}|"
+        f"{canonical_options_serialization(options)}"
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+    return f"{platform_value}:variant:{digest}"
+
+
+class StandardItemVariant(StrictModel):
+    variant_id: NonEmptyText
+    source_variant_id: NonEmptyText | None = None
+    options: list[VariantOption] = Field(default_factory=list)
+    price_cny: PositiveMoney | None = None
+    original_price_cny: PositiveMoney | None = None
+    price_source: PriceSource = PriceSource.UNAVAILABLE
+    availability: AvailabilityStatus = AvailabilityStatus.UNKNOWN
+    materials: list[MaterialComponent] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_variant(cls, value):
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "source_variant_id" not in payload and payload.get("variant_id"):
+            payload["source_variant_id"] = payload["variant_id"]
+        if "price_cny" not in payload and "price_major" in payload:
+            payload["price_cny"] = payload.pop("price_major")
+        if "price_cny" in payload and "price_source" not in payload:
+            payload["price_source"] = PriceSource.OBSERVED
+        payload.pop("currency", None)
+        if "availability" not in payload and "is_available" in payload:
+            raw = payload.pop("is_available")
+            payload["availability"] = (
+                AvailabilityStatus.AVAILABLE if raw else AvailabilityStatus.UNAVAILABLE
+            )
+        if "options" not in payload:
+            name = payload.pop("option_name", None) or payload.pop("name", None)
+            value_text = payload.pop("value", None) or payload.pop("spec", None)
+            payload["options"] = [{"name": name or "规格", "value": value_text or "未指定"}]
+        return payload
+
+    @model_validator(mode="after")
+    def validate_price(self) -> StandardItemVariant:
+        if self.price_cny is None:
+            if self.original_price_cny is not None:
+                raise ValueError("variant original_price_cny requires price_cny")
+            if self.price_source is not PriceSource.UNAVAILABLE:
+                raise ValueError("variant missing price requires price_source=unavailable")
+        elif self.price_source is PriceSource.UNAVAILABLE:
+            raise ValueError("variant price cannot use price_source=unavailable")
+        if self.original_price_cny is not None and self.original_price_cny < self.price_cny:
+            raise ValueError("variant original_price_cny cannot be lower than price_cny")
+        return self
+
+
 class ResultStatus(str, Enum):
     OK = "ok"
     NO_RESULTS = "no_results"
@@ -122,18 +250,50 @@ class StandardItem(StrictModel):
     price_cny: PositiveMoney | None = None
     original_price_cny: PositiveMoney | None = None
     currency_raw: Currency | None = None
-    price_source: PriceSource = PriceSource.OBSERVED
+    price_source: PriceSource = PriceSource.UNAVAILABLE
     rating: Annotated[float, Field(ge=0, le=5)] | None = None
     review_count: Annotated[int, Field(ge=0)] = 0
-    attributes: dict[str, Any] = Field(default_factory=dict)
-    variants: list[dict[str, Any]] = Field(default_factory=list)
-    is_available: bool = True
+    attributes: list[ProductAttribute] = Field(default_factory=list)
+    materials: list[MaterialComponent] = Field(default_factory=list)
+    variants: list[StandardItemVariant] = Field(default_factory=list)
+    availability: AvailabilityStatus = AvailabilityStatus.UNKNOWN
+    ships_to: list[NonEmptyText] | None = None
     source_updated_at: datetime | None = None
     ingested_at: datetime
 
     # Demo-only trace fields used by the controlled local dataset.
     url: AnyHttpUrl | None = None
     provenance: DataProvenance
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_item(cls, value):
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        if "availability" not in payload and "is_available" in payload:
+            raw = payload.pop("is_available")
+            payload["availability"] = (
+                AvailabilityStatus.AVAILABLE if raw else AvailabilityStatus.UNAVAILABLE
+            )
+        if "price_cny" in payload and "price_source" not in payload:
+            payload["price_source"] = PriceSource.OBSERVED
+        attributes = payload.get("attributes", [])
+        if isinstance(attributes, dict):
+            typed: list[dict] = []
+            materials: list[dict] = list(payload.get("materials", []))
+            for key, raw in attributes.items():
+                if str(key).casefold() in {"material", "materials", "材质", "fabric"}:
+                    materials.append({"code": None, "name": str(raw)})
+                    continue
+                if str(key).casefold() in {"ships_to", "ship_to"}:
+                    payload["ships_to"] = raw
+                    continue
+                scalar = raw if isinstance(raw, (str, int, float, bool)) else str(raw)
+                typed.append({"code": str(key), "name": str(key), "value": scalar})
+            payload["attributes"] = typed
+            payload["materials"] = materials
+        return payload
 
     @field_validator("source_updated_at", "ingested_at")
     @classmethod
@@ -144,18 +304,21 @@ class StandardItem(StrictModel):
             raise ValueError("timestamps must include a timezone")
         return value
 
-    @field_validator("attributes")
-    @classmethod
-    def attributes_must_have_non_empty_keys(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if any(not key.strip() for key in value):
-            raise ValueError("attribute keys cannot be empty")
-        return value
-
     @model_validator(mode="after")
-    def identifiers_and_prices_must_be_consistent(self) -> "StandardItem":
+    def identifiers_and_prices_must_be_consistent(self) -> StandardItem:
         expected_prefix = f"{self.platform.value}:"
         if not self.item_id.startswith(expected_prefix):
             raise ValueError(f"item_id must start with {expected_prefix}")
+        if self.variants and (self.price_cny is not None or self.original_price_cny is not None):
+            raise ValueError("items with variants must keep prices on variants only")
+        if self.variants and self.price_source is not PriceSource.UNAVAILABLE:
+            raise ValueError("items with variants require price_source=unavailable")
+        variant_ids = [variant.variant_id for variant in self.variants]
+        if len(variant_ids) != len(set(variant_ids)):
+            raise ValueError("variant_id must be unique within item")
+        option_fingerprints = [canonical_options_serialization(v.options) for v in self.variants]
+        if len(option_fingerprints) != len(set(option_fingerprints)):
+            raise ValueError("normalized options must be unique within item")
         if self.price_cny is None:
             if self.original_price_cny is not None:
                 raise ValueError("original_price_cny requires price_cny")
@@ -170,6 +333,21 @@ class StandardItem(StrictModel):
         ):
             raise ValueError("original_price_cny cannot be lower than price_cny")
         return self
+
+    @property
+    def is_available(self) -> bool:
+        """Read-only compatibility view; canonical storage is availability."""
+        legacy_override = self.__dict__.get("is_available")
+        if isinstance(legacy_override, bool):
+            return legacy_override
+        return self.availability is AvailabilityStatus.AVAILABLE
+
+    def effective_materials(
+        self, variant: StandardItemVariant | None = None
+    ) -> list[MaterialComponent]:
+        if variant is not None and variant.materials is not None:
+            return list(variant.materials)
+        return list(self.materials)
 
 
 class UserProfile(StrictModel):
@@ -291,7 +469,7 @@ class LandedCost(StrictModel):
     rule_version: NonEmptyText
 
     @model_validator(mode="after")
-    def landed_price_must_equal_components(self) -> "LandedCost":
+    def landed_price_must_equal_components(self) -> LandedCost:
         expected = self.price_cny + self.shipping_cny + self.duty_cny
         if self.landed_cny != expected:
             raise ValueError("landed_cny must equal price_cny + shipping_cny + duty_cny")
@@ -327,9 +505,7 @@ class PickedItem(StrictModel):
 
 class ItemPickerOutput(StrictModel):
     picks: Annotated[list[PickedItem], Field(max_length=3)] = Field(default_factory=list)
-    rejected_brief: Annotated[list[NonEmptyText], Field(max_length=8)] = Field(
-        default_factory=list
-    )
+    rejected_brief: Annotated[list[NonEmptyText], Field(max_length=8)] = Field(default_factory=list)
 
     # Deterministic-demo diagnostics.
     status: ResultStatus = ResultStatus.OK

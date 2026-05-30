@@ -4,8 +4,10 @@
 也为五期的自进化飞轮（bad case 采集与回放）预留数据底座。
 
 与 SessionStore 的区别：
-    SessionStore      存 AgentState 快照（框架内部结构，只为恢复上下文）
-    ConversationStore 存业务可读的对话流水（谁在什么时候说了什么、调了哪些工具）
+    Legacy SessionStore 存 AgentState 快照（正式恢复由 LangGraph Redis Checkpointer 负责）
+    ConversationStore  存业务可读的对话流水（谁在什么时候说了什么、调了哪些工具）
+
+ConversationStore 不是 checkpoint，也不参与 LangGraph continuation 恢复。
 """
 from __future__ import annotations
 

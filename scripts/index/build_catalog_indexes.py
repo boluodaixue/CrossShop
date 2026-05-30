@@ -39,6 +39,12 @@ def main() -> None:
         default=PROJECT_ROOT / "data" / "processed",
     )
     parser.add_argument(
+        "--catalog-root",
+        type=Path,
+        default=None,
+        help="Validated catalog-schema-v2 JSONL root; defaults to staging when present.",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=PROJECT_ROOT / "output" / "index" / "catalog",
@@ -67,6 +73,11 @@ def main() -> None:
     )
     parser.add_argument("--local-files-only", action="store_true")
     args = parser.parse_args()
+    catalog_root = args.catalog_root or (
+        args.processed_root / "staging" / "catalog-schema-v2"
+        if (args.processed_root / "staging" / "catalog-schema-v2").exists()
+        else args.processed_root / "catalogs"
+    )
 
     selected = set(
         args.partition
@@ -84,8 +95,7 @@ def main() -> None:
         if partition_id not in selected:
             continue
         items_path = (
-            args.processed_root
-            / "catalogs"
+            catalog_root
             / platform
             / locale
             / "items.jsonl"
@@ -114,6 +124,7 @@ def main() -> None:
                 "partition_id": partition_id,
                 "document_count": len(documents),
                 "max_seq_length": args.max_seq_length,
+                "text_format_version": ITEM_TEXT_FORMAT_VERSION,
                 "items_sha256": sha256(items_path),
             }
             mismatches = {
@@ -160,6 +171,19 @@ def main() -> None:
             args.output_root / platform / locale / "bge-m3-hnsw-ip.faiss"
         )
         backend.save_index(index_path)
+        mapping_path = index_path.with_suffix(".mapping.json")
+        mapping_path.write_text(
+            json.dumps(
+                {
+                    "mapping_version": "position-to-item-id-v1",
+                    "document_ids": sorted(document.document_id for document in documents),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         manifest_path = write_index_manifest(
             index_path,
             items_path=items_path,
@@ -174,6 +198,8 @@ def main() -> None:
                 "platform": platform,
                 "locale": locale,
                 "partition_id": partition_id,
+                "position_mapping_path": str(mapping_path),
+                "position_mapping_sha256": sha256(mapping_path),
                 "embedding_fine_tuned": False,
                 "semantic_query_policy": "encode original query without translation",
                 "lexical_translation_policy": (

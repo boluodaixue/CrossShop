@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from uuid import uuid4
 
-from globex_agent.application.agents.checkpoint import (
-    compress_checkpoint,
-    restore_checkpoint,
-    serialize_checkpoint,
-)
+from langchain_core.messages import RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+from globex_agent.application.agents.identity import graph_config
 
 
 class LangGraphAgent:
@@ -31,21 +29,18 @@ class LangGraphAgent:
         thread_id: str | None = None,
         event_sink: Callable[[str, dict], Awaitable[None] | None] | None = None,
     ) -> str:
-        actual_thread_id = (
-            thread_id
-            or self._thread_id
-            or f"{self.name}-{uuid4().hex[:8]}"
-        )
-        config = {
-            "configurable": {"thread_id": actual_thread_id},
-            "recursion_limit": 30,
-        }
+        actual_thread_id = thread_id or self._thread_id
+        if not actual_thread_id:
+            raise ValueError("thread_id is required for a persistent LangGraph agent")
+        config = graph_config(actual_thread_id)
+        graph_input = await self._input_for_reply(query, config)
         if event_sink is not None:
-            return await self._reply_with_stream(query, config, event_sink)
+            return await self._reply_with_stream(graph_input, config, event_sink)
 
         state = await self._graph.ainvoke(
-            {"messages": [("user", query)]},
+            graph_input,
             config=config,
+            durability="sync",
         )
         messages = state.get("messages", [])
         if not messages:
@@ -58,17 +53,26 @@ class LangGraphAgent:
             return content
         return str(content)
 
+    async def _input_for_reply(self, query: str, config: dict) -> dict | None:
+        """Continue a durable graph step instead of appending a duplicate turn."""
+
+        snapshot = await self._graph.aget_state(config)
+        if snapshot.next or snapshot.tasks:
+            return None
+        return {"messages": [("user", query)]}
+
     async def _reply_with_stream(
         self,
-        query: str,
+        graph_input: dict | None,
         config: dict,
         event_sink: Callable[[str, dict], Awaitable[None] | None],
     ) -> str:
         assistant_text: list[str] = []
         async for message_chunk, _metadata in self._graph.astream(
-            {"messages": [("user", query)]},
+            graph_input,
             config=config,
             stream_mode="messages",
+            durability="sync",
         ):
             content = getattr(message_chunk, "content", "")
             if isinstance(content, str) and content:
@@ -91,30 +95,29 @@ class LangGraphAgent:
             return "".join(assistant_text)
         return str(content)
 
-    def checkpoint_state(self, thread_id: str) -> str:
-        """Return a JSON snapshot of the latest graph checkpoint."""
-
-        checkpointer = getattr(self._graph, "checkpointer", None)
-        if checkpointer is None:
-            return "{}"
-        return serialize_checkpoint(checkpointer, thread_id)
-
-    def restore_checkpoint_state(self, state_json: str, thread_id: str) -> None:
-        """Restore a graph checkpoint from a previous process run."""
-
-        checkpointer = getattr(self._graph, "checkpointer", None)
-        if checkpointer is None:
-            return
-        restore_checkpoint(checkpointer, state_json, thread_id)
-
-    def compress_context(
+    async def compress_context(
         self,
         thread_id: str,
         max_messages: int,
     ) -> dict[str, int] | None:
         """Trim old graph messages when the conversation becomes too long."""
 
-        checkpointer = getattr(self._graph, "checkpointer", None)
-        if checkpointer is None:
+        if max_messages < 2:
+            raise ValueError("max_messages must be at least 2")
+        config = graph_config(thread_id)
+        state = await self._graph.aget_state(config)
+        messages = state.values.get("messages", [])
+        if not isinstance(messages, list) or len(messages) <= max_messages:
             return None
-        return compress_checkpoint(checkpointer, thread_id, max_messages)
+
+        keep_head = [messages[0]] if getattr(messages[0], "type", None) == "system" else []
+        tail_size = max(1, max_messages - len(keep_head))
+        kept = [*keep_head, *messages[-tail_size:]]
+        await self._graph.aupdate_state(
+            config,
+            {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *kept]},
+        )
+        return {
+            "removed": len(messages) - len(kept),
+            "kept": len(kept),
+        }

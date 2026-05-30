@@ -6,10 +6,12 @@ import asyncio
 
 import pytest
 
+from globex_agent.application.agents.identity import ThreadIdentity
 from globex_agent.application.agents.orchestrator import (
     MainAgentOrchestrator,
     SubmitIntentInput,
 )
+from globex_agent.application.agents.session_lock import SessionLockRegistry
 from globex_agent.infrastructure.context import (
     ShoppingContext,
     ShoppingContextSnapshot,
@@ -45,7 +47,7 @@ class FakeAgent:
         del query, thread_id, event_sink
         return "done"
 
-    def compress_context(self, thread_id, max_messages) -> dict | None:
+    async def compress_context(self, thread_id, max_messages) -> dict | None:
         del thread_id, max_messages
         return {"removed": 2, "kept": 4}
 
@@ -55,6 +57,16 @@ class FakeAgent:
 
 
 class FakeSessions:
+    def __init__(self) -> None:
+        self._identity = ThreadIdentity(environment="test", hmac_key="event-test")
+        self._locks = SessionLockRegistry()
+
+    def thread_id(self, shopping_session_id: str) -> str:
+        return self._identity.main_thread_id(shopping_session_id)
+
+    def session_lock(self, shopping_session_id: str):
+        return self._locks.acquire(self.thread_id(shopping_session_id))
+
     async def get_or_create(self, shopping_session_id):
         del shopping_session_id
         return FakeAgent()

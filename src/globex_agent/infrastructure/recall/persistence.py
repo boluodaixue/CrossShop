@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from globex_agent.domain import StandardItem
 from globex_agent.infrastructure.recall.base import SearchDocument
 from globex_agent.infrastructure.recall.embedding import clean_product_body
+from globex_agent.infrastructure.recall.search_document import (
+    ITEM_TEXT_FORMAT_VERSION,
+    standard_item_to_search_document,
+)
 
 
 def load_search_documents_jsonl(path: Path) -> list[SearchDocument]:
     with path.open(encoding="utf-8") as source:
-        records: list[dict[str, Any]] = [
-            json.loads(line) for line in source if line.strip()
-        ]
+        records: list[dict[str, Any]] = [json.loads(line) for line in source if line.strip()]
     return [
         SearchDocument(
             document_id=record["document_id"],
@@ -40,29 +43,6 @@ def load_standard_item_documents_jsonl(path: Path) -> list[SearchDocument]:
     return documents
 
 
-def standard_item_to_search_document(item: StandardItem) -> SearchDocument:
-    body = " ".join(
-        part
-        for part in (
-            item.brand or "",
-            " ".join(item.category_path),
-            _json_text(item.attributes),
-            _json_text(item.variants),
-            item.description,
-        )
-        if part
-    )
-    return SearchDocument(
-        document_id=item.item_id,
-        title=item.title,
-        body=clean_product_body(item.title, body),
-    )
-
-
-def _json_text(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def write_index_manifest(
     index_path: Path,
     *,
@@ -77,6 +57,7 @@ def write_index_manifest(
     extra_metadata: dict[str, Any] | None = None,
 ) -> Path:
     manifest = {
+        "built_at": datetime.now(timezone.utc).isoformat(),
         "architecture": "query-item-dual-tower",
         "user_tower": False,
         "encoder_model": model_name,
@@ -97,6 +78,26 @@ def write_index_manifest(
         encoding="utf-8",
     )
     return manifest_path
+
+
+def index_manifest_compatible(index_path: Path) -> tuple[bool, str]:
+    """Check whether an on-disk Faiss index uses current Item text semantics."""
+
+    manifest_path = index_path.with_suffix(".manifest.json")
+    if not manifest_path.exists():
+        return False, f"missing index manifest: {manifest_path}"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"invalid index manifest {manifest_path}: {exc}"
+    actual = manifest.get("text_format_version")
+    if actual != ITEM_TEXT_FORMAT_VERSION:
+        return (
+            False,
+            "index text format mismatch: "
+            f"expected {ITEM_TEXT_FORMAT_VERSION}, found {actual!r}; rebuild index",
+        )
+    return True, "compatible"
 
 
 def sha256(path: Path) -> str:

@@ -154,9 +154,7 @@ def select_retrieval_tasks(
             target = items_by_id[task.target_item_id]
             support[task.task_id] = _attribute_peer_support(target, peers)
         eligible_tasks = [
-            task
-            for task in category_tasks
-            if support[task.task_id][1] >= min_two_attribute_peers
+            task for task in category_tasks if support[task.task_id][1] >= min_two_attribute_peers
         ]
         if not eligible_tasks:
             continue
@@ -203,9 +201,7 @@ def select_retrieval_tasks(
             _stable_key(task.task_id),
         ),
     )
-    selected.extend(
-        (task, "test") for task in extra_test[: test_count - current_test]
-    )
+    selected.extend((task, "test") for task in extra_test[: test_count - current_test])
     if sum(split == "test" for _, split in selected) != test_count:
         raise ValueError("could not fill the requested test split")
 
@@ -322,8 +318,11 @@ def _attribute_peer_support(
 
 
 def _normalized_attributes(item: StandardItem) -> set[str]:
-    values = item.attributes.get("source_attributes", [])
-    return {" ".join(str(value).casefold().split()) for value in values if str(value).strip()}
+    return {
+        " ".join(str(attribute.value).casefold().split())
+        for attribute in item.attributes
+        if attribute.code == "source_attributes" and str(attribute.value).strip()
+    }
 
 
 def _stable_key(value: str) -> str:

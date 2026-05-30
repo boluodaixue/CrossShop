@@ -517,13 +517,14 @@ def _build_pool_case(
                 category_path=item.category_path,
                 description=_truncate(item.description, 180),
                 source_attributes=[
-                    _truncate(str(value), 40)
-                    for value in item.attributes.get("source_attributes", [])[:12]
-                ],
+                    _truncate(str(attribute.value), 40)
+                    for attribute in item.attributes
+                    if attribute.code == "source_attributes"
+                ][:12],
                 variant_values=[
                     _variant_summary(variant)
                     for variant in item.variants[:12]
-                    if str(variant.get("value", "")).strip()
+                    if any(option.value.strip() for option in variant.options)
                 ],
                 price_summary=_price_summary(item),
                 pool_sources=sorted(source_ranks),
@@ -599,18 +600,18 @@ def _price_summary(item: StandardItem) -> str | None:
     if item.price_cny is not None:
         return f"CNY {item.price_cny}"
     values = [
-        Decimal(str(variant["price_cny"]))
+        Decimal(str(variant.price_cny))
         for variant in item.variants
-        if variant.get("price_cny") is not None
+        if variant.price_cny is not None
     ]
     if values:
         return f"CNY {min(values)}-{max(values)}（按规格）"
     return None
 
 
-def _variant_summary(variant: dict[str, Any]) -> str:
-    value = _truncate(str(variant.get("value", "")), 48)
-    price = variant.get("price_cny")
+def _variant_summary(variant) -> str:
+    value = _truncate(" / ".join(option.value for option in variant.options), 48)
+    price = variant.price_cny
     return f"{value} @ CNY {price}" if price is not None else value
 
 
@@ -641,9 +642,9 @@ def _response_text(content: Any) -> str:
 
 def _normalized_attributes(item: StandardItem) -> set[str]:
     return {
-        " ".join(str(value).casefold().split())
-        for value in item.attributes.get("source_attributes", [])
-        if str(value).strip()
+        " ".join(str(attribute.value).casefold().split())
+        for attribute in item.attributes
+        if attribute.code == "source_attributes" and str(attribute.value).strip()
     }
 
 

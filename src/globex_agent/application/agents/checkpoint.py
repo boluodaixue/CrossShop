@@ -1,9 +1,8 @@
-"""JSON-friendly checkpoint persistence for LangGraph's in-memory saver.
+"""Legacy JSON bridge for historical ``InMemorySaver`` checkpoints.
 
-The application currently uses ``InMemorySaver`` because the lightweight local
-setup should not require a service database.  Restart recovery therefore needs
-an explicit bridge: serialize the latest checkpoint into JSON, write it through
-``SessionStore``, and restore it into a fresh ``InMemorySaver`` on startup.
+The formal composition/runtime path uses the shared official Redis checkpointer
+and no longer imports this module.  It remains only to preserve the D-drive
+worktree's compatibility code; old JSON snapshots are not migrated automatically.
 """
 
 from __future__ import annotations

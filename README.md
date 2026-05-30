@@ -16,6 +16,23 @@
 - `src/globex_agent/presentation/`：FastAPI + WebSocket；`frontend/` 为 React 对话界面。
 - 主 Agent 默认单干，需要时通过批量 `task_dispatch(dispatches)` 并行调用 `search_agent` / `trade_agent`。
 
+### LangGraph Checkpoint 与队列边界
+
+- FastAPI 主线在 lifespan startup 创建一个共享的官方 `AsyncRedisSaver`，调用
+  `asetup()` 后注入 Main/Search/Trade 图；shutdown 通过其异步上下文退出关闭连接，绝不按请求创建 saver。
+- Checkpoint 使用 Redis 8.2.8（RedisJSON/RediSearch 能力由 Redis 8 提供），默认 TTL 为 7 天，读取时刷新。
+  官方 saver 自己管理内部 key；应用 completion marker 才使用 `globex:{env}:v1:*` 前缀。
+- `main_thread_id` 是 shopping session ID 的 HMAC 摘要；child ID 由父 ID、agent role 和稳定
+  `tool_call_id`/dispatch ID 派生，不放原始 session、查询或 PII。根 `checkpoint_ns` 固定为空字符串。
+- 用户重试或再次请求同一 thread ID 时恢复；不做启动扫描，也不重新引入任务队列。进程内同一匿名 session
+  串行，不同 session 可并行；checkpoint 负责持久化，不替代逻辑锁。
+- Checkpoint 只保存 Agent 图运行状态。`ConversationStore` 保存可读对话/事件，订单仓储保存业务订单，偏好/长期记忆
+  继续独立；旧 JSON/SQL `SessionStore` 仅作 legacy 兼容，不自动迁移且不由 composition/runtime 使用。
+- 本地不配置 `LANGGRAPH_AES_KEY` 可以运行。当前 `langgraph-checkpoint-redis==0.5.2` 的
+  `AsyncRedisSaver` 没有公开 serializer 注入，配置密钥或在非本地环境启动会诚实拒绝，不能声称已加密，待官方支持/升级。
+- Redis Stream worker 是可选多用户部署能力，与 checkpoint 不同；默认 `QUEUE_ENABLED=0`。需要时使用
+  `docker compose --profile queue` 并显式打开队列，GPU embedding/reranker 常驻 worker 仍独立保留。
+
 Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构建记录见
 [docs/data/multiplatform_catalog.md](docs/data/multiplatform_catalog.md)。
 
@@ -54,10 +71,12 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
 - [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
 - [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
+- [x] 商品主链已切换正式 `item-text-v5-catalog-schema-v2` 四分区 Faiss（45,238 商品）；BM25 仅 ANN 故障降级，索引记录见 `docs/data/catalog_faiss_schema_v2_20260820.md`
+- [x] 订单写操作已切换 Prepare → 可信 Confirm 两阶段门禁；LLM 只能准备预览，token 仅经结构化确认 API 提交，订单/取消旧直调会被应用层拒绝
 - [x] 最新完整真实模型回归 `13/13 PASS`（平均分 `1.000`），报告见 [eval/report-20260819-223705.md](eval/report-20260819-223705.md)
 - [x] 新增 flow query 真实模型评测：9 条 RAG/召回/ESCI query 已跑完整流程；真实 OpenSearch + CategoryInsight RAG 8 条完整链路 `3/8 PASS`，详见 [docs/experiments/flow_query_eval_20260820.md](docs/experiments/flow_query_eval_20260820.md)
-- [x] 真实 LLM smoke 通过；补充 `model.fallback`、`plan.update`、`context.compressed`、熔断、重启恢复与并发会话隔离测试，pytest `159 passed`
-- [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Docker daemon 尚未启动，`docker compose config` 已通过
+- [x] 真实 LLM smoke 通过；核心 Redis checkpoint 迁移单测 `26 passed`；真实 Redis 集成 `6 passed`；D 盘真实数据环境完整 pytest `192 passed`
+- [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Redis 8.2.8 Compose 健康检查、`docker compose config` 与 `git diff --check` 已通过
 
 - [x] 初始化独立项目目录
 - [x] 建立 Codex 项目规则
@@ -103,6 +122,11 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 
 `start_dev.ps1` 会同时启动后端和前端，等待 `/health` 通过后打印访问地址；按 `Ctrl+C` 会一起停止。也可只启动后端：
 
+正式商品查询编码使用 BGE-M3 `cuda:0`。若主项目 Python 是 CPU-only，请在 `.env` 中将
+`BGE_M3_PYTHON` 指向 CUDA-enabled Python；项目会启动常驻查询 worker，不会按查询重复
+加载模型，也不会在 CUDA 配置错误时静默回退 CPU。契约固定为 512 token、FP16、CLS pooling、
+L2 normalization、1024 维；BM25 仅用于 ANN 故障降级。
+
 ```powershell
 .\scripts\start_dev.ps1 -SkipFrontend
 ```
@@ -128,7 +152,7 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 - 确定性工具链：`ItemSearch → PriceCompare → ShippingCalc → ItemPicker → ShoppingSummary`。
 - 单 AgentLoop：LangGraph 实际执行 `human → ai(tool_call) → tool → ... → ai(final)` 消息循环；固定 case 可用脚本模型，`--query --real` 使用 DeepSeek 解析自由文本并编排工具。
 - 检索基线：可替换 `SearchBackend`、无外部依赖的 BM25、35 个 ESCI 封闭查询组和 Recall/MRR/NDCG/空召回率报告；每个返回商品都有显式标注。
-- 双塔检索：课程主线保留 BGE-M3 ANN Top-100 → 可选 BGE Reranker Top-10；runtime 当前默认采用 ANN overfetch → `same_group_id` canonical 去重 → Top-K，展示语言只在相关性排序完成后选择。BM25 只作基线，Hybrid 只作显式扩展消融。
+- 双塔检索：商品 runtime 采用纯 BGE-M3/Faiss ANN `100 → 200 → 400 → 500` 渐进召回；每轮先读取新增 `StandardItem` 并执行事实型硬约束，足够后才对合格池做 BGE Reranker 和 requested Top-K。BM25 仅在 ANN 未配置或故障时降级；Hybrid 不属于商品主链。索引和 runtime 共用仅含搜索字段的 SearchDocument，旧 text-format 索引会被显式跳过并要求重建。
 - 商品知识卡 RAG：OpenSearch 使用独立的动态 Hybrid 配置；runtime 默认不启用当前会降分的通用 Reranker，只有显式 opt-in 时才运行，失败时保留 Hybrid 顺序。知识卡配置不混入商品召回主链。
 - 验证结果：Python 3.10.20；Ruff 与 pytest 通过；固定 case、真实自由文本、阶段四基线、阶段五商品召回和阶段六 CategoryInsight 均已实际运行成功。
 
@@ -147,6 +171,7 @@ docker compose -f infra\opensearch\docker-compose.yml up -d --wait
 | `pydantic` | 定义 `StandardItem`、`Candidate`、`PricePoint`、`LandedCost`、`PickedItem` 等稳定契约 | 标准库 dataclass + 手写校验，但错误定位和 JSON 解析成本更高 |
 | `langchain` / `langchain-openai` | 第 10 章统一模型入口、消息和工具抽象 | 纯 SDK 手写消息协议，但偏离课程 |
 | `langgraph` | 第 2 章 AgentLoop、检查点和循环限制 | 纯 Python `while`，但缺少课程状态图语义 |
+| `langgraph-checkpoint-redis` | 官方 RedisJSON/RediSearch LangGraph checkpoint，节点级持久化与 TTL | `InMemorySaver` 仅用于单测；旧 JSON/SQL bridge 不再用于正式运行 |
 | `PyYAML` | 从 `prompts.yml` 加载版本化提示词 | Python 字符串常量，但不符合第 10 章配置方式 |
 | `python-dotenv` | 真实模型模式读取本地 `.env` | 由终端手动设置环境变量 |
 | `numpy` | 向量归一化、精确检索基线与索引测试 | 纯 Faiss，但不便保留可解释的正确性基线 |
@@ -324,3 +349,6 @@ OpenSearch 使用 `analysis-ik`，索引 `globex_category_kb_taobao_zh_v1` 以
 `CategoryInsightService` 仍保留 quick/deep 提炼、品类归一、普通品类空组件、
 向量失败降级 BM25、OpenSearch 失败返回 confidence=0，以及 Reranker 失败保留粗排。
 当前尚无 WebSearch 工具，低置信度 WebSearch 补充仍是后续项。
+# 当前商品契约
+
+商品事实已采用 `catalog-schema-v2`：`StandardItem` 使用 typed attributes/materials/variants、三态 availability 和显式 `ships_to`；有规格价格只在 variant，无规格订单才读取 item 价格。迁移 staging、真实四分区计数和 hash 见 [catalog-schema-v2 迁移记录](docs/data/catalog_schema_v2_migration_20260820.md)。Faiss 尚未按 v5 文本重建，运行时会拒绝旧索引并诚实降级。

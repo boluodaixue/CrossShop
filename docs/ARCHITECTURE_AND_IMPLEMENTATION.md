@@ -81,9 +81,10 @@ final.result / error
 
 - 使用 `contextvars` 的 `ShoppingContext` 保存当前任务的 `shopping_session_id / buyer_id / locale / currency`
 - 每个 asyncio Task 上下文隔离，多用户并发不会串台
-- 每个 `shopping_session_id` 有独立的 LangGraph `InMemorySaver`
-- `SessionRegistry` 缓存 Agent，并按会话序列化 checkpoint 到 `SessionStore`
-- 服务重启后，从 `SessionStore` 恢复 checkpoint
+- FastAPI lifespan 创建一个共享的官方 `AsyncRedisSaver`，Main/Search/Trade 图共享它；不按请求创建连接
+- `SessionRegistry` 缓存 Agent，并按匿名 session 使用进程内 `asyncio` 锁串行执行；不同 session 可并行
+- Redis checkpoint 在 LangGraph 节点级写入，服务重启后用户重试同一稳定 `thread_id` 即恢复；不做启动扫描
+- checkpoint 不是逻辑锁：Redis 持久化解决恢复，锁解决同一进程内并发状态/写操作交错
 
 ## 3. 目录结构
 
@@ -132,7 +133,7 @@ item_id / same_group_id / platform / locale / language
 title / description / brand / category_path
 price_cny / original_price_cny / currency_raw / price_source
 rating / review_count / attributes / variants
-is_available / provenance / source_updated_at / ingested_at
+availability / provenance / source_updated_at / ingested_at
 ```
 
 关键约束：
@@ -184,7 +185,8 @@ tariff = max(0, subtotal - de_minimis) * rate
 DRAFT → CONFIRMED → CANCELLED
 ```
 
-下单即进入 `CONFIRMED`，取消只能从 `CONFIRMED` 到 `CANCELLED` 并必须带 reason。
+订单创建仍在领域层进入 `CONFIRMED`，取消只能从 `CONFIRMED` 到 `CANCELLED` 并必须带 reason；
+但用户写操作必须经过 `OrderConfirmationService` 的 Prepare → 可信 Confirm 两阶段门禁。
 
 订单行使用 `item_id + variant_id`，并对下单时价格做快照。金额只通过 `Order.snapshot()` 输出，不允许 Agent 自行计算。
 
@@ -196,11 +198,12 @@ DRAFT → CONFIRMED → CANCELLED
 
 ### 4.5 会话与队列端口
 
-- `SessionStore`：保存/读取 LangGraph checkpoint
+- `SessionStore`：legacy AgentState bridge，仅为兼容旧代码保留；正式 checkpoint 由官方 Redis saver 管理，composition 不装配它
 - `ConversationStore`：保存业务可读对话流水和过程事件
 - `TaskQueue`：任务队列抽象，当前实现 Redis Stream
 
-领域层只定义端口，基础设施提供文件、SQLite 或 Redis 实现。
+领域层只定义端口，基础设施提供文件、SQLite 或 Redis 实现。ConversationStore、订单仓储、偏好/长期记忆与 Agent
+checkpoint 各自负责不同数据，不互相替代。
 
 ## 5. 应用层
 
@@ -212,29 +215,46 @@ DRAFT → CONFIRMED → CANCELLED
 
 ```text
 ProductSearchSpec
-  → vector recall（BGE-M3 + Faiss，Top-8）
-  → rerank（BGE Reranker）
-  → 硬约束过滤（availability / ship_to / price cap）
-  → ProductCard 列表
+  → vector recall（BGE-M3 + Faiss，100 → 200 → 400 → 最大 500）
+  → 批量读取新增 StandardItem
+  → ConstraintEvaluator 硬约束过滤
+  → rerank（BGE Reranker，仅重排合格候选池）
+  → requested Top-K ProductCard 列表
 ```
+
+初始 Top-100 是运行时粗召回深度；过滤后的合格候选不足 `top_k` 时才逐级补到
+200、400、500。每轮只处理新 `item_id`；达到数量、索引耗尽或 500 即停止。评测文档
+中的 Top-10 是 Recall/MRR/NDCG 的截断口径。达到上限仍不足时返回部分结果和完整诊断。
 
 召回策略：
 
 - `embedding_rerank`
 - `embedding_only`
-- `keyword_bm25`
+- `bm25_fallback_*`（仅 ANN 故障或未配置时）
 
-硬约束过滤使用结构化逻辑，不交给模型。`filtered_out` 记录被硬约束挡掉的候选及原因。
+硬约束由可复用的 `ConstraintEvaluator` 执行：只接受三态 `availability`、明确的
+`attributes.ships_to`、商品级明确价格上限、以及调用方明确给出的平台/locale/品牌/类目。
+平台或 locale 推导出的配送范围仅作展示，不能证明 `ship_to`，因而会以
+`ship_to_unknown` 诊断过滤。材质和规格价格/可售状态等待统一 typed schema 后再加入。
+
+`SearchDocument` 是建索引和 runtime reranker 的唯一构造器，只含 title、brand、类目、
+description、可搜索 attributes 和规格 option 名称/值；不含价格、库存、SKU/variant ID、
+配送、URL、时间戳或 provenance（attributes 任意嵌套层同样递归清除）。其
+`item-text-v5-catalog-schema-v2` 版本进入 manifest；旧 v4 索引拒绝加载。
+应用启动会拒用 text-format 不匹配的持久化 Faiss 索引。
 
 ### 5.2 订单用例
 
 文件：`src/globex_agent/application/usecases/order_usecases.py`
 
-- `PlaceOrderUseCase`：校验商品存在、可售、变体存在，创建订单
+- `PlaceOrderUseCase`：只允许确认服务调用内部 confirmed 执行路径；公开 `execute` 直接拒绝绕过确认
 - `QueryOrderUseCase`：按订单号查询
-- `CancelOrderUseCase`：校验订单状态后取消
+- `CancelOrderUseCase`：只允许确认服务调用内部 confirmed 执行路径；公开 `execute` 直接拒绝绕过确认
+- `confirmation_usecases.py`：生成一次性随机 token（只存 SHA-256）、canonical payload 摘要、5 分钟
+  默认 TTL、session/user/action 校验、价格/规格/配送/availability 重读和原子 claim/consume。
 
-订单工具层再包一层，用于发布 `tool.invoke` / `tool.result` 事件并把异常转为 `[error]`。
+订单工具层只暴露 prepare 订单/取消和查询；ConfirmOrder/ConfirmCancel 只在 FastAPI 可信结构化入口，
+不注册为 LLM tool。工具事件和返回预览不包含原始 token。
 
 ### 5.3 工具
 
@@ -245,9 +265,9 @@ ProductSearchSpec
 | `product_search_tool` | 标准化 query → 商品卡 |
 | `category_insight_tool` | 品类知识卡 → 选购口径 |
 | `web_search_tool` | Tavily 联网搜索，未配置 key 不注册 |
-| `create_order_tool` | 创建订单 |
+| `prepare_order_tool` | 读取事实并生成不可变订单预览 |
 | `query_order_tool` | 查询订单 |
-| `cancel_order_tool` | 取消订单 |
+| `prepare_cancel_order_tool` | 生成取消预览 |
 | `remember_preference_tool` | 写入长期偏好 |
 | `task_dispatch` | 批量并行调度子 Agent |
 
@@ -266,13 +286,29 @@ ProductSearchSpec
 - `main_agent.py`：主 Agent，默认单干，持有全部业务工具和 `task_dispatch`
 - `search_agent.py`：商品检索子 Agent
 - `trade_agent.py`：订单交易子 Agent
-- `base.py`：`LangGraphAgent` 包装 `astream` / checkpoint / 上下文压缩
-- `checkpoint.py`：把 `InMemorySaver` checkpoint 序列化为 JSON，支持重启恢复
-- `orchestrator.py`：`MainAgentOrchestrator`，处理缓存、偏好注入、事件发布、会话持久化
+- `base.py`：`LangGraphAgent` 包装 `astream` / 原生 checkpoint / 上下文压缩
+- `identity.py`：稳定匿名 main/child thread ID 与根 `checkpoint_ns`
+- `session_lock.py`：按匿名 session 的进程内 asyncio 串行锁
+- `orchestrator.py`：`MainAgentOrchestrator`，处理缓存、偏好注入、事件发布、对话存储
 
-Agent 图使用 `langgraph.prebuilt.create_react_agent`，checkpointer 使用 `InMemorySaver`。
+Agent 图使用 `langgraph.prebuilt.create_react_agent`，checkpointer 使用共享的官方
+`langgraph-checkpoint-redis.AsyncRedisSaver`。`src/globex_agent/infrastructure/checkpoint.py`
+负责 startup/asetup、严格 fail-fast、7 天 TTL、dispatch done/result marker 和 shutdown。
 
-### 5.5 提示词
+### 5.5 Checkpoint、身份与恢复
+
+- Main thread ID：`globex:{version}:{env}:main:{HMAC(shopping_session_id)}`；不包含敏感原文。
+- Child thread ID：由父 thread、`search_agent`/`trade_agent` role 和稳定 dispatch ID 派生。优先使用
+  LangGraph 注入的 `tool_call_id`，重试/重建 child Agent 对象也复用同一 ID。
+- 顶层 `checkpoint_ns` 固定为 `""`；Main/Search/Trade/并发子任务通过不同 thread ID 隔离，应用不耦合 saver 的内部 namespace。
+- `task_dispatch` 的完成结果是应用侧独立 marker，不是 checkpoint。父工具重放时先读 marker，已完成子任务不二次执行。
+- 当前恢复触发是用户重试/同 thread 再调用；不引入启动扫描，不把 Redis Stream worker 当作 checkpoint 恢复机制。
+- 本地 checkpoint 默认保留 10080 分钟（7 天），读取时刷新。Redis 不可用、未配置 URL 或不满足加密策略时启动失败，禁止静默回退 `InMemorySaver`。
+- `AsyncRedisSaver` 0.5.2 的真实 API 支持直接构造、`asetup()` 和异步上下文 `__aexit__()`；当前版本没有公开 serializer 注入。
+  因此本地不设 `LANGGRAPH_AES_KEY` 可运行；配置 key 或非本地强制加密会拒绝启动，不能宣称 checkpoint 已加密，待官方支持/升级。
+- `data/sessions/*.json` 与 SQL `SessionStore` bridge 默认明确不兼容、不自动迁移；需要旧数据时另行评估一次性迁移，不混入正式启动路径。
+
+### 5.6 提示词
 
 文件：`src/globex_agent/application/prompts/globex.yml`
 
@@ -280,7 +316,8 @@ Agent 图使用 `langgraph.prebuilt.create_react_agent`，checkpointer 使用 `I
 
 - 默认单干，复杂任务才派发
 - 价格/库存/运费必须来自工具返回
-- 下单/取消前必须先出确认卡
+- 下单/取消前必须先出确认卡；用户通过 `/commerce/orders/confirm` 或
+  `/commerce/orders/cancel/confirm` 结构化入口提交 token，LLM 不能自我确认
 - 禁止点名 filtered_out 的库外商品
 - 默认只推荐 1 个最匹配商品，除非用户明确要求多个或对比
 
@@ -371,6 +408,9 @@ Agent 图使用 `langgraph.prebuilt.create_react_agent`，checkpointer 使用 `I
 - `POST /commerce/intents/async` 入队
 - worker 消费 Redis Stream
 - `task.queued` / `task.started` / `final.result` 事件通过背板回到 API
+
+这是可选的 Redis Stream 多用户部署能力，不是 LangGraph checkpoint。默认 `QUEUE_ENABLED=0`，本地主线由
+FastAPI 直接执行 LangGraph；embedding/reranker GPU 常驻 worker 仍是另一条独立链路。
 
 ### 6.8 召回与向量
 
@@ -464,9 +504,14 @@ GET  /health
 ### 8.1 自动化测试
 
 ```text
-pytest：162 passed
+pytest：D 盘最终验收 192 passed（真实 Redis 已启用）
 ruff：All checks passed
 ```
+
+Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm`，覆盖节点级 history、saver/graph
+重建恢复、TTL 刷新、Main/Search/Trade/session 隔离、child done marker、pending/interrupt 重入和 Redis
+故障 fail-fast。此前在 C 盘 worktree 缺 Amazon catalog SQLite 与中文路径导致的 3 个环境失败，已在具有
+真实数据且路径为 ASCII 的 D 盘项目复验通过；完整测试无失败。
 
 覆盖：领域模型、订单状态机、召回、知识卡、事件、熔断、模型回退、会话恢复、并发隔离、表现层。
 

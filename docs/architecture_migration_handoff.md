@@ -3,6 +3,10 @@
 > 用途：交给 DeepSeek V4 flash 执行。本文件是当前唯一执行依据，若与历史方案冲突，以本文件为准。
 > 状态：已由项目主人确认，等待执行。
 
+> P0-003 更新（2026-08-21）：订单/取消写操作已完成 Prepare → 可信 Confirm 门禁。
+> Agent 只注册准备工具；确认 token 只经 FastAPI 结构化入口提交，应用层保存 token hash、
+> canonical payload SHA-256、session/user/action、TTL 和一次性状态。多进程持久化仍列为 P1-011。
+
 ## 0. 目标
 
 把 `GlobexAgentLearning` 从旧的 9 工具课程复现，迁移成面向简历/面试的
@@ -213,9 +217,20 @@ LLM_FALLBACK_MODEL=
 LLM_JUDGE=
 DATABASE_URL=file
 REDIS_URL=
+CHECKPOINT_REDIS_URL=
+GLOBEX_ENV=local
+CHECKPOINT_TTL_MINUTES=10080
+CHECKPOINT_REFRESH_ON_READ=1
+CHECKPOINT_REQUIRE_ENCRYPTION=0
+LANGGRAPH_AES_KEY=
+THREAD_ID_HMAC_KEY=
 QUEUE_ENABLED=0
 SEMANTIC_CACHE_ENABLED=1
 ```
+
+当前实现补充：FastAPI 主线使用共享官方 `AsyncRedisSaver`，Redis checkpoint 与 Redis Stream
+worker 分离；旧 JSON/SQL `SessionStore` bridge 不自动迁移，非本地加密配置在当前
+`langgraph-checkpoint-redis==0.5.2` serializer 不可注入时会 fail-fast。
 
 验收：
 
@@ -317,7 +332,8 @@ SEMANTIC_CACHE_ENABLED=1
 
 - `product_search_tool`：输入标准化 query 和槽位，返回商品卡、`landed_price`、`recall_strategy`、`filtered_out`。
 - `category_insight_tool`：调用现有 `CategoryInsightService`。
-- `order_tools`：创建、查询、取消订单，订单行使用 `item_id + variant_id`。
+- `order_tools`：只向 Agent 暴露准备订单/准备取消和查询；创建/取消必须经
+  `OrderConfirmationService` 的可信 Confirm API，订单行使用 `item_id + variant_id`。
 - `remember_preference_tool`：写入长期偏好。
 - `web_search_tool`：无 `TAVILY_API_KEY` 时不注册。
 - `task_dispatch_tool`：批量接口。

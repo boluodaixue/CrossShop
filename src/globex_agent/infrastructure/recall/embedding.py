@@ -10,7 +10,6 @@ from numpy.typing import NDArray
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_EMBEDDING_MAX_SEQ_LENGTH = 512
-ITEM_TEXT_FORMAT_VERSION = "item-text-v2"
 
 
 class TextEncoder(Protocol):
@@ -60,9 +59,7 @@ class SentenceTransformerTextEncoder:
         self._max_seq_length = max_seq_length
         self._local_files_only = local_files_only
         default_query_prefix, default_document_prefix = _model_prefixes(model_name)
-        self._query_prefix = (
-            default_query_prefix if query_prefix is None else query_prefix
-        )
+        self._query_prefix = default_query_prefix if query_prefix is None else query_prefix
         self._document_prefix = (
             default_document_prefix if document_prefix is None else document_prefix
         )
@@ -106,9 +103,7 @@ class SentenceTransformerTextEncoder:
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:  # pragma: no cover - dependency smoke test covers this
-                raise RuntimeError(
-                    "sentence-transformers is required for semantic recall"
-                ) from exc
+                raise RuntimeError("sentence-transformers is required for semantic recall") from exc
 
             model = SentenceTransformer(
                 self._model_name,

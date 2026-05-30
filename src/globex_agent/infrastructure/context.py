@@ -16,6 +16,7 @@ class ShoppingContextSnapshot:
     buyer_id: str
     locale: str
     currency: str
+    main_thread_id: str | None = None
 
 
 _current_snapshot: ContextVar[ShoppingContextSnapshot | None] = ContextVar(
@@ -41,3 +42,8 @@ class ShoppingContext:
     def current_session_id() -> str:
         snapshot = _current_snapshot.get()
         return snapshot.shopping_session_id if snapshot else "anonymous"
+
+    @staticmethod
+    def current_main_thread_id() -> str | None:
+        snapshot = _current_snapshot.get()
+        return snapshot.main_thread_id if snapshot else None

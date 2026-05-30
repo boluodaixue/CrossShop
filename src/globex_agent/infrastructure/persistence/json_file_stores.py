@@ -1,7 +1,8 @@
 """文件持久化实现（零外部依赖的默认形态）
 
     - 偏好：DATA_DIR/preferences/{buyer_id}.json（追加去重）
-    - 会话：DATA_DIR/sessions/{session_id}.json（AgentState 全量快照，重启恢复多轮对话）
+    - 会话：DATA_DIR/sessions/{session_id}.json（legacy AgentState 快照；正式运行时由
+      LangGraph Redis Checkpointer 负责节点级恢复，当前组合根不再使用该类）
     - 对话：DATA_DIR/conversations/{session_id}.jsonl（对话流水 + 事件轨迹）
 
 四期把 session/conversation 的方法改成 async 以对齐端口——文件 IO 本身是同步的，
@@ -70,7 +71,7 @@ class JsonFilePreferenceStore(PreferenceStore):
 
 
 class JsonFileSessionStore(SessionStore):
-    """AgentState 快照的文件存取（AgentState 是 pydantic 模型，直接 JSON round-trip）。"""
+    """Legacy AgentState 文件存取，正式运行路径不再使用。"""
 
     def __init__(self, data_dir: Path) -> None:
         self._dir = data_dir / "sessions"

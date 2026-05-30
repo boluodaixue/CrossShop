@@ -7,10 +7,12 @@ import re
 
 from langchain_core.tools import tool
 
+from globex_agent.application.usecases.confirmation_usecases import (
+    ConfirmationError,
+    OrderConfirmationService,
+)
 from globex_agent.application.usecases.order_usecases import (
-    CancelOrderUseCase,
     OrderItemInput,
-    PlaceOrderUseCase,
     QueryOrderUseCase,
 )
 from globex_agent.domain.order.address import Address
@@ -97,10 +99,13 @@ def _address(payload: dict) -> Address:
     )
 
 
-def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
+def build_prepare_order_tool(
+    service: OrderConfirmationService,
+    bus: TradeEventBus,
+):
     @tool
-    async def create_order_tool(items: list[dict], shipping_address: dict) -> str:
-        """创建订单（直接进入 CONFIRMED 态），买家身份由系统会话上下文自动注入。
+    async def prepare_order_tool(items: list[dict], shipping_address: dict) -> str:
+        """准备订单预览；最终下单必须由用户通过可信确认入口完成。
 
         Args:
             items: 订单行列表，每项含 item_id / variant_id / quantity。
@@ -114,7 +119,7 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
             session_id,
             "tool.invoke",
             {
-                "tool": "create_order_tool",
+                "tool": "prepare_order_tool",
                 "args": {
                     "buyer_id": buyer_id,
                     "items": items,
@@ -126,29 +131,55 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
             order_items = [
                 OrderItemInput(
                     item_id=str(item["item_id"]),
-                    variant_id=str(item.get("variant_id", "")),
+                    variant_id=(
+                        str(item["variant_id"])
+                        if item.get("variant_id") not in (None, "")
+                        else None
+                    ),
                     quantity=int(item.get("quantity", 1)),
                 )
                 for item in items
             ]
-            snapshot = await usecase.execute(
-                buyer_id=buyer_id,
+            preview = await service.prepare_order(
+                session_id=session_id,
+                user_id=buyer_id,
                 items=order_items,
                 shipping_address=_address(shipping_address),
+                include_token=False,
             )
-        except (ValueError, KeyError) as err:
+        except (ValueError, KeyError, ConfirmationError) as err:
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "create_order_tool", "error": str(err)},
+                {"tool": "prepare_order_tool", "error": str(err)},
             )
             return f"[error] {err}"
         bus.publish(
             session_id,
             "tool.result",
-            {"tool": "create_order_tool", "order": snapshot},
+            {
+                "tool": "prepare_order_tool",
+                "confirmation_required": True,
+                "confirmation_id": preview["confirmation_id"],
+            },
         )
-        return json.dumps(snapshot, ensure_ascii=False)
+        return json.dumps(preview, ensure_ascii=False)
+
+    return prepare_order_tool
+
+
+def build_create_order_tool(usecase, bus: TradeEventBus):
+    """Legacy name retained as a prepare-only compatibility wrapper."""
+
+    if isinstance(usecase, OrderConfirmationService):
+        return build_prepare_order_tool(usecase, bus)
+
+    @tool
+    async def create_order_tool(items: list[dict], shipping_address: dict) -> str:
+        """Compatibility stub; direct order creation is disabled."""
+
+        del items, shipping_address
+        return "[error] 直接 create_order_tool 已禁用，请通过可信 PrepareOrder/ConfirmOrder API"
 
     return create_order_tool
 
@@ -186,10 +217,13 @@ def build_query_order_tool(usecase: QueryOrderUseCase, bus: TradeEventBus):
     return query_order_tool
 
 
-def build_cancel_order_tool(usecase: CancelOrderUseCase, bus: TradeEventBus):
+def build_prepare_cancel_tool(
+    service: OrderConfirmationService,
+    bus: TradeEventBus,
+):
     @tool
-    async def cancel_order_tool(order_id: str, reason: str) -> str:
-        """取消订单（仅 CONFIRMED 态可取消）。
+    async def prepare_cancel_order_tool(order_id: str, reason: str) -> str:
+        """准备取消订单预览；最终取消必须由用户通过可信确认入口完成。
 
         Args:
             order_id: 订单号。
@@ -200,24 +234,50 @@ def build_cancel_order_tool(usecase: CancelOrderUseCase, bus: TradeEventBus):
             session_id,
             "tool.invoke",
             {
-                "tool": "cancel_order_tool",
+                "tool": "prepare_cancel_order_tool",
                 "args": {"order_id": order_id, "reason": reason},
             },
         )
         try:
-            snapshot = await usecase.execute(order_id, reason)
-        except ValueError as err:
+            preview = await service.prepare_cancel(
+                session_id=session_id,
+                user_id=_buyer_id(),
+                order_id=order_id,
+                reason=reason,
+                include_token=False,
+            )
+        except (ValueError, ConfirmationError) as err:
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "cancel_order_tool", "error": str(err)},
+                {"tool": "prepare_cancel_order_tool", "error": str(err)},
             )
             return f"[error] {err}"
         bus.publish(
             session_id,
             "tool.result",
-            {"tool": "cancel_order_tool", "order": snapshot},
+            {
+                "tool": "prepare_cancel_order_tool",
+                "confirmation_required": True,
+                "confirmation_id": preview["confirmation_id"],
+            },
         )
-        return json.dumps(snapshot, ensure_ascii=False)
+        return json.dumps(preview, ensure_ascii=False)
+
+    return prepare_cancel_order_tool
+
+
+def build_cancel_order_tool(usecase, bus: TradeEventBus):
+    """Legacy name retained as a prepare-only compatibility wrapper."""
+
+    if isinstance(usecase, OrderConfirmationService):
+        return build_prepare_cancel_tool(usecase, bus)
+
+    @tool
+    async def cancel_order_tool(order_id: str, reason: str) -> str:
+        """Compatibility stub; direct cancellation is disabled."""
+
+        del order_id, reason
+        return "[error] 直接 cancel_order_tool 已禁用，请通过可信 PrepareCancel/ConfirmCancel API"
 
     return cancel_order_tool

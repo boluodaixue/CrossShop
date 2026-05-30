@@ -5,7 +5,9 @@
 改成该驱动即可，仓储代码不需要改；但本仓未验证过那些驱动的特有行为。
 
 实现四个领域端口：SessionStore / ConversationStore / OrderRepository / PreferenceStore。
-domain 与 application 不感知本模块的存在，替换存储只改组装根。
+其中 SessionStore 是 legacy AgentState bridge，正式节点级恢复由 LangGraph Redis
+Checkpointer 负责，composition/runtime 不再装配它；ConversationStore 只保存业务可读
+对话流水，不是 checkpoint；订单和偏好仓储仍正常使用。
 
 并发安全要点：
     - 订单保存用 merge 覆盖写（订单号唯一，状态机由 domain 保证合法迁移）
@@ -88,6 +90,8 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
 
 
 class SqlSessionStore(SessionStore):
+    """Legacy AgentState SQL bridge，正式 composition/runtime 不再装配。"""
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -229,6 +233,7 @@ class SqlOrderRepository(OrderRepository):
                         item_id=line.item_id,
                         variant_id=line.variant_id,
                         title=line.title,
+                        variant_display_name=line.variant_display_name,
                         unit_price_minor=line.unit_price.amount_in_minor_units,
                         currency=line.unit_price.currency,
                         quantity=line.quantity,
@@ -320,6 +325,7 @@ def _row_to_order(row: OrderRow, line_rows: list[OrderLineRow]) -> Order:
                 item_id=line.item_id,
                 variant_id=line.variant_id,
                 title=line.title,
+                variant_display_name=line.variant_display_name,
                 unit_price=Money(
                     amount_in_minor_units=line.unit_price_minor,
                     currency=line.currency,

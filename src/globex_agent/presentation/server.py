@@ -15,12 +15,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from globex_agent.application.agents.orchestrator import SubmitIntentInput
+from globex_agent.application.tools.order_tools import _address
+from globex_agent.application.usecases.confirmation_usecases import ConfirmationError
+from globex_agent.application.usecases.order_usecases import OrderItemInput
 from globex_agent.composition import Container, build_container
 from globex_agent.domain.queue.ports.task_queue import IntentTask, TaskStatus
 from globex_agent.infrastructure.settings import load_settings
 from globex_agent.presentation.connection import ConnectionManager
 from globex_agent.presentation.dto import (
     CancelOrderRequest,
+    ConfirmCancelRequest,
+    ConfirmOrderRequest,
+    PrepareOrderRequest,
     SubmitIntentRequest,
     SubmitIntentResponse,
 )
@@ -185,14 +191,85 @@ def build_app() -> FastAPI:
         except ValueError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
 
+    @api.post("/commerce/orders/prepare")
+    async def prepare_order_endpoint(body: PrepareOrderRequest) -> dict:
+        current = container()
+        try:
+            return await current.confirmation_service.prepare_order(
+                session_id=body.shopping_session_id,
+                user_id=body.buyer_id,
+                items=[
+                    OrderItemInput(
+                        item_id=item.item_id,
+                        variant_id=item.variant_id,
+                        quantity=item.quantity,
+                    )
+                    for item in body.items
+                ],
+                shipping_address=_address(body.shipping_address),
+                idempotency_key=body.idempotency_key,
+                include_token=True,
+            )
+        except (ValueError, ConfirmationError) as err:
+            raise _confirmation_http_error(err) from err
+
+    @api.post("/commerce/orders/confirm")
+    async def confirm_order_endpoint(body: ConfirmOrderRequest) -> dict:
+        try:
+            return await container().confirmation_service.confirm_order(
+                confirmation_id=body.confirmation_id,
+                token=body.confirmation_token,
+                session_id=body.shopping_session_id,
+            )
+        except (ValueError, ConfirmationError) as err:
+            raise _confirmation_http_error(err) from err
+
     @api.post("/commerce/orders/{order_id}/cancel")
     async def cancel_order_endpoint(order_id: str, body: CancelOrderRequest) -> dict:
         try:
-            return await container().cancel_order.execute(order_id, body.reason)
-        except ValueError as err:
-            raise HTTPException(status_code=400, detail=str(err)) from err
+            return await container().confirmation_service.prepare_cancel(
+                session_id=body.shopping_session_id,
+                user_id=body.buyer_id,
+                order_id=order_id,
+                reason=body.reason,
+                idempotency_key=body.idempotency_key,
+                include_token=True,
+            )
+        except (ValueError, ConfirmationError) as err:
+            raise _confirmation_http_error(err) from err
+
+    @api.post("/commerce/orders/cancel/confirm")
+    async def confirm_cancel_endpoint(body: ConfirmCancelRequest) -> dict:
+        try:
+            return await container().confirmation_service.confirm_cancel(
+                confirmation_id=body.confirmation_id,
+                token=body.confirmation_token,
+                session_id=body.shopping_session_id,
+            )
+        except (ValueError, ConfirmationError) as err:
+            raise _confirmation_http_error(err) from err
 
     return api
+
+
+def _confirmation_http_error(error: Exception) -> HTTPException:
+    code = getattr(error, "code", "invalid_confirmation")
+    status_code = 409 if code in {
+        "already_used",
+        "in_progress",
+        "expired",
+        "invalidated",
+        "price_changed",
+        "spec_changed",
+        "shipping_changed",
+        "unavailable",
+        "order_changed",
+        "idempotency_conflict",
+    } else 400
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": str(error)},
+    )
 
 
 async def _enqueue(container: Container, intent: SubmitIntentInput) -> str:

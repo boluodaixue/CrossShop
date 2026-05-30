@@ -9,6 +9,7 @@
 自增主键用 `BigInteger().with_variant(Integer, "sqlite")`：SQLite 的 AUTOINCREMENT
 只能用于 INTEGER PRIMARY KEY，不做 variant 则单测无法用内存库跑真实 SQL。
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -47,7 +48,9 @@ class ConversationSessionRow(Base):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_active_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(),
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -85,7 +88,9 @@ class AgentSessionStateRow(Base):
     session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     state_json: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now(),
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -111,8 +116,9 @@ class OrderLineRow(Base):
     id: Mapped[int] = mapped_column(_AutoPk, primary_key=True, autoincrement=True)
     order_id: Mapped[str] = mapped_column(String(32), ForeignKey("orders.order_id"), index=True)
     item_id: Mapped[str] = mapped_column(String(64))
-    variant_id: Mapped[str] = mapped_column(String(64))
+    variant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
+    variant_display_name: Mapped[str] = mapped_column(String(255), default="")
     unit_price_minor: Mapped[int] = mapped_column(_BigInt)
     currency: Mapped[str] = mapped_column(String(8))
     quantity: Mapped[int] = mapped_column(Integer)

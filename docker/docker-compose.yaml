@@ -14,6 +14,13 @@ services:
       LLM_JUDGE: ${LLM_JUDGE:-}
       DATABASE_URL: ${DATABASE_URL:-file}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHECKPOINT_REDIS_URL: ${CHECKPOINT_REDIS_URL:-redis://redis:6379/0}
+      GLOBEX_ENV: ${GLOBEX_ENV:-local}
+      CHECKPOINT_TTL_MINUTES: ${CHECKPOINT_TTL_MINUTES:-10080}
+      CHECKPOINT_REFRESH_ON_READ: ${CHECKPOINT_REFRESH_ON_READ:-1}
+      CHECKPOINT_REQUIRE_ENCRYPTION: ${CHECKPOINT_REQUIRE_ENCRYPTION:-0}
+      LANGGRAPH_AES_KEY: ${LANGGRAPH_AES_KEY:-}
+      THREAD_ID_HMAC_KEY: ${THREAD_ID_HMAC_KEY:-}
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
       QUEUE_ENABLED: ${QUEUE_ENABLED:-0}
       GLOBEX_OPENSEARCH_ENDPOINT: http://opensearch:9200
@@ -35,6 +42,7 @@ services:
     restart: unless-stopped
 
   worker:
+    profiles: ["queue"]
     build:
       context: ..
       dockerfile: Dockerfile
@@ -46,8 +54,16 @@ services:
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
       DATABASE_URL: ${DATABASE_URL:-file}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CHECKPOINT_REDIS_URL: ${CHECKPOINT_REDIS_URL:-redis://redis:6379/0}
+      GLOBEX_ENV: ${GLOBEX_ENV:-local}
+      CHECKPOINT_TTL_MINUTES: ${CHECKPOINT_TTL_MINUTES:-10080}
+      CHECKPOINT_REFRESH_ON_READ: ${CHECKPOINT_REFRESH_ON_READ:-1}
+      CHECKPOINT_REQUIRE_ENCRYPTION: ${CHECKPOINT_REQUIRE_ENCRYPTION:-0}
+      LANGGRAPH_AES_KEY: ${LANGGRAPH_AES_KEY:-}
+      THREAD_ID_HMAC_KEY: ${THREAD_ID_HMAC_KEY:-}
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
-      QUEUE_ENABLED: "1"
+      # Redis Stream worker is optional; the FastAPI mainline defaults to 0.
+      QUEUE_ENABLED: ${QUEUE_ENABLED:-0}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
       GLOBEX_OPENSEARCH_ENDPOINT: http://opensearch:9200
       DATA_DIR: /app/data
@@ -66,13 +82,14 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    # Redis 8 includes RedisJSON and RediSearch required by langgraph-checkpoint-redis.
+    image: redis:8.2.8-bookworm
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping && redis-cli --raw COMMAND INFO JSON.SET FT.SEARCH | grep -qi json.set"]
       interval: 5s
       timeout: 3s
       retries: 10

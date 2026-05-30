@@ -25,29 +25,26 @@ CJK_LOCALES = frozenset({MarketLocale.CN, MarketLocale.JP})
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--processed-root", type=Path, default=DEFAULT_PROCESSED_ROOT)
+    parser.add_argument(
+        "--catalog-root", type=Path, default=None, help="validated schema-v2 JSONL root"
+    )
     args = parser.parse_args()
+    args.processed_root = args.processed_root.resolve()
+    if args.catalog_root is not None:
+        args.catalog_root = args.catalog_root.resolve()
 
     built_at = datetime.now(timezone.utc)
     databases: dict[str, dict[str, object]] = {}
     for platform, locales in PLATFORM_LOCALES.items():
+        catalog_root = args.catalog_root or (args.processed_root / "catalogs")
         sources = {
-            locale: (
-                args.processed_root
-                / "catalogs"
-                / platform.value
-                / locale.value
-                / "items.jsonl"
-            )
+            locale: (catalog_root / platform.value / locale.value / "items.jsonl")
             for locale in locales
         }
         missing = [str(path) for path in sources.values() if not path.exists()]
         if missing:
-            raise FileNotFoundError(
-                f"missing normalized {platform.value} catalog files: {missing}"
-            )
-        database_path = (
-            args.processed_root / "databases" / platform.value / "catalog.sqlite3"
-        )
+            raise FileNotFoundError(f"missing normalized {platform.value} catalog files: {missing}")
+        database_path = args.processed_root / "databases" / platform.value / "catalog.sqlite3"
         counts = _build_database(database_path, platform, sources, built_at)
         databases[platform.value] = {
             "path": _relative(database_path),
@@ -70,7 +67,8 @@ def main() -> None:
 
     manifest_path = args.processed_root / "manifests" / "catalog_databases.json"
     manifest = {
-        "schema_version": "platform-catalog-sqlite-fts5-v1",
+        "schema_version": "platform-catalog-sqlite-fts5-v2",
+        "catalog_schema": "catalog-schema-v2",
         "built_at": built_at.isoformat(),
         "physical_database_policy": "one SQLite database per platform",
         "retrieval_partition_policy": "one FTS5 table per platform/locale",
@@ -117,11 +115,14 @@ def _build_database(
                 brand TEXT,
                 category_json TEXT NOT NULL,
                 attributes_json TEXT NOT NULL,
+                materials_json TEXT NOT NULL,
                 variants_json TEXT NOT NULL,
                 price_cny TEXT,
+                original_price_cny TEXT,
                 currency_raw TEXT,
                 price_source TEXT NOT NULL,
-                is_available INTEGER NOT NULL,
+                availability TEXT NOT NULL,
+                ships_to_json TEXT,
                 record_json TEXT NOT NULL
             );
             CREATE INDEX idx_items_locale ON items(locale, item_id);
@@ -146,7 +147,7 @@ def _build_database(
             connection.executemany(
                 "INSERT INTO metadata(key, value) VALUES (?, ?)",
                 (
-                    ("schema_version", "platform-catalog-sqlite-fts5-v1"),
+                    ("schema_version", "platform-catalog-sqlite-fts5-v2"),
                     ("platform", platform.value),
                     ("built_at", built_at.isoformat()),
                 ),
@@ -172,7 +173,7 @@ def _build_database(
                         connection.execute(
                             """
                             INSERT INTO items VALUES (
-                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                             )
                             """,
                             (
@@ -185,12 +186,37 @@ def _build_database(
                                 document.body,
                                 item.brand,
                                 json.dumps(item.category_path, ensure_ascii=False),
-                                json.dumps(item.attributes, ensure_ascii=False, sort_keys=True),
-                                json.dumps(item.variants, ensure_ascii=False, sort_keys=True),
+                                json.dumps(
+                                    [
+                                        attribute.model_dump(mode="json")
+                                        for attribute in item.attributes
+                                    ],
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                                json.dumps(
+                                    [
+                                        material.model_dump(mode="json")
+                                        for material in item.materials
+                                    ],
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                                json.dumps(
+                                    [variant.model_dump(mode="json") for variant in item.variants],
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
                                 str(item.price_cny) if item.price_cny is not None else None,
+                                str(item.original_price_cny)
+                                if item.original_price_cny is not None
+                                else None,
                                 item.currency_raw.value if item.currency_raw else None,
                                 item.price_source.value,
-                                int(item.is_available),
+                                item.availability.value,
+                                json.dumps(item.ships_to, ensure_ascii=False)
+                                if item.ships_to is not None
+                                else None,
                                 record_json,
                             ),
                         )

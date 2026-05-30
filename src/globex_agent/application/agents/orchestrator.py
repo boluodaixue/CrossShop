@@ -67,8 +67,22 @@ class MainAgentOrchestrator:
             buyer_id=intent.buyer_id,
             locale=intent.locale,
             currency=intent.currency,
+            main_thread_id=self._sessions.thread_id(session_id),
         )
         token = ShoppingContext.set(snapshot)
+        try:
+            async with self._sessions.session_lock(session_id):
+                return await self._handle_intent_locked(intent)
+        finally:
+            ShoppingContext.reset(token)
+
+    async def _handle_intent_locked(
+        self,
+        intent: SubmitIntentInput,
+    ) -> SubmitIntentOutput:
+        """Run one stateful turn while the session lock is held."""
+
+        session_id = intent.shopping_session_id
         started_at = time.monotonic()
         trace = self._bus.subscribe(session_id) if self._conversation_store else None
         final_text = ""
@@ -82,8 +96,8 @@ class MainAgentOrchestrator:
 
             agent = await self._sessions.get_or_create(session_id)
             if has_history:
-                compressed = agent.compress_context(
-                    session_id,
+                compressed = await agent.compress_context(
+                    self._sessions.thread_id(session_id),
                     max_messages=max(4, self._context_size // 1000),
                 )
                 if compressed:
@@ -107,15 +121,12 @@ class MainAgentOrchestrator:
             final_text = f"[error] {err}"
             return SubmitIntentOutput(session_id, final_text)
         finally:
-            await self._sessions.persist(session_id)
             await self._record_conversation(
                 intent,
                 final_text,
                 int((time.monotonic() - started_at) * 1000),
                 trace,
             )
-            ShoppingContext.reset(token)
-
     async def _has_history(self, session_id: str) -> bool:
         if self._conversation_store is None:
             return False
@@ -155,7 +166,7 @@ class MainAgentOrchestrator:
             try:
                 return await agent.reply(
                     query,
-                    thread_id=session_id,
+                    thread_id=self._sessions.thread_id(session_id),
                     event_sink=self._publish_event,
                 )
             except Exception as err:  # noqa: BLE001

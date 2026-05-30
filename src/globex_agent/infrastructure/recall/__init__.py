@@ -31,7 +31,6 @@ from globex_agent.infrastructure.recall.category_kb import (
 from globex_agent.infrastructure.recall.embedding import (
     DEFAULT_EMBEDDING_MAX_SEQ_LENGTH,
     DEFAULT_EMBEDDING_MODEL,
-    ITEM_TEXT_FORMAT_VERSION,
     SentenceTransformerTextEncoder,
     TextEncoder,
     clean_product_body,
@@ -51,7 +50,7 @@ from globex_agent.infrastructure.recall.index import (
     VectorIndex,
 )
 from globex_agent.infrastructure.recall.keyword import KeywordSearchBackend
-from globex_agent.infrastructure.recall.persistence import standard_item_to_search_document
+from globex_agent.infrastructure.recall.persistence import index_manifest_compatible
 from globex_agent.infrastructure.recall.reranker import (
     DEFAULT_RERANKER_MAX_LENGTH,
     DEFAULT_RERANKER_MODEL,
@@ -64,6 +63,11 @@ from globex_agent.infrastructure.recall.reranker import (
 from globex_agent.infrastructure.recall.router import (
     CatalogPartition,
     PartitionedSearchBackendRouter,
+)
+from globex_agent.infrastructure.recall.search_document import (
+    ITEM_TEXT_FORMAT_VERSION,
+    standard_item_search_text,
+    standard_item_to_search_document,
 )
 from globex_agent.infrastructure.recall.sqlite_fts import SQLiteFtsSearchBackend
 
@@ -118,4 +122,6 @@ __all__ = [
     "reranker_document_text",
     "setup_category_index",
     "standard_item_to_search_document",
+    "standard_item_search_text",
+    "index_manifest_compatible",
 ]

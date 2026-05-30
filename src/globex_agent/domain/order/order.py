@@ -103,6 +103,7 @@ class Order:
                     "item_id": line.item_id,
                     "variant_id": line.variant_id,
                     "title": line.title,
+                    "variant_display_name": line.variant_display_name,
                     "unit_price_major": line.unit_price.to_major_units(),
                     "quantity": line.quantity,
                 }

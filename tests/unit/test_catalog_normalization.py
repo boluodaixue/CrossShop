@@ -90,7 +90,7 @@ def test_shopsimulator_multi_price_stays_unresolved_and_task_is_separate() -> No
 
     assert item.price_cny is None
     assert item.price_source is PriceSource.UNAVAILABLE
-    assert item.attributes["price_requires_variant_selection"] is True
+    assert item.variants and item.price_source is PriceSource.UNAVAILABLE
     assert len(item.variants) == 2
     assert task.target_item_id == item.item_id
     assert task.split == "test"

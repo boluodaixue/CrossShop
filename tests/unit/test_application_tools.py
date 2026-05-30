@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from globex_agent.application.tools.order_tools import (
-    build_cancel_order_tool,
-    build_create_order_tool,
+    _address,
+    build_prepare_order_tool,
     build_query_order_tool,
 )
 from globex_agent.application.tools.product_search_tool import (
@@ -19,13 +19,18 @@ from globex_agent.application.tools.task_dispatch_tool import (
     build_task_dispatch_tool,
 )
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
+from globex_agent.application.usecases.confirmation_usecases import (
+    OrderConfirmationService,
+)
 from globex_agent.application.usecases.order_usecases import (
     CancelOrderUseCase,
+    OrderItemInput,
     PlaceOrderUseCase,
     QueryOrderUseCase,
 )
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain.catalog.models import StandardItem
+from globex_agent.infrastructure.checkpoint import InMemoryDispatchResultStore
 from globex_agent.infrastructure.context import (
     ShoppingContext,
     ShoppingContextSnapshot,
@@ -114,7 +119,9 @@ class TestOrderTools:
             language="zh",
             title="测试头戴式耳机",
             category_path=["数码", "耳机"],
-            price_cny="68.00",
+            price_cny=None,
+            price_source="unavailable",
+            availability="available",
             currency_raw="CNY",
             variants=[
                 {
@@ -132,22 +139,21 @@ class TestOrderTools:
                 "notes": "test fixture",
             },
         )
-        variant_id = str(item.variants[0]["variant_id"])
+        variant_id = item.variants[0].variant_id
         order_repo = InMemoryOrderRepository()
         bus = TradeEventBus()
-        tool = build_create_order_tool(
-            PlaceOrderUseCase(
-                InMemoryItemRepository([item]),
-                order_repo,
-            ),
-            bus,
+        item_repo = InMemoryItemRepository([item])
+        place = PlaceOrderUseCase(item_repo, order_repo)
+        cancel = CancelOrderUseCase(order_repo)
+        service = OrderConfirmationService(
+            item_repo,
+            order_repo,
+            place,
+            cancel,
         )
+        tool = build_prepare_order_tool(service, bus)
         query_tool = build_query_order_tool(
             QueryOrderUseCase(order_repo),
-            bus,
-        )
-        cancel_tool = build_cancel_order_tool(
-            CancelOrderUseCase(order_repo),
             bus,
         )
         token = ShoppingContext.set(
@@ -177,31 +183,66 @@ class TestOrderTools:
                     },
                 }
             )
-            snapshot = json.loads(text)
-            query_text = await query_tool.ainvoke(
-                {"order_id": snapshot["order_id"]}
+            preview = json.loads(text)
+            trusted_preview = await service.prepare_order(
+                session_id="order-tool",
+                user_id="buyer-001",
+                items=[
+                    OrderItemInput(
+                        item_id=item.item_id,
+                        variant_id=variant_id,
+                        quantity=1,
+                    )
+                ],
+                shipping_address=_address({
+                    "recipient": "张三",
+                    "country": "中国",
+                    "address": "浙江省杭州市西湖区某路1号",
+                    "postal_code": "310000",
+                    "phone": "13800000000",
+                }),
+                include_token=True,
             )
-            cancel_text = await cancel_tool.ainvoke(
-                {
-                    "order_id": snapshot["order_id"],
-                    "reason": "买家改主意",
-                }
+            snapshot = await service.confirm_order(
+                confirmation_id=trusted_preview["confirmation_id"],
+                token=trusted_preview["confirmation_token"],
+                session_id="order-tool",
+            )
+            query_text = await query_tool.ainvoke({"order_id": snapshot["order_id"]})
+            cancel_preview = await service.prepare_cancel(
+                session_id="order-tool",
+                user_id="buyer-001",
+                order_id=snapshot["order_id"],
+                reason="买家改主意",
+                include_token=True,
+            )
+            cancelled = await service.confirm_cancel(
+                confirmation_id=cancel_preview["confirmation_id"],
+                token=cancel_preview["confirmation_token"],
+                session_id="order-tool",
             )
         finally:
             ShoppingContext.reset(token)
 
+        assert preview["confirmation_required"] is True
+        assert "confirmation_token" not in preview
         assert snapshot["order_id"].startswith("GBX-")
         assert snapshot["status"] == "CONFIRMED"
         assert "杭州市" in snapshot["shipping_address"]
         assert json.loads(query_text)["status"] == "CONFIRMED"
-        assert json.loads(cancel_text)["status"] == "CANCELLED"
+        assert cancelled["status"] == "CANCELLED"
 
 
 class TestTaskDispatchParallel:
     async def test_multiple_search_agents_overlap(self) -> None:
         bus = TradeEventBus()
         queue = bus.subscribe("s1")
-        tool = build_task_dispatch_tool(FakeSearchFactory(), FakeTradeFactory(), bus)
+        tool = build_task_dispatch_tool(
+            FakeSearchFactory(),
+            FakeTradeFactory(),
+            bus,
+            result_store=InMemoryDispatchResultStore(),
+        )
         token = ShoppingContext.set(
             ShoppingContextSnapshot(
                 shopping_session_id="s1",
@@ -211,18 +252,19 @@ class TestTaskDispatchParallel:
             )
         )
         try:
-            text = await tool.ainvoke(
+            text = await tool.arun(
                 {
                     "dispatches": [
                         {"subagent_type": "search_agent", "demands": "露营灯"},
                         {"subagent_type": "search_agent", "demands": "登山杖"},
                     ]
-                }
+                },
+                tool_call_id="unit-dispatch-call",
             )
         finally:
             ShoppingContext.reset(token)
 
-        payload = json.loads(text)
+        payload = json.loads(getattr(text, "content", text))
         assert len(payload["dispatches"]) == 2
         all_events = []
         while not queue.empty():

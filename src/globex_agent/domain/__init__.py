@@ -1,6 +1,7 @@
 """Stable data contracts shared by Globex components."""
 
 from globex_agent.domain.catalog.models import (
+    AvailabilityStatus,
     Candidate,
     Currency,
     DataProvenance,
@@ -9,19 +10,26 @@ from globex_agent.domain.catalog.models import (
     ItemSearchOutput,
     LandedCost,
     MarketLocale,
+    MaterialComponent,
     PickedItem,
     Platform,
     PriceCompareOutput,
     PricePoint,
     PriceSource,
+    ProductAttribute,
     ProvenanceKind,
     ResultStatus,
     SearchRequest,
     ShippingCalcOutput,
     ShoppingSummaryOutput,
     StandardItem,
+    StandardItemVariant,
     ToolIssue,
     UserProfile,
+    VariantOption,
+    canonical_options_serialization,
+    canonical_variant_id,
+    normalize_variant_text,
 )
 from globex_agent.domain.catalog.retrieval import (
     RelevanceJudgment,
@@ -31,6 +39,7 @@ from globex_agent.domain.catalog.retrieval import (
 
 __all__ = [
     "Candidate",
+    "AvailabilityStatus",
     "Currency",
     "DataProvenance",
     "DeterministicPipelineResult",
@@ -41,6 +50,10 @@ __all__ = [
     "PickedItem",
     "Platform",
     "PriceSource",
+    "ProductAttribute",
+    "MaterialComponent",
+    "VariantOption",
+    "StandardItemVariant",
     "PriceCompareOutput",
     "PricePoint",
     "ProvenanceKind",
@@ -54,4 +67,7 @@ __all__ = [
     "RelevanceJudgment",
     "RetrievalQuery",
     "ShoppingTask",
+    "canonical_options_serialization",
+    "canonical_variant_id",
+    "normalize_variant_text",
 ]

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from globex_agent.application.agents.identity import ThreadIdentity
 from globex_agent.application.agents.main_agent import (
     MainAgentFactory,
     SessionRegistry,
@@ -16,6 +19,9 @@ from globex_agent.application.agents.orchestrator import MainAgentOrchestrator
 from globex_agent.application.agents.search_agent import SearchAgentFactory
 from globex_agent.application.agents.trade_agent import TradeAgentFactory
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
+from globex_agent.application.usecases.confirmation_usecases import (
+    OrderConfirmationService,
+)
 from globex_agent.application.usecases.order_usecases import (
     CancelOrderUseCase,
     PlaceOrderUseCase,
@@ -27,9 +33,18 @@ from globex_agent.category_insight import (
     CategoryTaxonomy,
 )
 from globex_agent.domain.catalog.ports.item_repository import ItemRepository
+from globex_agent.domain.catalog.ports.retrieval_ports import EmbeddingClient
 from globex_agent.infrastructure.cache.redis_cache import RedisCache
 from globex_agent.infrastructure.cache.semantic_cache import SemanticCache
-from globex_agent.infrastructure.embedding.bge_m3_embedding import BgeM3EmbeddingClient
+from globex_agent.infrastructure.checkpoint import (
+    RedisCheckpointResource,
+    RedisDispatchResultStore,
+    create_redis_checkpoint_resource,
+)
+from globex_agent.infrastructure.embedding.bge_m3_embedding import (
+    BgeM3EmbeddingClient,
+    SubprocessBgeM3EmbeddingClient,
+)
 from globex_agent.infrastructure.eventbus import TradeEventBus
 from globex_agent.infrastructure.persistence.in_memory_repositories import (
     InMemoryItemRepository,
@@ -38,13 +53,11 @@ from globex_agent.infrastructure.persistence.in_memory_repositories import (
 from globex_agent.infrastructure.persistence.json_file_stores import (
     JsonFileConversationStore,
     JsonFilePreferenceStore,
-    JsonFileSessionStore,
 )
 from globex_agent.infrastructure.persistence.sql.repositories import (
     SqlConversationStore,
     SqlOrderRepository,
     SqlPreferenceStore,
-    SqlSessionStore,
     bootstrap_schema,
     create_engine,
 )
@@ -61,6 +74,7 @@ from globex_agent.infrastructure.recall.category_kb import (
 )
 from globex_agent.infrastructure.recall.embedding import SentenceTransformerTextEncoder
 from globex_agent.infrastructure.recall.index import FaissHNSWIndex
+from globex_agent.infrastructure.recall.persistence import index_manifest_compatible
 from globex_agent.infrastructure.recall.reranker import (
     CrossEncoderReranker,
     SubprocessCrossEncoderReranker,
@@ -76,7 +90,7 @@ from globex_agent.infrastructure.vector.faiss_product_index import (
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEMO_PRODUCTS_PATH = PROJECT_ROOT / "data" / "demo" / "products.jsonl"
+DEMO_PRODUCTS_PATH = PROJECT_ROOT / "data" / "demo" / "products-v2.jsonl"
 _PARTITIONS = (
     ("amazon", "us"),
     ("amazon", "es"),
@@ -96,10 +110,13 @@ class Container:
     backplane: RedisEventBackplane | None
     query_order: QueryOrderUseCase
     cancel_order: CancelOrderUseCase
+    confirmation_service: OrderConfirmationService
     item_repo: ItemRepository
-    embedder: BgeM3EmbeddingClient
+    embedder: EmbeddingClient
     vector_index: FaissProductIndex | PartitionedFaissProductIndex
     db_engine: object | None
+    checkpoint_resource: RedisCheckpointResource
+    dispatch_result_store: RedisDispatchResultStore
 
     async def startup(self) -> None:
         if self.db_engine is not None:
@@ -115,116 +132,156 @@ class Container:
 
     async def shutdown(self) -> None:
         await self.vector_index.close()
+        close = getattr(self.embedder, "close", None)
+        if close is not None:
+            close()
         await self.cache.close()
         if self.db_engine is not None:
             await self.db_engine.dispose()
+        await self.dispatch_result_store.close()
+        await self.checkpoint_resource.close()
 
 
 async def build_container() -> Container:
     settings = load_settings()
-    bus = TradeEventBus()
-    cache = RedisCache(settings.redis_url)
-    embedder = BgeM3EmbeddingClient(
-        model_name=settings.bge_m3_model,
-        local_files_only=settings.models_local_only,
+    identity = ThreadIdentity(
+        environment=settings.checkpoint_environment,
+        hmac_key=settings.thread_id_hmac_key,
     )
-    vector_index = _build_vector_index()
-    reranker = BgeReranker(
-        model_name=settings.bge_reranker_model,
-        local_files_only=settings.models_local_only,
-    )
+    checkpoint_resource = await create_redis_checkpoint_resource(settings)
+    dispatch_result_store: RedisDispatchResultStore | None = None
+    try:
+        dispatch_result_store = RedisDispatchResultStore(
+            settings.checkpoint_redis_url,
+            identity,
+            ttl_seconds=settings.checkpoint_ttl_minutes * 60,
+        )
+        await dispatch_result_store.startup()
+        bus = TradeEventBus()
+        cache = RedisCache(settings.redis_url)
+        vector_index = _build_vector_index()
+        _validate_catalog_index_contract(
+            settings.bge_m3_model,
+            max_seq_length=settings.bge_m3_max_seq_length,
+        )
+        embedder = _build_query_embedder(settings)
+        reranker = BgeReranker(
+            model_name=settings.bge_reranker_model,
+            local_files_only=settings.models_local_only,
+        )
 
-    item_repo = _build_item_repository()
-    catalog_search = CatalogSearchUseCase(
-        item_repo,
-        embedder=embedder,
-        vector_index=vector_index,
-        reranker=reranker,
-    )
+        item_repo = _build_item_repository()
+        catalog_search = CatalogSearchUseCase(
+            item_repo,
+            embedder=embedder,
+            vector_index=vector_index,
+            reranker=reranker,
+        )
 
-    use_database = settings.database_url != "file"
-    db_engine = create_engine(settings.database_url) if use_database else None
-    if db_engine is not None:
-        order_repo = SqlOrderRepository(db_engine)
-        preference_store = SqlPreferenceStore(db_engine)
-        session_store = SqlSessionStore(db_engine)
-        conversation_store = SqlConversationStore(db_engine)
-    else:
-        order_repo = InMemoryOrderRepository()
-        preference_store = JsonFilePreferenceStore(settings.data_dir)
-        session_store = JsonFileSessionStore(settings.data_dir)
-        conversation_store = JsonFileConversationStore(settings.data_dir)
+        use_database = settings.database_url != "file"
+        db_engine = create_engine(settings.database_url) if use_database else None
+        if db_engine is not None:
+            order_repo = SqlOrderRepository(db_engine)
+            preference_store = SqlPreferenceStore(db_engine)
+            conversation_store = SqlConversationStore(db_engine)
+        else:
+            order_repo = InMemoryOrderRepository()
+            preference_store = JsonFilePreferenceStore(settings.data_dir)
+            conversation_store = JsonFileConversationStore(settings.data_dir)
 
-    place_order = PlaceOrderUseCase(item_repo, order_repo)
-    query_order = QueryOrderUseCase(order_repo)
-    cancel_order = CancelOrderUseCase(order_repo)
+        place_order = PlaceOrderUseCase(item_repo, order_repo)
+        query_order = QueryOrderUseCase(order_repo)
+        cancel_order = CancelOrderUseCase(order_repo)
+        confirmation_service = OrderConfirmationService(
+            item_repo,
+            order_repo,
+            place_order,
+            cancel_order,
+            ttl_seconds=settings.order_confirmation_ttl_seconds,
+        )
 
-    circuit_registry = CircuitBreakerRegistry(
-        failure_threshold=settings.tool_failure_threshold,
-        reset_seconds=settings.tool_circuit_reset_seconds,
-    )
-    semantic_cache = SemanticCache(
-        cache,
-        embedder,
-        threshold=settings.semantic_cache_threshold,
-        enabled=settings.semantic_cache_enabled,
-        namespace=f"{settings.llm_model}:prompt-v1",
-    )
+        circuit_registry = CircuitBreakerRegistry(
+            failure_threshold=settings.tool_failure_threshold,
+            reset_seconds=settings.tool_circuit_reset_seconds,
+        )
+        semantic_cache = SemanticCache(
+            cache,
+            embedder,
+            threshold=settings.semantic_cache_threshold,
+            enabled=settings.semantic_cache_enabled,
+            namespace=f"{settings.llm_model}:prompt-v1",
+        )
 
-    task_queue: RedisStreamTaskQueue | None = None
-    backplane: RedisEventBackplane | None = None
-    if cache.enabled and settings.queue_enabled:
-        task_queue = RedisStreamTaskQueue(cache.client)
-        backplane = RedisEventBackplane(cache.client)
-        bus.attach_backplane(backplane)
+        task_queue: RedisStreamTaskQueue | None = None
+        backplane: RedisEventBackplane | None = None
+        if cache.enabled and settings.queue_enabled:
+            task_queue = RedisStreamTaskQueue(cache.client)
+            backplane = RedisEventBackplane(cache.client)
+            bus.attach_backplane(backplane)
 
-    search_factory = SearchAgentFactory(
-        settings,
-        catalog_search,
-        bus,
-        _build_category_insight_service(settings),
-        circuit_registry,
-    )
-    trade_factory = TradeAgentFactory(
-        settings,
-        place_order,
-        query_order,
-        cancel_order,
-        bus,
-        circuit_registry,
-    )
-    main_factory = MainAgentFactory(
-        settings,
-        search_factory,
-        trade_factory,
-        bus,
-        preference_store,
-        circuit_registry,
-    )
-    sessions = SessionRegistry(main_factory, session_store)
-    orchestrator = MainAgentOrchestrator(
-        sessions,
-        bus,
-        preference_store,
-        conversation_store,
-        semantic_cache,
-        context_size=settings.context_size,
-    )
-    return Container(
-        settings=settings,
-        bus=bus,
-        orchestrator=orchestrator,
-        cache=cache,
-        semantic_cache=semantic_cache,
-        task_queue=task_queue,
-        backplane=backplane,
-        query_order=query_order,
-        cancel_order=cancel_order,
-        item_repo=item_repo,
-        embedder=embedder,
-        vector_index=vector_index,
-        db_engine=db_engine,
-    )
+        search_factory = SearchAgentFactory(
+            settings,
+            catalog_search,
+            bus,
+            _build_category_insight_service(settings),
+            circuit_registry,
+            checkpointer=checkpoint_resource.saver,
+        )
+        trade_factory = TradeAgentFactory(
+            settings,
+            place_order,
+            query_order,
+            cancel_order,
+            bus,
+            circuit_registry,
+            confirmation_service=confirmation_service,
+            checkpointer=checkpoint_resource.saver,
+        )
+        main_factory = MainAgentFactory(
+            settings,
+            search_factory,
+            trade_factory,
+            bus,
+            preference_store,
+            circuit_registry,
+            checkpointer=checkpoint_resource.saver,
+            identity=identity,
+            dispatch_result_store=dispatch_result_store,
+        )
+        sessions = SessionRegistry(main_factory, identity)
+        orchestrator = MainAgentOrchestrator(
+            sessions,
+            bus,
+            preference_store,
+            conversation_store,
+            semantic_cache,
+            context_size=settings.context_size,
+        )
+        return Container(
+            settings=settings,
+            bus=bus,
+            orchestrator=orchestrator,
+            cache=cache,
+            semantic_cache=semantic_cache,
+            task_queue=task_queue,
+            backplane=backplane,
+            query_order=query_order,
+            cancel_order=cancel_order,
+            confirmation_service=confirmation_service,
+            item_repo=item_repo,
+            embedder=embedder,
+            vector_index=vector_index,
+            db_engine=db_engine,
+            checkpoint_resource=checkpoint_resource,
+            dispatch_result_store=dispatch_result_store,
+        )
+    except Exception:
+        if dispatch_result_store is not None:
+            with suppress(Exception):
+                await dispatch_result_store.close()
+        with suppress(Exception):
+            await checkpoint_resource.close()
+        raise
 
 
 def _build_item_repository() -> ItemRepository:
@@ -262,23 +319,115 @@ def _build_vector_index() -> FaissProductIndex | PartitionedFaissProductIndex:
             / locale
             / "bge-m3-items.npz"
         )
-        if not faiss_path.exists() or not embeddings_path.exists():
+        mapping_path = faiss_path.with_suffix(".mapping.json")
+        if not faiss_path.exists() or not (mapping_path.exists() or embeddings_path.exists()):
             continue
-        with np.load(embeddings_path, allow_pickle=False) as payload:
-            document_ids = payload["document_ids"].astype(str).tolist()
+        compatible, diagnostic = index_manifest_compatible(faiss_path)
+        if not compatible:
+            logger.warning("跳过过期商品索引 %s：%s", faiss_path, diagnostic)
+            continue
+        if mapping_path.exists():
+            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+            document_ids = [str(value) for value in mapping["document_ids"]]
+        else:
+            with np.load(embeddings_path, allow_pickle=False) as payload:
+                document_ids = payload["document_ids"].astype(str).tolist()
         index = FaissHNSWIndex.load(faiss_path, document_ids)
         vector_index.add_partition(partition_id, index)
         loaded = True
     return vector_index if loaded else FaissProductIndex()
 
 
+def _build_query_embedder(settings: Settings) -> EmbeddingClient:
+    """Build a fail-fast CUDA query encoder for the formal catalog path."""
+
+    if settings.bge_m3_max_seq_length != 512:
+        raise RuntimeError("formal BGE-M3 query max_seq_length must be 512")
+    python_value = settings.bge_m3_python.strip()
+    if python_value:
+        python_executable = Path(python_value).expanduser()
+        embedder = SubprocessBgeM3EmbeddingClient(
+            python_executable,
+            model_name=settings.bge_m3_model,
+            device=settings.bge_m3_device,
+            batch_size=settings.bge_m3_batch_size,
+            max_seq_length=settings.bge_m3_max_seq_length,
+            local_files_only=settings.models_local_only,
+        )
+        embedder.ensure_ready()
+        return embedder
+
+    if not settings.bge_m3_device.startswith("cuda"):
+        raise RuntimeError(
+            "formal BGE-M3 query encoder must use CUDA; "
+            f"got BGE_M3_DEVICE={settings.bge_m3_device!r}"
+        )
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - environment diagnostic
+        raise RuntimeError(
+            "CUDA query encoding requires torch or a configured BGE_M3_PYTHON worker"
+        ) from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is unavailable in the Agent environment; configure BGE_M3_PYTHON "
+            "to a CUDA-enabled Python environment"
+        )
+    embedder = BgeM3EmbeddingClient(
+        model_name=settings.bge_m3_model,
+        device=settings.bge_m3_device,
+        batch_size=settings.bge_m3_batch_size,
+        max_seq_length=settings.bge_m3_max_seq_length,
+        local_files_only=settings.models_local_only,
+    )
+    embedder.ensure_ready()
+    return embedder
+
+
+def _validate_catalog_index_contract(model_name: str, *, max_seq_length: int) -> None:
+    """Ensure query settings match every canonical item-index manifest."""
+
+    manifest_paths = sorted(
+        (PROJECT_ROOT / "output" / "index" / "catalog").glob(
+            "*/*/bge-m3-hnsw-ip.manifest.json"
+        )
+    )
+    if not manifest_paths:
+        raise RuntimeError("formal catalog Faiss manifests are missing")
+    for manifest_path in manifest_paths:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid catalog index manifest: {manifest_path}") from exc
+        expected = {
+            "encoder_model": model_name,
+            "dimension": 1024,
+            "max_seq_length": max_seq_length,
+            "text_format_version": "item-text-v5-catalog-schema-v2",
+            "item_encoding_inference_dtype": "float16",
+            "item_encoding_pooling": "cls",
+        }
+        mismatches = {
+            key: (expected_value, manifest.get(key))
+            for key, expected_value in expected.items()
+            if manifest.get(key) != expected_value
+        }
+        if manifest.get("index_parameters", {}).get("normalized") is not True:
+            mismatches["index_parameters.normalized"] = (
+                True,
+                manifest.get("index_parameters", {}).get("normalized"),
+            )
+        if mismatches:
+            raise RuntimeError(
+                f"catalog query/index contract mismatch in {manifest_path}: {mismatches}"
+            )
+
+
 def _build_category_insight_service(settings: Settings) -> CategoryInsightService:
     taxonomy_path = settings.category_taxonomy
     if not taxonomy_path.is_absolute():
         taxonomy_path = PROJECT_ROOT / taxonomy_path
-    encoder = SentenceTransformerTextEncoder(
-        local_files_only=settings.models_local_only
-    )
+    encoder = SentenceTransformerTextEncoder(local_files_only=settings.models_local_only)
     knowledge_base = OpenSearchCategoryKnowledgeBase(
         OpenSearchHttpClient(settings.opensearch_endpoint, timeout=30),
         index_name=settings.category_index,

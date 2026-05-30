@@ -36,6 +36,13 @@ class Settings:
     data_dir: Path
     database_url: str
     redis_url: str
+    checkpoint_redis_url: str
+    checkpoint_environment: str
+    checkpoint_ttl_minutes: int
+    checkpoint_refresh_on_read: bool
+    checkpoint_require_encryption: bool
+    checkpoint_encryption_key: str
+    thread_id_hmac_key: str
     queue_enabled: bool
     queue_wait_seconds: float
     worker_concurrency: int
@@ -62,9 +69,14 @@ class Settings:
     category_reranker_fp32: bool
     category_reranker_document_mode: str
     bge_m3_model: str
+    bge_m3_device: str
+    bge_m3_python: str
+    bge_m3_batch_size: int
+    bge_m3_max_seq_length: int
     bge_reranker_model: str
     bge_reranker_python: str
     faiss_index_path: Path
+    order_confirmation_ttl_seconds: int
 
 
 def load_settings() -> Settings:
@@ -84,6 +96,28 @@ def load_settings() -> Settings:
         os.getenv("OPENAI_API_KEY", ""),
     )
     llm_model = os.getenv("LLM_MODEL", os.getenv("LLM_MAIN", "qwen3-max"))
+    checkpoint_environment = (
+        os.getenv("GLOBEX_ENV", os.getenv("APP_ENV", "local")).strip() or "local"
+    )
+    checkpoint_redis_url = os.getenv(
+        "CHECKPOINT_REDIS_URL",
+        os.getenv("REDIS_URL", ""),
+    ).strip()
+    checkpoint_ttl_minutes = int(os.getenv("CHECKPOINT_TTL_MINUTES", "10080"))
+    if checkpoint_ttl_minutes <= 0:
+        raise ValueError("CHECKPOINT_TTL_MINUTES must be greater than zero")
+    checkpoint_encryption_key = os.getenv("LANGGRAPH_AES_KEY", "").strip()
+    thread_id_hmac_key = (
+        os.getenv("THREAD_ID_HMAC_KEY", "").strip()
+        or checkpoint_encryption_key
+        or "globex-local-thread-id-v1"
+    )
+    checkpoint_require_encryption = _env_flag(
+        "CHECKPOINT_REQUIRE_ENCRYPTION",
+        default=checkpoint_environment.casefold() not in {"local", "test"},
+    )
+    if checkpoint_environment.casefold() not in {"local", "test"}:
+        checkpoint_require_encryption = True
     return Settings(
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
@@ -95,6 +129,16 @@ def load_settings() -> Settings:
         data_dir=data_dir,
         database_url=os.getenv("DATABASE_URL", "file"),
         redis_url=os.getenv("REDIS_URL", ""),
+        checkpoint_redis_url=checkpoint_redis_url,
+        checkpoint_environment=checkpoint_environment,
+        checkpoint_ttl_minutes=checkpoint_ttl_minutes,
+        checkpoint_refresh_on_read=_env_flag(
+            "CHECKPOINT_REFRESH_ON_READ",
+            default=True,
+        ),
+        checkpoint_require_encryption=checkpoint_require_encryption,
+        checkpoint_encryption_key=checkpoint_encryption_key,
+        thread_id_hmac_key=thread_id_hmac_key,
         queue_enabled=_env_flag("QUEUE_ENABLED", default=False),
         queue_wait_seconds=float(os.getenv("QUEUE_WAIT_SECONDS", "300")),
         worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", "2")),
@@ -163,6 +207,10 @@ def load_settings() -> Settings:
             "BGE_M3_MODEL",
             _local_model_dir("D:/models/bge-m3", "BAAI/bge-m3"),
         ),
+        bge_m3_device=os.getenv("BGE_M3_DEVICE", "cuda:0"),
+        bge_m3_python=os.getenv("BGE_M3_PYTHON", ""),
+        bge_m3_batch_size=int(os.getenv("BGE_M3_BATCH_SIZE", "4")),
+        bge_m3_max_seq_length=int(os.getenv("BGE_M3_MAX_SEQ_LENGTH", "512")),
         bge_reranker_model=os.getenv(
             "BGE_RERANKER_MODEL",
             _local_model_dir(
@@ -176,5 +224,8 @@ def load_settings() -> Settings:
                 "FAISS_INDEX_PATH",
                 str(data_dir / "indexes" / "globex_items.faiss"),
             )
+        ),
+        order_confirmation_ttl_seconds=int(
+            os.getenv("ORDER_CONFIRMATION_TTL_SECONDS", "300")
         ),
     )

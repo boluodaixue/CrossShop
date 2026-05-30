@@ -26,6 +26,7 @@ venv/
 Thumbs.db
 
 # Runtime artifacts
+.hf-cache/
 logs/
 artifacts/
 models/

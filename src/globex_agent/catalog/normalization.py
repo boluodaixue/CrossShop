@@ -7,16 +7,23 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from globex_agent.domain import (
+    AvailabilityStatus,
     Currency,
     DataProvenance,
     MarketLocale,
+    MaterialComponent,
     Platform,
     PriceSource,
+    ProductAttribute,
     ProvenanceKind,
     RelevanceJudgment,
     RetrievalQuery,
     ShoppingTask,
     StandardItem,
+    StandardItemVariant,
+    VariantOption,
+    canonical_options_serialization,
+    canonical_variant_id,
 )
 
 ESCI_SOURCE_URL = "https://github.com/amazon-science/esci-data"
@@ -59,11 +66,13 @@ def normalize_esci_product(row: dict[str, Any], *, ingested_at: datetime) -> Sta
     bullet = _clean_text(row.get("product_bullet_point", row.get("bullet")))
     brand = _clean_text(row.get("product_brand", row.get("brand"))) or None
     color = _clean_text(row.get("product_color", row.get("color")))
-    attributes: dict[str, Any] = {}
+    attributes: list[ProductAttribute] = []
     if bullet:
-        attributes["bullet_points"] = bullet
+        attributes.append(
+            ProductAttribute(code="bullet_points", name="Bullet points", value=bullet)
+        )
     if color:
-        attributes["color"] = color
+        attributes.append(ProductAttribute(code="color", name="Color", value=color))
 
     return StandardItem(
         item_id=f"amazon:{locale.value}:{product_id}",
@@ -124,10 +133,7 @@ def normalize_esci_judgment(row: dict[str, Any]) -> RelevanceJudgment:
         raise ValueError(f"unsupported ESCI label: {source_label}") from exc
     return RelevanceJudgment(
         query_id=f"esci:{locale.value}:{_required_text(row.get('query_id'), 'query_id')}",
-        item_id=(
-            f"amazon:{locale.value}:"
-            f"{_required_text(row.get('product_id'), 'product_id')}"
-        ),
+        item_id=(f"amazon:{locale.value}:{_required_text(row.get('product_id'), 'product_id')}"),
         label=label,
         gain=gain,
     )
@@ -145,7 +151,8 @@ def normalize_shopsimulator_product(
     distinct_prices = sorted(set(pricing))
     resolved_price = distinct_prices[0] if len(distinct_prices) == 1 else None
     category_path = _category_path(row)
-    variants = _flatten_variants(row.get("customization_options"))
+    item_id = f"taobao:cn:{asin}"
+    variants = _flatten_variants(row.get("customization_options"), Platform.TAOBAO, item_id)
     description = " ".join(
         part
         for part in (
@@ -154,17 +161,24 @@ def normalize_shopsimulator_product(
         )
         if part
     )
-    attributes: dict[str, Any] = {
-        "shop_name": _clean_text(row.get("shop_name")),
-        "source_attributes": _string_list(row.get("attribute")),
-        "source_tag": _clean_text(row.get("tag")),
-    }
-    if len(distinct_prices) > 1:
-        attributes["price_range_cny"] = [str(distinct_prices[0]), str(distinct_prices[-1])]
-        attributes["price_requires_variant_selection"] = True
+    attributes: list[ProductAttribute] = []
+    shop_name = _clean_text(row.get("shop_name"))
+    if shop_name:
+        attributes.append(ProductAttribute(code="shop_name", name="店铺", value=shop_name))
+    source_values = _string_list(row.get("attribute"))
+    if source_values:
+        attributes.append(
+            ProductAttribute(
+                code="source_attributes", name="来源属性", value=" / ".join(source_values)
+            )
+        )
+    source_tag = _clean_text(row.get("tag"))
+    if source_tag:
+        attributes.append(ProductAttribute(code="source_tag", name="来源标签", value=source_tag))
+    materials = _normalize_materials(row.get("material", row.get("材质", row.get("fabric"))))
 
     return StandardItem(
-        item_id=f"taobao:cn:{asin}",
+        item_id=item_id,
         same_group_id=f"taobao:{asin}",
         platform=Platform.TAOBAO,
         locale=MarketLocale.CN,
@@ -173,15 +187,18 @@ def normalize_shopsimulator_product(
         description=description,
         brand=None,
         category_path=category_path,
-        price_cny=resolved_price,
+        price_cny=resolved_price if not variants else None,
         original_price_cny=None,
         currency_raw=Currency.CNY,
         price_source=(
-            PriceSource.OBSERVED if resolved_price is not None else PriceSource.UNAVAILABLE
+            PriceSource.OBSERVED
+            if resolved_price is not None and not variants
+            else PriceSource.UNAVAILABLE
         ),
         attributes=attributes,
+        materials=materials,
         variants=variants,
-        is_available=_has_available_variant(variants),
+        availability=_availability(row.get("is_available", row.get("available")), variants),
         ingested_at=ingested_at,
         provenance=DataProvenance(
             kind=ProvenanceKind.EXTERNAL_PUBLIC,
@@ -298,27 +315,107 @@ def _category_path(row: dict[str, Any]) -> list[str]:
     return parts or ["未知类目"]
 
 
-def _flatten_variants(value: object) -> list[dict[str, Any]]:
+def _flatten_variants(
+    value: object, platform: Platform, item_id: str
+) -> list[StandardItemVariant]:
     if not isinstance(value, dict):
         return []
-    variants: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
+    sequence = 0
     for option_name, option_values in sorted(value.items(), key=lambda entry: str(entry[0])):
         if not isinstance(option_values, list):
             continue
         for option in option_values:
             if not isinstance(option, dict):
                 continue
-            variants.append(
+            sequence += 1
+            raw_price = _clean_text(option.get("price"))
+            parsed_price = _positive_prices([raw_price])
+            source_variant_id = _clean_text(option.get("asin")) or f"source-variant-{sequence}"
+            typed_option = VariantOption(
+                name=_clean_text(option_name),
+                value=_clean_text(option.get("value")) or "未指定",
+            )
+            available = _availability(option.get("is_available"), [])
+            records.append(
                 {
-                    "option_name": _clean_text(option_name),
-                    "value": _clean_text(option.get("value")),
-                    "variant_id": _clean_text(option.get("asin")) or None,
-                    "price_cny": _clean_text(option.get("price")) or None,
-                    "is_available": bool(option.get("is_available", True)),
+                    "source_variant_id": source_variant_id,
+                    "options": [typed_option],
+                    "price_cny": parsed_price[0] if parsed_price else None,
+                    "availability": available,
                 }
             )
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        groups.setdefault(canonical_options_serialization(record["options"]), []).append(record)
+    variants: list[StandardItemVariant] = []
+    for fingerprint in sorted(groups):
+        group = sorted(
+            groups[fingerprint],
+            key=lambda record: (
+                record["source_variant_id"],
+                str(record["price_cny"]),
+                record["availability"].value,
+            ),
+        )
+        chosen = group[0]
+        conflict = len({record["price_cny"] for record in group}) > 1 or len(
+            {record["availability"] for record in group}
+        ) > 1
+        variants.append(
+            StandardItemVariant(
+                variant_id=canonical_variant_id(platform, item_id, chosen["options"]),
+                source_variant_id=chosen["source_variant_id"],
+                options=chosen["options"],
+                price_cny=None if conflict else chosen["price_cny"],
+                price_source=(
+                    PriceSource.UNAVAILABLE
+                    if conflict or chosen["price_cny"] is None
+                    else PriceSource.OBSERVED
+                ),
+                availability=AvailabilityStatus.UNKNOWN if conflict else chosen["availability"],
+            )
+        )
     return variants
 
 
-def _has_available_variant(variants: list[dict[str, Any]]) -> bool:
-    return not variants or any(bool(variant.get("is_available")) for variant in variants)
+def _availability(value: object, variants: list[StandardItemVariant]) -> AvailabilityStatus:
+    if isinstance(value, bool):
+        return AvailabilityStatus.AVAILABLE if value else AvailabilityStatus.UNAVAILABLE
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"available", "true", "1", "yes", "y", "在售"}:
+            return AvailabilityStatus.AVAILABLE
+        if normalized in {"unavailable", "false", "0", "no", "n", "下架", "缺货"}:
+            return AvailabilityStatus.UNAVAILABLE
+    if variants:
+        statuses = {variant.availability for variant in variants}
+        if AvailabilityStatus.AVAILABLE in statuses:
+            return AvailabilityStatus.AVAILABLE
+        if statuses == {AvailabilityStatus.UNAVAILABLE}:
+            return AvailabilityStatus.UNAVAILABLE
+    return AvailabilityStatus.UNKNOWN
+
+
+def _normalize_materials(value: object) -> list[MaterialComponent]:
+    if value in (None, ""):
+        return []
+    values = value if isinstance(value, list) else [value]
+    result: list[MaterialComponent] = []
+    aliases = {
+        "真皮": ("genuine_leather", "真皮"),
+        "合成革": ("synthetic_leather", "合成革"),
+        "蛋白皮": ("protein_leather", "蛋白皮"),
+        "乳胶": ("latex", "乳胶"),
+        "棉": ("cotton", "棉"),
+    }
+    for raw in values:
+        name = _clean_text(raw)
+        code, canonical = aliases.get(name, (None, name))
+        if code is None:
+            for alias, (alias_code, alias_name) in aliases.items():
+                if alias in name:
+                    code, canonical = alias_code, alias_name
+                    break
+        result.append(MaterialComponent(code=code, name=canonical))
+    return result
