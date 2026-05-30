@@ -74,8 +74,8 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 商品主链已切换正式 `item-text-v5-catalog-schema-v2` 四分区 Faiss（45,238 商品）；BM25 仅 ANN 故障降级，索引记录见 `docs/data/catalog_faiss_schema_v2_20260820.md`
 - [x] 订单写操作已切换 Prepare → 可信 Confirm 两阶段门禁；LLM 只能准备预览，token 仅经结构化确认 API 提交，订单/取消旧直调会被应用层拒绝
 - [x] 最新完整真实模型回归 `13/13 PASS`（平均分 `1.000`），报告见 [eval/report-20260819-223705.md](eval/report-20260819-223705.md)
-- [x] 新增 flow query 真实模型评测：9 条 RAG/召回/ESCI query 已跑完整流程；真实 OpenSearch + CategoryInsight RAG 8 条完整链路 `3/8 PASS`，详见 [docs/experiments/flow_query_eval_20260820.md](docs/experiments/flow_query_eval_20260820.md)
-- [x] 真实 LLM smoke 通过；核心 Redis checkpoint 迁移单测 `26 passed`；真实 Redis 集成 `6 passed`；D 盘真实数据环境完整 pytest `192 passed`
+- [ ] 新增 flow query 真实模型评测：历史 9 条 RAG/召回/ESCI query 已跑完整流程；知识卡 v3 重建后的真实 OpenSearch + CategoryInsight RAG 8 条 Flow 因外部 LLM 端点安全边界未执行，不能沿用历史 `3/8 PASS`
+- [x] 真实 LLM smoke 通过；核心 Redis checkpoint 迁移单测 `26 passed`；真实 Redis 集成 `6 passed`；本轮完整 pytest `199 passed, 9 warnings`，知识卡聚焦测试 `50 passed`
 - [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Redis 8.2.8 Compose 健康检查、`docker compose config` 与 `git diff --check` 已通过
 
 - [x] 初始化独立项目目录
@@ -90,7 +90,7 @@ Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构
 - [x] 完成工程阶段 4：BM25 检索基线、ESCI 子集与离线指标
 - [x] 淘宝多商品检索集 shopsimulator_retrieval_v1 已冻结（115 query）并跑出 FTS/BGE-M3/Hybrid/Reranker 四路指标
 - [x] 完成工程阶段 5：商品召回（淘宝检索集冻结 + 两库四路指标 + 双语翻译方案归档）
-- [x] 工程阶段 6 中文化整改：知识卡 RAG 已切到真实淘宝中文底座与 ik 分词
+- [ ] 工程阶段 6 中文化整改：真实淘宝中文底座、知识卡整改和事实边界已落地；完整指标与端到端 Flow 尚未验收
 - [x] 使用本地 `.env` 完成真实模型固定 case 和自由文本 smoke test
 
 ## 快速开始
@@ -297,7 +297,7 @@ Hybrid 仅在明确要求扩展消融时启用，而且必须显式给出静态�
 .\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe --include-hybrid-extension --semantic-weight 0.4 --lexical-weight 0.6 --output output\eval\retrieval_hybrid_ablation.json
 ```
 
-## 阶段 6：CategoryInsight 商品知识卡 RAG（中文化整改完成）
+## 阶段 6：CategoryInsight 商品知识卡 RAG（数据整改与事实闭环已落地，端到端待验收）
 
 当前知识卡底座是阶段五使用的真实 ShopSimulator 淘宝中文目录。首期冻结 8 个普通
 品类：乳胶枕、儿童学习椅、手机直播补光灯、汽车氛围灯、平板电脑支架、颈椎按摩器、
@@ -305,10 +305,18 @@ Hybrid 仅在明确要求扩展消融时启用，而且必须显式给出静态�
 `price_range`，共 48 张课程七字段 `CategoryCard`。
 
 淘宝目录没有真实销量，bestseller 使用同质商品数和 `source_attributes` 覆盖度作
-离线代理，并显式标记 `generated_offline_proxy`，不伪造销量。价格来自真实
-`price_cny` 或 `variants[].price_cny`，切三分位生成价格卡；卡片与 provenance
-会明确标注“挂牌/规格价，不是历史成交价”。完整口径见
+“目录高频款型代理”，并显式标记 `generated_offline_proxy`，不伪造销量。属性百分比只表示
+当前目录标题/属性出现率，医疗或功效词只是未验证的标题声明。价格来自真实
+`price_cny` 或 `variants[].price_cny`，经过正数下界、不可比标题项排除和品类内
+log-space IQR 1.5 稳健围栏；卡片与 provenance 明确标注“挂牌/规格价品类参考区间，
+不是成交价、具体 SKU 价格或实时价格”。完整口径见
 `docs/data/category_card_data_contract.md`。
+
+当前重建版本为 `category-cards-taobao-zh-v3`：779 条 facts、48 张卡、8 个既有品类。
+CategoryInsight 已保留 `CategoryEvidenceRef`，工具结果标注 category aggregate/reference，
+审计事件保留有界 evidence refs，Flow rubric 已接入确定性 fact guard。BGE-M3 已使用本地
+模型完成 v1 索引和 50 条模块评测；真实 8 条 Flow 仍因项目 .env 的外部 LLM 端点安全
+边界未执行，故端到端验收仍为 partial。
 
 ```powershell
 $env:PYTHONIOENCODING = "utf-8"
@@ -320,23 +328,23 @@ $env:PYTHONIOENCODING = "utf-8"
 型，split 为 train/dev/test=30/10/10。每条 Query 对全局 48 张卡全部显式判断，
 恰有 5 张相关卡，按顺序获得 5、4、3、2、1 gain。
 
-OpenSearch 使用 `analysis-ik`，索引 `globex_category_kb_taobao_zh_v1` 以
+OpenSearch 使用 `analysis-ik`，本轮 v1 验证索引为 `globex_category_kb_taobao_zh_v1`，以
 `ik_max_word` 建索引、`ik_smart` 查询；中文检索文本从 sidecar 写入
 `retrieval_text` 和 `retrieval_text_zh`。BGE-M3 和 BGE Reranker 分别使用本地
 `D:\models\bge-m3` 与 `D:\models\bge-reranker-v2-m3`。
 
-独立 test split 的四路实测（v1 基线，按课程口径取 @8）：
+独立 test split 的四路重建后实测（50 条、按当前脚本取 @10）：
 
 | 方案 | Recall@8 | MRR@8 | NDCG@8 | AllCardTypes@8 |
 | --- | ---: | ---: | ---: | ---: |
 | BM25 | 1.0000 | 1.0000 | 0.8723 | 1.0000 |
-| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8695 | 1.0000 |
-| Hybrid | 1.0000 | 1.0000 | 0.8709 | 1.0000 |
-| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8531 | 1.0000 |
-| Hybrid + BGE Reranker（全量精排） | 0.9000 | 0.9500 | 0.7915 | 0.7000 |
+| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8633 | 1.0000 |
+| Hybrid | 1.0000 | 1.0000 | 0.8651 | 1.0000 |
+| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8744 | 1.0000 |
 
-全量精排在 v1 基线 48 卡封闭池上不升反降，把 Reranker 的 Recall@8 从 1.0
-拉到 0.90、NDCG 从 0.8531 拉到 0.7915，因此生产默认仍保留 0.92 首分跳过。
+本轮 50 条 test split 四路 Recall/MRR/AllTypes 均为 1.0；Reranker 实际执行 12 条、
+旁路 38 条。相对重建前冻结结果，KNN/Hybrid NDCG 有小幅下降，故生产默认仍保留
+0.92 首分跳过且不强制开启。
 
 旧英文 ESCI 演示版仍保留在 `data/category_insight/` 根目录，作为历史实验，不覆盖：
 
@@ -348,7 +356,9 @@ OpenSearch 使用 `analysis-ik`，索引 `globex_category_kb_taobao_zh_v1` 以
 
 `CategoryInsightService` 仍保留 quick/deep 提炼、品类归一、普通品类空组件、
 向量失败降级 BM25、OpenSearch 失败返回 confidence=0，以及 Reranker 失败保留粗排。
-当前尚无 WebSearch 工具，低置信度 WebSearch 补充仍是后续项。
+默认 Category Reranker 仍关闭。当前尚无 WebSearch 工具，低置信度 WebSearch 补充仍是后续项。
+上下文四层/L0-L4/token budget/Cache Breakpoint、长期记忆治理、语义缓存完整版本指纹、
+platform/locale 路由、商品 runtime GPU reranker 和完整 Agent 评测仍未完成。
 # 当前商品契约
 
 商品事实已采用 `catalog-schema-v2`：`StandardItem` 使用 typed attributes/materials/variants、三态 availability 和显式 `ships_to`；有规格价格只在 variant，无规格订单才读取 item 价格。迁移 staging、真实四分区计数和 hash 见 [catalog-schema-v2 迁移记录](docs/data/catalog_schema_v2_migration_20260820.md)。Faiss 尚未按 v5 文本重建，运行时会拒绝旧索引并诚实降级。

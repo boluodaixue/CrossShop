@@ -13,6 +13,7 @@ from globex_agent.category_insight.models import (
     AttributeDist,
     Bestseller,
     CategoryCard,
+    CategoryEvidenceRef,
     CategoryInsightDepth,
     CategoryInsightOutput,
     PriceTier,
@@ -62,6 +63,7 @@ class CategoryInsightDiagnostics:
     final_count: int
     reranked: bool
     reranker_document_mode: str
+    evidence_refs: tuple[CategoryEvidenceRef, ...] = ()
     fallback_reason: str | None = None
 
 
@@ -172,6 +174,7 @@ class CategoryInsightService:
                         final_count=0,
                         reranked=False,
                         reranker_document_mode=self._reranker_document_mode,
+                        evidence_refs=(),
                         fallback_reason=(
                             f"knowledge base failed: {type(search_exc).__name__}"
                         ),
@@ -228,6 +231,7 @@ class CategoryInsightService:
                 final_count=len(final_hits),
                 reranked=reranked_flag,
                 reranker_document_mode=self._reranker_document_mode,
+                evidence_refs=tuple(_evidence_ref(card) for card in final_hits),
                 fallback_reason=fallback_reason,
             ),
         )
@@ -278,6 +282,7 @@ def _extract_bestsellers(cards: list[CategoryCard]) -> list[Bestseller]:
                     name=parts[0],
                     typical_price_cny=price,
                     why_popular=parts[2],
+                    source_scope="catalog_frequency_proxy_not_sales_rank",
                 )
             )
             seen.add(parts[0])
@@ -302,7 +307,16 @@ def _extract_attributes(cards: list[CategoryCard]) -> list[AttributeDist]:
             except ValueError:
                 continue
         if distribution:
-            output.append(AttributeDist(name=name, distribution=distribution))
+            output.append(
+                AttributeDist(
+                    name=name,
+                    distribution=distribution,
+                    claim_scope=(
+                        "current_catalog_title_or_attribute_occurrence; "
+                        "medical_or_efficacy_terms_are_product_title_claims_not_verified_effects"
+                    ),
+                )
+            )
     return output
 
 
@@ -334,4 +348,17 @@ def _empty_output(category: str) -> CategoryInsightOutput:
         attributes=[],
         price_tiers=[],
         confidence=0.0,
+    )
+
+
+def _evidence_ref(hit: CategoryCardHit) -> CategoryEvidenceRef:
+    """Return the stable, non-raw reference exposed to tools and audit."""
+
+    card = hit.card
+    return CategoryEvidenceRef(
+        card_id=card.card_id,
+        category=card.category,
+        card_type=card.card_type,
+        last_updated=card.last_updated,
+        confidence=card.confidence,
     )

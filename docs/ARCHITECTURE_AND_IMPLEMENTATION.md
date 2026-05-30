@@ -9,15 +9,15 @@
 
 GlobexAgentLearning 是一个用于学习、运行和逐步组装电商搜索 Agent 的项目。它不是大型电商系统，而是把课程中的关键能力做成一个可本地运行、可评测、可继续演进的完整工程。
 
-当前核心能力：
+当前核心能力（已实现与待验收项分开理解）：
 
 - 用 LangGraph 的 ReAct Agent 完成“理解需求 → 调工具 → 最终回复”的闭环
 - 主 Agent 默认单干，复杂任务通过 `task_dispatch` 并行调用 `search_agent` / `trade_agent`
 - 商品召回使用 BGE-M3 + Faiss + BGE Reranker
 - 品类洞察使用 OpenSearch Hybrid + `CategoryCard`
 - 支持订单创建、查询、取消
-- 支持长期买家偏好
-- 支持多轮会话持久化、上下文压缩、事件流、语义缓存、工具熔断、模型回退
+- 有基础长期买家偏好存取；CRUD、相关性、冲突、provenance、确认和安全治理仍未完成
+- 支持多轮会话持久化、事件流、语义缓存、工具熔断、模型回退；上下文当前主要是消息数截断，四层上下文、L0-L4、统一 token budget 和 Cache Breakpoint 尚未完成
 - 提供 FastAPI + WebSocket + React 前端
 
 项目边界：
@@ -452,6 +452,9 @@ bestseller / attribute / price_range
 - 可选 BGE Reranker，Top-30 → Top-8/15
 - 首分 >= 0.92 时跳过精排
 - 向量失败 → BM25；OpenSearch 失败 → 空结构 `confidence=0`
+- 当前淘宝中文数据已按 category-cards-taobao-zh-v3 重建 48 张卡；bestseller 是目录高频款型代理，attribute 是目录样本出现率，price_range 是品类参考区间
+- CategoryEvidenceRef、工具 source boundary、审计有界 evidence refs 和确定性 fact_guard 已落地
+- 本轮已用本地 D:/models/bge-m3 重建 v1 OpenSearch 索引并完成 50 条模块评测；test Recall/MRR 未回退但 KNN/Hybrid NDCG 有小幅下降，默认 Category Reranker 仍保持关闭。真实 8 条 Flow 因项目 .env 外部 LLM 端点的安全边界未执行，不能宣称端到端验收完成
 
 ## 7. 表现层与前端
 
@@ -504,8 +507,8 @@ GET  /health
 ### 8.1 自动化测试
 
 ```text
-pytest：D 盘最终验收 192 passed（真实 Redis 已启用）
-ruff：All checks passed
+历史 Redis checkpoint 验收曾为 192 passed；本轮知识卡聚焦测试为 50 passed，完整 pytest 为 199 passed, 9 warnings。
+本轮 Ruff 结果为 All checks passed，不能将历史完整 pytest 结果冒充本轮 v3 数据验收。
 ```
 
 Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm`，覆盖节点级 history、saver/graph
@@ -540,11 +543,16 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 
 报告：`eval/flow-report-20260819-232003.md`
 
-另外已跑真实 OpenSearch + CategoryInsight RAG 的 8 条 query：
+历史上曾跑过真实 OpenSearch + CategoryInsight RAG 的 8 条 query：
 
 - `8/8` 正常完成
 - 平均耗时约 33.5 秒/条
 - 报告：`eval/flow-report-20260820-021422.md`
+
+该结果属于历史数据/代码状态；知识卡 v3 重建后本轮未重新运行 8 条 Flow。虽然 BGE-M3
+已从本地 D:/models/bge-m3 完成索引和模块评测，但真实 Flow 会调用项目 .env 中的外部
+opencode.ai LLM 端点，可能发送查询、工具结果和对话内容，因安全边界未执行。因此当前
+仍不能宣称端到端验收完成。
 
 串联脚本：`scripts/eval_flow_with_rubric.py`
 
@@ -568,6 +576,9 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 - `3/8 PASS`，平均分 `0.667`
 - 报告：`eval/flow-rubric-20260820-023633.md`
 
+本轮已加入 evidence refs 与确定性 P0 fact guard，但未对 v3 数据重新完成上述 8 条批次；
+没有新的 P0 或总 PASS 数，不能用历史 3/8 PASS 代替当前验收。
+
 通过：羽毛球包（1.0）、乳胶枕（0.775）、颈椎按摩器（1.0）。
 
 失败：汽车氛围灯（0.2）、儿童学习椅（0.7）、手机直播补光灯（0.487）、户外电源（0.7）、平板电脑支架（0.475）。
@@ -587,6 +598,18 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 - `scripts/eval/run_category_recall.py`
 
 当前商品召回基线、向量召回、精排、CategoryInsight 都有冻结数据与评测入口。
+
+本轮 CategoryInsight test split（50 条、@10）：
+
+| 方案 | Recall | MRR | NDCG | AllTypes |
+| --- | ---: | ---: | ---: | ---: |
+| BM25 | 1.0000 | 1.0000 | 0.8723 | 1.0000 |
+| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8633 | 1.0000 |
+| Hybrid | 1.0000 | 1.0000 | 0.8651 | 1.0000 |
+| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8744 | 1.0000 |
+
+四路均完成 50/50 查询；Reranker 实际执行 12 条、旁路 38 条。相对重建前报告，
+Recall/MRR 未回退，但 KNN/Hybrid NDCG 有小幅下降，故默认仍关闭 Category Reranker。
 
 ## 9. 部署形态
 

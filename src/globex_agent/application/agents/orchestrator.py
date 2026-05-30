@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from globex_agent.application.agents.main_agent import SessionRegistry
 from globex_agent.domain.buyer.preference import PreferenceStore
@@ -241,7 +242,7 @@ class MainAgentOrchestrator:
                         ConversationEventRecord(
                             session_id=session_id,
                             type=event.type,
-                            payload=(
+                            payload=_sanitize_audit_payload(
                                 event.payload
                                 if isinstance(event.payload, dict)
                                 else {"value": event.payload}
@@ -276,3 +277,45 @@ class MainAgentOrchestrator:
             await self._conversation_store.append_events(events)
         except Exception as err:  # noqa: BLE001 - conversation persistence is best effort
             logger.warning("对话记录写入失败：%s（%s）", session_id, err)
+
+
+_AUDIT_REDACT_KEYS = {
+    "address",
+    "address_line",
+    "phone",
+    "postal_code",
+    "recipient",
+    "recipient_name",
+    "shipping_address",
+    "confirmation_token",
+    "token",
+}
+
+
+def _sanitize_audit_payload(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    """Keep trace evidence useful without persisting PII or unbounded payloads."""
+
+    if key in _AUDIT_REDACT_KEYS:
+        return "[redacted]"
+    if key == "raw_evidence":
+        return "[omitted: use evidence_refs]"
+    if depth >= 4:
+        return "[omitted: audit depth limit]"
+    if isinstance(value, dict):
+        return {
+            str(child_key): _sanitize_audit_payload(
+                child_value,
+                key=str(child_key),
+                depth=depth + 1,
+            )
+            for child_key, child_value in list(value.items())[:50]
+            if str(child_key) not in {"content_vector"}
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _sanitize_audit_payload(item, depth=depth + 1)
+            for item in list(value)[:20]
+        ]
+    if isinstance(value, str):
+        return value[:2000]
+    return value

@@ -398,12 +398,27 @@ def test_taobao_zh_bestseller_proxy_and_audit_queue_are_explicit() -> None:
         (TAOBAO_DIR / "category_card_manifest_taobao_zh.json").read_text(encoding="utf-8")
     )
 
-    assert len(facts) == 815
+    assert len(facts) == 779
     assert all(
         fact["proxy_fields"]["bestseller_proxy_source"] == "generated_offline_proxy"
         for fact in facts
     )
     assert all(fact["price_source"] == "observed" for fact in facts)
+    assert all(
+        fact["price_quality"]["policy_version"]
+        == "log-iqr-1.5-positive-noncomparable-v2"
+        for fact in facts
+    )
+    assert all(
+        all(float(value) > 0 for value in fact["price_observations_cny"])
+        for fact in facts
+        if fact["price_observations_cny"]
+    )
+    assert any(fact["price_exclusions"] for fact in facts)
+    car_facts = [fact for fact in facts if fact["category"] == "汽车氛围灯"]
+    assert car_facts
+    pollution_terms = ("警示", "爆闪", "日行灯", "日间行车", "刹车灯", "尾灯", "转向灯")
+    assert all(not any(term in fact["title"] for term in pollution_terms) for fact in car_facts)
     bestseller_provenance = [
         row
         for row in provenance
@@ -411,5 +426,31 @@ def test_taobao_zh_bestseller_proxy_and_audit_queue_are_explicit() -> None:
     ]
     assert len(bestseller_provenance) == 16
     assert all("generated_offline_proxy" in row["evidence_source"] for row in bestseller_provenance)
+    assert all(
+        row["proxy_scope"] == "目录高频款型代理/高频形态，不是真实销量榜"
+        for row in bestseller_provenance
+    )
+    price_provenance = [
+        row
+        for row in provenance
+        if row.get("price_measure") == "observed_listed_prices_cny"
+    ]
+    assert len(price_provenance) == 8
+    assert all(
+        row["price_scope"]
+        == "目录挂牌/规格价样本的品类参考区间，不是成交价、具体 SKU 价格或实时价格"
+        for row in price_provenance
+    )
+    assert all(
+        row["quality_policy_version"]
+        == "log-iqr-1.5-positive-noncomparable-v2"
+        for row in price_provenance
+    )
+    assert all(row["excluded_observation_count"] >= 0 for row in price_provenance)
     assert len(audit_queue) == math.ceil(48 * 0.10)
     assert manifest["truth_boundary"]["generated"] == ["bestseller_proxy_rank"]
+    assert manifest["dataset_version"] == "category-cards-taobao-zh-v3"
+    assert (
+        manifest["generation_rules"]["price_policy"]["version"]
+        == "log-iqr-1.5-positive-noncomparable-v2"
+    )

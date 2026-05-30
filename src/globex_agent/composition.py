@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
+import os
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -410,7 +412,7 @@ def _validate_catalog_index_contract(model_name: str, *, max_seq_length: int) ->
         mismatches = {
             key: (expected_value, manifest.get(key))
             for key, expected_value in expected.items()
-            if manifest.get(key) != expected_value
+            if not _model_identifiers_equal(expected_value, manifest.get(key))
         }
         if manifest.get("index_parameters", {}).get("normalized") is not True:
             mismatches["index_parameters.normalized"] = (
@@ -421,6 +423,35 @@ def _validate_catalog_index_contract(model_name: str, *, max_seq_length: int) ->
             raise RuntimeError(
                 f"catalog query/index contract mismatch in {manifest_path}: {mismatches}"
             )
+
+
+def _model_identifiers_equal(left: object, right: object) -> bool:
+    """Compare local model paths canonically, but keep repo IDs exact."""
+
+    if not isinstance(left, str) or not isinstance(right, str):
+        return left == right
+    if _looks_like_local_model_path(left) and _looks_like_local_model_path(right):
+        return _normalize_local_model_path(left) == _normalize_local_model_path(right)
+    return left == right
+
+
+def _looks_like_local_model_path(value: str) -> bool:
+    text = value.strip()
+    drive, tail = ntpath.splitdrive(text)
+    return bool(
+        Path(text).is_absolute()
+        or (drive and tail.startswith(("\\", "/")))
+        or text.startswith(("/", "\\\\", "//", "./", ".\\", "../", "..\\"))
+    )
+
+
+def _normalize_local_model_path(value: str) -> str:
+    path = Path(value).expanduser()
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        resolved = path.absolute()
+    return os.path.normcase(str(resolved))
 
 
 def _build_category_insight_service(settings: Settings) -> CategoryInsightService:

@@ -139,9 +139,9 @@ _CARD_TYPE_LABELS = {
     "price_range": "price tiers",
 }
 _CARD_TYPE_LABELS_ZH = {
-    "bestseller": "热门商品形态",
-    "attribute": "商品属性分布",
-    "price_range": "价格档位",
+    "bestseller": "目录高频款型代理",
+    "attribute": "目录样本属性出现率",
+    "price_range": "品类参考价格档位",
 }
 _PRICE_SUMMARY_PATTERN = re.compile(
     r"便宜款\s+(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*/\s*"

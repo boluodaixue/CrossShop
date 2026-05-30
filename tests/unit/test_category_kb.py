@@ -270,6 +270,6 @@ def test_chinese_retrieval_text_matches_taobao_course_format() -> None:
     )
 
     assert category_retrieval_text_zh(card) == (
-        "品类：乳胶枕。知识类型：商品属性分布。"
+        "品类：乳胶枕。知识类型：目录样本属性出现率。"
         "摘要：材质：泰国天然乳胶 96.2% / 记忆棉 3.8%"
     )

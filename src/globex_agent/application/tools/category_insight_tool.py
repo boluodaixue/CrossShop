@@ -11,6 +11,21 @@ from globex_agent.category_insight.service import CategoryInsightService
 from globex_agent.infrastructure.context import ShoppingContext
 from globex_agent.infrastructure.eventbus import TradeEventBus
 
+_SOURCE_BOUNDARY = {
+    "scope": "category_aggregate_reference",
+    "category": "结果是品类聚合/参考知识，不是具体商品事实。",
+    "bestsellers": "bestsellers 是目录高频款型代理/高频形态，不是真实销量榜。",
+    "attributes": (
+        "attributes 百分比是当前目录样本中的标题/属性出现率，不代表市场规律；"
+        "护颈、助眠、矫正等功效词仅表示商品标题声明，未验证功效。"
+    ),
+    "price_tiers": "price_tiers 仅表示该品类的参考价格区间。",
+    "exclusions": (
+        "CategoryInsight 不证明具体商品实时价格、店铺、库存或具体 SKU；"
+        "这些事实只能引用 product_search_tool。"
+    ),
+}
+
 
 def build_category_insight_tool(
     service: CategoryInsightService,
@@ -33,6 +48,15 @@ def build_category_insight_tool(
         try:
             run = await asyncio.to_thread(service.insight, category, depth=depth)
             payload = run.output.model_dump(mode="json")
+            evidence_refs = [
+                ref.model_dump(mode="json")
+                for ref in run.diagnostics.evidence_refs
+            ]
+            result = {
+                "insights": payload,
+                "evidence_refs": evidence_refs,
+                "source_boundary": _SOURCE_BOUNDARY,
+            }
         except Exception as err:  # noqa: BLE001 - knowledge base may be down
             bus.publish(
                 session_id,
@@ -43,8 +67,14 @@ def build_category_insight_tool(
         bus.publish(
             session_id,
             "tool.result",
-            {"tool": "category_insight_tool", "category": payload.get("category")},
+            {
+                "tool": "category_insight_tool",
+                "category": payload.get("category"),
+                "insights": payload,
+                "evidence_refs": result["evidence_refs"],
+                "source_boundary": _SOURCE_BOUNDARY,
+            },
         )
-        return json.dumps({"insights": payload}, ensure_ascii=False)
+        return json.dumps(result, ensure_ascii=False)
 
     return category_insight_tool

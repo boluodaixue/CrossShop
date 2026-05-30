@@ -258,7 +258,7 @@ def test_taobao_zh_manifest_matches_frozen_cases() -> None:
     cases_path = TAOBAO_DIR / "category_recall_cases_taobao_zh.jsonl"
     digest = hashlib.sha256(cases_path.read_bytes()).hexdigest()
 
-    assert manifest["dataset_version"] == "category-card-recall-taobao-zh-v1"
+    assert manifest["dataset_version"] == "category-card-recall-taobao-zh-v3"
     assert manifest["language"] == "zh"
     assert manifest["query_count"] == 50
     assert manifest["card_count"] == 48

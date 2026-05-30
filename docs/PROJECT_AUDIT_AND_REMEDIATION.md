@@ -155,7 +155,7 @@ StandardItemVariant
 | P1-003 | P1 | 待处理 | 熔断器可能把业务校验错误当系统故障，half-open 竞争控制不足 | 需要只统计超时/连接/5xx 等可重试故障，并保证同一依赖只有一个 half-open probe。 |
 | P1-004 | P1 | 待处理 | 上下文压缩只做粗粒度截断，配置项未真正接线 | `tool_result_limit`、`reply_token_budget` 已配置但未形成统一 token budget；长工具结果和历史仍可能挤爆上下文。 |
 | P1-005 | P1 | 待处理 | 语义缓存 namespace 硬编码 `prompt-v1`，缺少数据/规则指纹 | prompt、模型、商品索引、汇率、税费规则改变后可能复用陈旧答案。 |
-| P1-006 | P1 | 待处理 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 固定少量 case；真实 flow 完整通过率偏低；judge 曾接受未由工具证明的门店事实；需扩大冻结集并做事实来源门禁。 |
+| P1-006 | P1 | 部分修复，仍待验收 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 已加入 CategoryInsight evidence refs、工具来源边界和确定性 fact guard；知识卡 v3 数据与本地 OpenSearch 索引已重建，模块评测已完成，但真实 8 条 Flow 受外部 LLM 端点安全阻断，不能标记端到端完成。 |
 | P1-007 | P1 | 待处理 | 商品检索外部 Top-K 契约不统一 | `SearchRequest` 最大 50，而 `ProductSearchSpec` 仅要求正数；需统一默认值、最大值和过滤后补位语义。 |
 | P1-008 | P1 | 待处理 | 跨平台/locale 检索路由未进入应用主链 | 已有 router、fusion、canonical 等基础设施，但 composition 的 `CatalogSearchUseCase` 只使用分区 Faiss 合并，没有按 platform/locale 约束查询。 |
 | P1-009 | P1 | 部分修复，仍待处理 | Docker/部署产物与本机运行条件不闭合 | compose 已切到固定 Redis 8.2.8 并补 checkpoint 配置；`.dockerignore` 排除 `output`、OpenSearch 初始化和模型/索引镜像闭合仍待处理。 |
@@ -182,6 +182,33 @@ StandardItemVariant
 6. P2：体验、安全、架构洁净度和文档治理。
 
 每完成一项，都在本文件更新状态、实际执行命令、结果和未覆盖风险；不因代码生成而标记完成。
+
+## 9. 阶段 6 知识卡整改与事实闭环收尾记录
+
+本轮已落地但尚未完成端到端验收的内容：
+
+- 淘宝中文知识卡按确定性脚本重建为 category-cards-taobao-zh-v3：779 条 facts、48 张卡、8 个既有普通品类，仍只有 bestseller / attribute / price_range 三种类型。
+- 汽车氛围灯增加排除词门禁，警示灯、爆闪灯、日行灯等污染事实不再进入该品类；羽毛球包的明显性别标题偏差改为“品牌线索”目录样本出现率。
+- 价格卡使用正数下界、不可比标题项排除和品类内 log-space IQR 1.5 稳健围栏；provenance/manifest 记录规则、样本和排除原因。价格仍只是目录挂牌/规格价的品类参考区间，不是成交价、具体 SKU 价格或实时价格。
+- CategoryEvidenceRef 保留最终命中卡片的 card_id/category/card_type/last_updated/confidence；工具结果增加 category aggregate/reference 边界；审计事件只保留有界 refs，不把未裁剪 raw_evidence 放入 prompt。
+- fact_guard 已接入 Flow rubric，检查无来源具体价格、把 category price tier 冒充 product fact、虚构店铺/库存；Judge 同时读取 category_insight_tool 与 product_search_tool 结果。
+
+当前实际验证：
+
+    .\.venv\Scripts\python.exe -m pytest -q tests\unit\test_category_insight_service.py tests\unit\test_category_kb.py tests\unit\test_category_card_dataset.py tests\unit\test_category_evidence_and_fact_guard.py
+    .\.venv\Scripts\ruff.exe check src scripts tests
+
+结果：聚焦 pytest 50 passed；Ruff All checks passed；数据门禁通过，污染 0、无效价格 0、manifest hash 通过；完整 pytest 199 passed, 9 warnings。
+
+模块 test split（50 条、@10）重建后四路均为 Recall=1.0000、MRR=1.0000、AllTypes=1.0000；NDCG 为 BM25 0.8723、KNN 0.8633、Hybrid 0.8651、Hybrid+Reranker 0.8744。相对重建前冻结报告，Recall/MRR 未回退，但 KNN/Hybrid NDCG 有小幅下降，故未开启默认 Category Reranker。
+
+仍不得标记完成：
+
+- 当前上下文仍主要是消息数截断，缺四层上下文、L0-L4、统一 token budget 和 Cache Breakpoint。
+- 长期记忆仍是 append/list/全量注入，缺 CRUD、相关性、冲突、provenance、确认和安全治理。
+- 语义缓存仍缺完整的数据/规则版本指纹；platform/locale 路由、商品 runtime GPU reranker 和更充分 Agent 评测仍是缺口。
+- BGE-M3 已使用本地 D:/models/bge-m3 完成 v1 OpenSearch 索引重建和 50 条模块评测；真实 8 条 Flow 启动所需的 Redis、索引和本地模型配置已就绪。
+- 本轮真实 8 条 Flow 未完成：项目 .env 的 LLM 端点为外部 opencode.ai，运行会把查询、工具结果和对话发送到外部服务，因安全边界被阻止；因此没有新的 Flow/P0/Judge 结果，历史 3/8 PASS 不能写成当前 v3 数据的通过结论。
 
 ## 6. P0-001 验证记录
 

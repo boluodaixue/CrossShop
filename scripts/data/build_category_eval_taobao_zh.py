@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATASET_VERSION = "category-card-recall-taobao-zh-v1"
+DATASET_VERSION = "category-card-recall-taobao-zh-v3"
 EXPECTED_SPLITS = {"train": 30, "dev": 10, "test": 10}
 EXPECTED_QUERY_TYPES = {
     "noun": 14,
@@ -455,7 +455,8 @@ def _build_manifest(
         "graded_gain_policy": "ordered relevant_card_ids receive gains 5,4,3,2,1",
         "price_card_policy": (
             "every query includes its category price card; noun/colloquial queries "
-            "treat it as strong evidence"
+            "treat the robust directory listing/reference range as strong evidence, "
+            "never as a concrete SKU or real-time price"
         ),
         "source_query_reuse_policy": "historical ESCI query texts are not reused",
         "tuning_policy": "tune on train/dev; report test once after configuration freeze",

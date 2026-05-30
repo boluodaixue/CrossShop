@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 
 from globex_agent.domain.catalog.exchange_rate import ExchangeRateTable
+from globex_agent.eval.fact_guard import validate_final_response
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
@@ -35,7 +36,10 @@ RUBRIC_GENERATOR_SYSTEM = (
 
 JUDGE_SYSTEM = (
     "你是严格的电商 Agent 评测员。给你一条买家 query 与 Agent 回复的对话记录、"
-    "商品库事实表、系统规则，以及为该 case 单独生成的 P0/P1/P2 rubric。"
+    "product_search_tool 商品事实、category_insight_tool 品类聚合结果和稳定证据引用、"
+    "系统规则，以及为该 case 单独生成的 P0/P1/P2 rubric。"
+    "category_insight_tool 只能证明品类 aggregate/reference，price_tiers 只能作为品类参考区间；"
+    "具体商品价格、店铺、库存和 SKU 只能由 product_search_tool 证明。"
     "每条细则先推理再给出 pass。只输出 JSON："
     '{"p0": [{"criterion": "...", "reason": "...", "pass": true/false}],'
     ' "p1": [...], "p2": [...]}'
@@ -121,33 +125,63 @@ def parse_conversation(path: Path) -> dict:
         if row.get("content")
     ]
     facts: dict[str, dict] = {}
+    category_results: list[dict] = []
     for row in rows:
         if row.get("kind") != "event" or row.get("type") != "tool.result":
             continue
         payload = row.get("payload") or {}
-        if payload.get("tool") != "product_search_tool":
-            continue
-        for hit in payload.get("hits") or []:
-            item_id = hit.get("item_id")
-            if not item_id:
-                continue
-            facts[item_id] = {
-                "item_id": item_id,
-                "title": hit.get("title", ""),
-                "category": hit.get("category", ""),
-                "price": hit.get("price_major"),
-                "currency": hit.get("currency", "CNY"),
-            }
+        if payload.get("tool") == "product_search_tool":
+            for hit in payload.get("hits") or []:
+                item_id = hit.get("item_id")
+                if not item_id:
+                    continue
+                facts[item_id] = {
+                    "item_id": item_id,
+                    "title": hit.get("title", ""),
+                    "category": hit.get("category", ""),
+                    "price_major": hit.get("price_major"),
+                    "price": hit.get("price_major"),
+                    "currency": hit.get("currency", "CNY"),
+                    "variants": hit.get("variants", []),
+                    "landed_price": hit.get("landed_price"),
+                    "availability": hit.get("availability"),
+                }
+        elif payload.get("tool") == "category_insight_tool":
+            category_results.append(
+                {
+                    "category": payload.get("category", ""),
+                    "insights": payload.get("insights", {}),
+                    "evidence_refs": payload.get("evidence_refs", []),
+                    "source_boundary": payload.get("source_boundary", {}),
+                }
+            )
 
     query = next(
         (row["content"] for row in turns if row.get("role") == "buyer"),
         "",
     )
+    transcript = "\n\n".join(transcript_lines)
+    agent_turns = [row["content"] for row in turns if row.get("role") == "agent"]
+    final_agent_text = agent_turns[-1] if agent_turns else ""
+    fact_violations = [
+        {
+            "code": violation.code,
+            "message": violation.message,
+            "excerpt": violation.excerpt,
+        }
+        for violation in validate_final_response(
+            final_agent_text,
+            product_facts=facts.values(),
+            category_insights=category_results,
+        )
+    ]
     return {
         "source": path.stem,
         "query": query,
-        "transcript": "\n\n".join(transcript_lines),
+        "transcript": transcript,
         "facts": list(facts.values()),
+        "category_results": category_results,
+        "fact_violations": fact_violations,
     }
 
 
@@ -163,6 +197,25 @@ def render_facts(facts: list[dict]) -> str:
         )
         lines.append(
             f"| {item['item_id']} | {item['title']} | {item['category']} | {price} |"
+        )
+    return "\n".join(lines)
+
+
+def render_category_results(results: list[dict]) -> str:
+    if not results:
+        return "品类知识工具结果：无"
+    lines = ["品类知识工具结果（仅 category aggregate/reference）："]
+    for result in results:
+        lines.append(
+            json.dumps(
+                {
+                    "category": result.get("category"),
+                    "insights": result.get("insights", {}),
+                    "evidence_refs": result.get("evidence_refs", []),
+                    "source_boundary": result.get("source_boundary", {}),
+                },
+                ensure_ascii=False,
+            )
         )
     return "\n".join(lines)
 
@@ -191,6 +244,7 @@ async def call_judge(
 ) -> dict:
     user = (
         f"## 商品库事实表\n{render_facts(item['facts'])}\n\n"
+        f"## 品类知识工具结果\n{render_category_results(item.get('category_results', []))}\n\n"
         f"{render_rules()}\n\n"
         f"## 对话记录\n{item['transcript']}\n\n"
         f"## 评分细则\n{json.dumps(rubric, ensure_ascii=False, indent=2)}"
@@ -198,7 +252,7 @@ async def call_judge(
     return await _chat_json(client, JUDGE_SYSTEM, user)
 
 
-def score_case(judged: dict) -> tuple[float, bool]:
+def score_case(judged: dict, fact_violations: list[dict] | None = None) -> tuple[float, bool]:
     def ratio(level: list) -> float:
         return (
             sum(1 for rule in level if rule.get("pass")) / len(level)
@@ -210,7 +264,7 @@ def score_case(judged: dict) -> tuple[float, bool]:
     p1 = ratio(judged.get("p1", []))
     p2 = ratio(judged.get("p2", []))
     weighted = 0.5 * p0 + 0.35 * p1 + 0.15 * p2
-    return round(weighted, 3), p0 == 1.0
+    return round(weighted, 3), p0 == 1.0 and not fact_violations
 
 
 def render_report(results: list[dict]) -> str:
@@ -229,6 +283,7 @@ def render_report(results: list[dict]) -> str:
                 f"## {item['source']}",
                 "",
                 f"- Query：{item['query']}",
+                f"- 确定性事实门禁：{'PASS' if not item.get('fact_violations') else 'FAIL'}",
                 f"- 结果：{verdict}（{item['score']}）",
                 "- 生成 rubric：",
                 "```json",
@@ -244,6 +299,11 @@ def render_report(results: list[dict]) -> str:
                     f"  - [{level.upper()}][{mark}] {rule.get('criterion', '')}"
                     f"：{rule.get('reason', '')}"
                 )
+        for violation in item.get("fact_violations", []):
+            lines.append(
+                f"  - [P0][FAIL][{violation['code']}] {violation['message']}："
+                f"{violation['excerpt']}"
+            )
         lines.append("")
     return "\n".join(lines)
 
@@ -300,7 +360,9 @@ async def main() -> None:
             else:
                 item["rubric"] = await generate_rubric(client, item)
                 item["judged"] = await call_judge(client, item, item["rubric"])
-                item["score"], item["p0_pass"] = score_case(item["judged"])
+                item["score"], item["p0_pass"] = score_case(
+                    item["judged"], item.get("fact_violations", [])
+                )
                 print(
                     f"     -> {'PASS' if item['p0_pass'] and item['score'] >= 0.7 else 'FAIL'}"
                     f"（{item['score']}）",

@@ -23,12 +23,26 @@ from globex_agent.category_insight import admit_card
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT_TIME = "2026-08-18T00:00:00+08:00"
-GENERATOR_VERSION = "category-card-taobao-zh-v1"
-FACT_DATASET_VERSION = "category-item-facts-taobao-zh-v1"
-CARD_DATASET_VERSION = "category-cards-taobao-zh-v1"
+GENERATOR_VERSION = "category-card-taobao-zh-v3"
+FACT_DATASET_VERSION = "category-item-facts-taobao-zh-v3"
+CARD_DATASET_VERSION = "category-cards-taobao-zh-v3"
 AUDIT_RATIO = 0.10
 MIN_SHARED_ATTRIBUTES = 2
 ATTRIBUTE_COVERAGE_DENOMINATOR = 10.0
+PRICE_POLICY_VERSION = "log-iqr-1.5-positive-noncomparable-v2"
+MIN_VALID_PRICE_CNY = 5.0
+MAX_PRICE_TO_MEDIAN_RATIO = 30.0
+NON_COMPARABLE_PRICE_TERMS = (
+    "配件",
+    "线材",
+    "充电线",
+    "车充线",
+    "电源线",
+    "租赁",
+    "出租",
+    "定制",
+    "充电宝",
+)
 
 
 def main() -> None:
@@ -61,6 +75,7 @@ def main() -> None:
     _validate_taxonomy(taxonomy)
 
     facts, rejected_memberships = _build_item_facts(items, taxonomy)
+    _apply_price_quality_policy(facts)
     raw_cards, provenance = _build_cards(facts, taxonomy)
     cards, rejected_cards = _admit_cards(raw_cards)
     audit_queue = _build_audit_queue(cards)
@@ -161,6 +176,21 @@ def _build_item_facts(
         accepted_candidates: list[tuple[dict[str, Any], str]] = []
         for item in sorted(candidates, key=lambda row: str(row["item_id"])):
             title = _clean_display_text(str(item.get("title") or ""))
+            excluded = _first_matching_term(
+                title,
+                [str(term) for term in category_config.get("excluded_terms", [])],
+            )
+            if excluded is not None:
+                rejected.append(
+                    {
+                        "category": category,
+                        "item_id": str(item["item_id"]),
+                        "reason": "title matches category excluded_terms gate",
+                        "excluded_term": excluded,
+                        "category_path": list(item.get("category_path") or []),
+                    }
+                )
+                continue
             matched = _first_matching_term(title, category_config["required_terms"])
             if matched is None:
                 rejected.append(
@@ -194,6 +224,8 @@ def _build_item_facts(
                     "source_attributes": source_attributes,
                     "source_tag": item.get("attributes", {}).get("source_tag"),
                     "price_observations_cny": prices,
+                    "raw_price_observations_cny": list(prices),
+                    "price_exclusions": [],
                     "price_measure": _price_measure(item),
                     "price_source": "observed",
                     "representative_price_cny": (
@@ -224,6 +256,96 @@ def _build_item_facts(
                 }
             )
     return facts, rejected
+
+
+def _apply_price_quality_policy(facts: list[dict[str, Any]]) -> None:
+    """Remove invalid/extreme listing observations with auditable reasons."""
+
+    facts_by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for fact in facts:
+        facts_by_category[str(fact["category"])].append(fact)
+
+    for category_facts in facts_by_category.values():
+        for fact in category_facts:
+            raw = list(fact.get("raw_price_observations_cny") or [])
+            matched_non_comparable_term = _first_matching_term(
+                str(fact.get("title", "")), NON_COMPARABLE_PRICE_TERMS
+            )
+            valid = [
+                price
+                for price in raw
+                if (
+                    matched_non_comparable_term is None
+                    and math.isfinite(price)
+                    and price >= MIN_VALID_PRICE_CNY
+                )
+            ]
+            fact["price_observations_cny"] = valid
+            fact["price_exclusions"] = []
+            if matched_non_comparable_term is not None:
+                fact["price_exclusions"].extend(
+                    {
+                        "price_cny": price,
+                        "reason": "non_comparable_listing_type",
+                        "matched_term": matched_non_comparable_term,
+                    }
+                    for price in raw
+                )
+            else:
+                fact["price_exclusions"].extend(
+                    {
+                        "price_cny": price,
+                        "reason": "below_minimum_or_non_finite",
+                    }
+                    for price in raw
+                    if not math.isfinite(price) or price < MIN_VALID_PRICE_CNY
+                )
+
+        all_prices = sorted(
+            price for fact in category_facts for price in fact["price_observations_cny"]
+        )
+        if not all_prices:
+            continue
+        median = statistics.median(all_prices)
+        if len(all_prices) < 4:
+            lower = MIN_VALID_PRICE_CNY
+            upper = median * MAX_PRICE_TO_MEDIAN_RATIO
+        else:
+            log_prices = sorted(math.log(price) for price in all_prices)
+            q1 = _percentile(log_prices, 0.25)
+            q3 = _percentile(log_prices, 0.75)
+            iqr = q3 - q1
+            lower = max(MIN_VALID_PRICE_CNY, math.exp(q1 - 1.5 * iqr))
+            upper = min(math.exp(q3 + 1.5 * iqr), median * MAX_PRICE_TO_MEDIAN_RATIO)
+        for fact in category_facts:
+            kept: list[float] = []
+            for price in fact["price_observations_cny"]:
+                if price < lower or price > upper:
+                    fact["price_exclusions"].append(
+                        {
+                            "price_cny": price,
+                            "reason": "outside_category_robust_fence",
+                            "lower_fence_cny": round(lower, 2),
+                            "upper_fence_cny": round(upper, 2),
+                        }
+                    )
+                else:
+                    kept.append(price)
+            fact["price_observations_cny"] = kept
+            fact["representative_price_cny"] = (
+                round(statistics.median(kept), 2) if kept else None
+            )
+            fact["price_quality"] = {
+                "policy_version": PRICE_POLICY_VERSION,
+                "minimum_valid_price_cny": MIN_VALID_PRICE_CNY,
+                "max_price_to_median_ratio": MAX_PRICE_TO_MEDIAN_RATIO,
+                "category_median_cny": round(median, 2),
+                "lower_fence_cny": round(lower, 2),
+                "upper_fence_cny": round(upper, 2),
+                "raw_count": len(fact.get("raw_price_observations_cny") or []),
+                "kept_count": len(kept),
+                "excluded_count": len(fact["price_exclusions"]),
+            }
 
 
 def _shared_attribute_counts(
@@ -342,7 +464,7 @@ def _build_bestseller_cards(
     category = str(category_config["category"])
     slug = str(category_config["slug"])
     ranked = sorted(
-        facts,
+        [fact for fact in facts if fact.get("representative_price_cny") is not None],
         key=lambda row: (
             -row["proxy_fields"]["homogeneous_item_count"],
             -row["proxy_fields"]["attribute_coverage"],
@@ -385,6 +507,7 @@ def _build_bestseller_cards(
                 ),
                 "proxy_rank_fields": ["homogeneous_item_count", "attribute_coverage"],
                 "proxy_note": "淘宝目录无真实销量，未生成销量",
+                "proxy_scope": "目录高频款型代理/高频形态，不是真实销量榜",
                 "price_measure": "median_observed_item_price_cny",
                 "observed_source_fields": [
                     "item_id",
@@ -469,6 +592,10 @@ def _build_attribute_cards(
                     value: len(rows) for value, rows in selected
                 },
                 "summary_source": "deterministic_taobao_source_attributes_aggregation",
+                "claim_scope": (
+                    "当前目录样本中的标题/属性出现率；不是市场规律；"
+                    "医疗或功效词仅为商品标题声明，未验证功效"
+                ),
                 "generated_fields": [],
                 "generator_version": GENERATOR_VERSION,
             }
@@ -505,7 +632,7 @@ def _build_price_card(
         "raw_evidence": [
             f"观察价格样本 n={len(prices)}",
             f"单规格 {single_count} 件，多规格 {multi_count} 件",
-            "仅观测淘宝 price_cny/variants，不表示成交价",
+            "目录挂牌/规格价参考区间，不表示成交价、具体 SKU 价格或实时价格",
         ],
         "last_updated": SNAPSHOT_TIME,
         "confidence": round(min(0.9, 0.6 + len(prices) / 2000 * 0.3), 2),
@@ -521,7 +648,16 @@ def _build_price_card(
         "price_measure": "observed_listed_prices_cny",
         "currency": "CNY",
         "percentile_method": "linear_interpolation",
+        "quality_policy_version": PRICE_POLICY_VERSION,
+        "quality_policy": (
+            "先排除低于 5 CNY 或非有限价格，再按品类价格的 log-space IQR 1.5 "
+            "fence 与 30 倍品类中位数上限排除明显极端值；不把异常值用于价格档位"
+        ),
+        "excluded_observation_count": sum(
+            len(fact.get("price_exclusions") or []) for fact in facts
+        ),
         "listed_price_not_transaction": True,
+        "price_scope": "目录挂牌/规格价样本的品类参考区间，不是成交价、具体 SKU 价格或实时价格",
         "observed_source_fields": ["price_cny", "variants[].price_cny"],
         "generated_fields": [],
         "generator_version": GENERATOR_VERSION,
@@ -531,7 +667,10 @@ def _build_price_card(
 
 def _price_edges(prices: list[float]) -> tuple[int, int, int, int]:
     unit = 10
-    minimum = math.floor(prices[0] / unit) * unit
+    minimum = max(
+        int(MIN_VALID_PRICE_CNY),
+        math.floor(prices[0] / unit) * unit,
+    )
     first = math.ceil(_percentile(prices, 1 / 3) / unit) * unit
     second = math.ceil(_percentile(prices, 2 / 3) / unit) * unit
     maximum = math.ceil(prices[-1] / unit) * unit
@@ -600,9 +739,9 @@ def _build_audit_queue(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_retrieval_rows(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     type_zh = {
-        "bestseller": "热门商品形态",
-        "attribute": "商品属性分布",
-        "price_range": "价格档位",
+        "bestseller": "目录高频款型代理",
+        "attribute": "目录样本属性出现率",
+        "price_range": "品类参考价格档位",
     }
     rows = []
     for card in cards:
@@ -656,11 +795,16 @@ def _build_manifest(
             ],
             "generated": ["bestseller_proxy_rank"],
             "bestseller_semantics": (
-                "offline proxy based on homogeneous items and attribute coverage; "
-                "not a real sales ranking"
+                "catalog frequency/form proxy based on homogeneous items and "
+                "attribute coverage; not a real sales ranking"
+            ),
+            "attribute_semantics": (
+                "current catalog title/attribute occurrence rates; not market-wide "
+                "distributions; medical/efficacy terms are unverified title claims"
             ),
             "price_semantics": (
-                "observed listing/SKU prices, not historical transaction prices"
+                "robust-range reference from observed listing/SKU prices; not historical "
+                "transaction prices, a concrete SKU price, or real-time price"
             ),
         },
         "category_assignment": {
@@ -668,11 +812,31 @@ def _build_manifest(
             "assigned_category_count": len(taxonomy["categories"]),
         },
         "generation_rules": {
-            "price": "real price_cny or variants[].price_cny with linear interpolation",
-            "bestseller_proxy": (
-                "shared source attributes >= 2 plus normalized attribute coverage"
+            "price": (
+                "real price_cny or variants[].price_cny; positive finite observations "
+                "then log-space IQR 1.5 outlier fence before linear percentile edges"
             ),
-            "attributes": "deterministic source_attributes aggregation from taxonomy rules",
+            "price_quality_policy": PRICE_POLICY_VERSION,
+            "price_policy": {
+                "version": PRICE_POLICY_VERSION,
+                "minimum_valid_price_cny": MIN_VALID_PRICE_CNY,
+                "max_price_to_median_ratio": MAX_PRICE_TO_MEDIAN_RATIO,
+                "outlier_rule": "category-local log-space IQR 1.5 fence",
+                "excluded_observation_reasons": [
+                    "below_minimum_or_non_finite",
+                    "non_comparable_listing_type",
+                    "outside_category_robust_fence",
+                ],
+                "non_comparable_title_terms": list(NON_COMPARABLE_PRICE_TERMS),
+            },
+            "bestseller_proxy": (
+                "shared source attributes >= 2 plus normalized attribute coverage; "
+                "displayed as catalog frequency/form proxy"
+            ),
+            "attributes": (
+                "deterministic source_attributes aggregation from taxonomy rules; "
+                "percentages are current catalog occurrence rates"
+            ),
             "summary": "deterministic formatting; no generative LLM",
         },
         "admission": {
