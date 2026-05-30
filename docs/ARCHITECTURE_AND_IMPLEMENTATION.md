@@ -446,6 +446,19 @@ GET  /health
 - WebSocket 订阅事件流，断线自动重连
 - 会话 ID / buyer ID 存 localStorage
 
+### 7.4 一键启动
+
+脚本：`scripts/start_dev.ps1`
+
+- 自动启动后端并等待 `/health`
+- 自动安装前端依赖并启动 Vite
+- 按 `Ctrl+C` 统一停止
+
+```powershell
+.\scripts\start_dev.ps1
+.\scripts\start_dev.ps1 -SkipFrontend
+```
+
 ## 8. 评测体系与当前结果
 
 ### 8.1 自动化测试
@@ -482,6 +495,14 @@ ruff：All checks passed
 
 报告：`eval/flow-report-20260819-232003.md`
 
+另外已跑真实 OpenSearch + CategoryInsight RAG 的 8 条 query：
+
+- `8/8` 正常完成
+- 平均耗时约 33.5 秒/条
+- 报告：`eval/flow-report-20260820-021422.md`
+
+串联脚本：`scripts/eval_flow_with_rubric.py`
+
 ### 8.4 Per-case LLM Rubric
 
 脚本：`scripts/eval_flow_rubric.py`
@@ -496,6 +517,15 @@ ruff：All checks passed
 结果：`4/9 PASS`，平均分 `0.628`
 
 报告：`eval/flow-rubric-20260820-003923.md`
+
+真实 OpenSearch + CategoryInsight RAG 串联批次：
+
+- `3/8 PASS`，平均分 `0.667`
+- 报告：`eval/flow-rubric-20260820-023633.md`
+
+通过：羽毛球包（1.0）、乳胶枕（0.775）、颈椎按摩器（1.0）。
+
+失败：汽车氛围灯（0.2）、儿童学习椅（0.7）、手机直播补光灯（0.487）、户外电源（0.7）、平板电脑支架（0.475）。
 
 主要失败模式：
 
@@ -532,7 +562,18 @@ D:/models/bge-m3
 D:/models/bge-reranker-v2-m3
 ```
 
-当前 Docker daemon 未启动，`docker compose config` 已验证；build/up 待 daemon 恢复后执行。
+当前状态：
+
+- Docker daemon 可用
+- `docker-app`、`docker-worker`、`globex/opensearch-ik:2.19.1` 镜像已构建
+- 完整 compose 未作为日常评测环境使用；评测直接使用已有 `globex-category-opensearch` 容器
+- 已新增 `.dockerignore`，避免构建上下文把 `.venv`、前端、output 等大目录打进镜像
+
+如需完整 compose 部署，仍可用：
+
+```powershell
+docker compose -f docker\docker-compose.yaml up -d --wait
+```
 
 ## 10. 关键设计取舍与失败模式
 
@@ -565,5 +606,5 @@ D:/models/bge-reranker-v2-m3
 3. **检索排序**：embedding + rerank 后的候选排序是否还有更好的结构化加权
 4. **会话与多 worker**：文件持久化在并发下的风险，以及 SQLite/Redis 迁移策略
 5. **韧性参数**：工具超时、熔断阈值、缓存阈值是否合理
-6. **部署**：Docker daemon 恢复后的容器验证、模型挂载、OpenSearch IK 初始化
+6. **部署**：完整 compose 与已有 OpenSearch 容器的切换策略、模型挂载、OpenSearch IK 初始化
 7. **前端**：WebSocket 重连、事件时间线、商品卡展示是否需要改进
