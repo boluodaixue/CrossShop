@@ -95,8 +95,15 @@ def build_product_search_tool(
                 "hit_count": len(result["hits"]),
                 "recall_strategy": result["recall_strategy"],
                 "hits": result["hits"],
+                "evidence_refs": result.get("evidence_refs", []),
+                # Snapshots stay in the bounded audit/evaluation event.  The
+                # model receives only ProductCard plus the compact refs below.
+                "evidence_snapshots": result.get("evidence_snapshots", []),
             },
         )
-        return json.dumps(result, ensure_ascii=False)
+        model_result = {
+            key: value for key, value in result.items() if key != "evidence_snapshots"
+        }
+        return json.dumps(model_result, ensure_ascii=False)
 
     return product_search_tool

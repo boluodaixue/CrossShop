@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from globex_agent.application.agents.main_agent import SessionRegistry
+from globex_agent.application.evidence import sanitize_snapshot_payload
 from globex_agent.domain.buyer.preference import PreferenceStore
 from globex_agent.domain.session.ports.conversation_store import (
     ConversationEventRecord,
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_TURN_RETRIES = 2
 _RETRY_BASE_SECONDS = 1.0
+_CATEGORY_AUDIT_MAX_BYTES = 20_000
 
 
 @dataclass(frozen=True)
@@ -297,8 +300,18 @@ def _sanitize_audit_payload(value: Any, *, key: str = "", depth: int = 0) -> Any
 
     if key in _AUDIT_REDACT_KEYS:
         return "[redacted]"
+    if (
+        isinstance(value, dict)
+        and value.get("tool") == "category_insight_tool"
+        and depth == 0
+    ):
+        return _sanitize_category_insight_payload(value)
     if key == "raw_evidence":
         return "[omitted: use evidence_refs]"
+    if key in {"evidence_snapshots", "product_fact_snapshot"}:
+        if isinstance(value, list):
+            return [sanitize_snapshot_payload(item) for item in value[:20]]
+        return sanitize_snapshot_payload(value)
     if depth >= 4:
         return "[omitted: audit depth limit]"
     if isinstance(value, dict):
@@ -318,4 +331,124 @@ def _sanitize_audit_payload(value: Any, *, key: str = "", depth: int = 0) -> Any
         ]
     if isinstance(value, str):
         return value[:2000]
+    return value
+
+
+def _category_value(value: Any, *, key: str = "") -> Any:
+    """Bound one explicitly exposed CategoryInsight value without depth elision."""
+
+    return _sanitize_audit_payload(value, key=key, depth=0)
+
+
+def _sanitize_category_insight_payload(value: dict[str, Any]) -> dict[str, Any]:
+    """Persist only the CategoryInsight contract visible to the model.
+
+    The generic audit sanitizer intentionally omits nested values at depth 4.
+    Price-tier ranges are a deliberately small, schema-aware exception: they
+    are copied field-by-field from the tool output, then still pass the normal
+    PII/string/list bounds.  Raw cards, raw_evidence, and unknown fields never
+    enter this payload.
+    """
+
+    raw_insights = value.get("insights")
+    insights: dict[str, Any] = {}
+    if isinstance(raw_insights, dict):
+        for field in ("category", "confidence"):
+            if field in raw_insights:
+                insights[field] = _category_value(raw_insights[field], key=field)
+        for field in ("components", "bestsellers", "attributes"):
+            raw_items = raw_insights.get(field)
+            if not isinstance(raw_items, list):
+                continue
+            bounded_items: list[Any] = []
+            for raw_item in raw_items[:20]:
+                if isinstance(raw_item, str):
+                    bounded_items.append(_category_value(raw_item, key=field))
+                elif isinstance(raw_item, dict):
+                    bounded_items.append(
+                        {
+                            str(item_key): _category_value(item_value, key=str(item_key))
+                            for item_key, item_value in list(raw_item.items())[:10]
+                            if str(item_key)
+                            in {
+                                "name",
+                                "typical_price_cny",
+                                "why_popular",
+                                "source_scope",
+                                "distribution",
+                                "claim_scope",
+                            }
+                        }
+                    )
+            insights[field] = bounded_items
+        raw_tiers = raw_insights.get("price_tiers")
+        if isinstance(raw_tiers, list):
+            insights["price_tiers"] = [
+                {
+                    field: _category_value(tier.get(field), key=field)
+                    for field in ("tier", "range_cny", "source_scope")
+                    if field in tier
+                }
+                for tier in raw_tiers[:20]
+                if isinstance(tier, dict)
+            ]
+
+    refs: list[dict[str, Any]] = []
+    for ref in value.get("evidence_refs") or []:
+        if not isinstance(ref, dict):
+            continue
+        refs.append(
+            {
+                field: _category_value(ref.get(field), key=field)
+                for field in (
+                    "card_id",
+                    "category",
+                    "card_type",
+                    "last_updated",
+                    "confidence",
+                )
+                if field in ref
+            }
+        )
+    raw_boundary = value.get("source_boundary")
+    boundary: dict[str, Any] = {}
+    if isinstance(raw_boundary, dict):
+        for field in (
+            "scope",
+            "category",
+            "bestsellers",
+            "attributes",
+            "price_tiers",
+            "exclusions",
+        ):
+            if field in raw_boundary:
+                boundary[field] = _category_value(raw_boundary[field], key=field)
+
+    output: dict[str, Any] = {
+        "tool": "category_insight_tool",
+        "category": _category_value(value.get("category"), key="category"),
+        "insights": insights,
+        "evidence_refs": refs[:20],
+        "source_boundary": boundary,
+    }
+    if "error" in value:
+        output["error"] = _category_value(value["error"], key="error")
+    encoded = json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > _CATEGORY_AUDIT_MAX_BYTES:
+        output = _shrink_category_payload(output)
+    return output
+
+
+def _shrink_category_payload(value: Any) -> Any:
+    """Apply a second, payload-wide bound after field-level sanitization."""
+
+    if isinstance(value, str):
+        return value[:240]
+    if isinstance(value, dict):
+        return {
+            key: _shrink_category_payload(child)
+            for key, child in list(value.items())[:30]
+        }
+    if isinstance(value, list):
+        return [_shrink_category_payload(child) for child in value[:10]]
     return value

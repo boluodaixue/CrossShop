@@ -7,6 +7,11 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from globex_agent.application.evidence import (
+    ProductFactSnapshot,
+    build_product_fact_snapshot,
+    product_card_from_snapshot,
+)
 from globex_agent.domain.catalog.constraints import ConstraintEvaluator
 from globex_agent.domain.catalog.exchange_rate import ExchangeRateTable
 from globex_agent.domain.catalog.models import (
@@ -52,11 +57,13 @@ _PLATFORM_ORIGIN: dict[Platform, str] = {
 
 @dataclass(frozen=True)
 class ProductCard:
+    evidence_id: str
     item_id: str
     title: str
     brand: str
     category: str
     category_path: list[str]
+    store: str | None
     origin_country: str
     origin_country_source: str
     ships_to: list[str]
@@ -64,6 +71,7 @@ class ProductCard:
     price_major: float | None
     price_source: str
     currency: str
+    availability: str
     highlights: list[str]
     variants: list[dict]
     score: float
@@ -76,11 +84,13 @@ class ProductCard:
 
     def to_dict(self) -> dict:
         card: dict[str, Any] = {
+            "evidence_id": self.evidence_id,
             "item_id": self.item_id,
             "title": self.title,
             "brand": self.brand,
             "category": self.category,
             "category_path": self.category_path,
+            "store": self.store,
             "origin_country": self.origin_country,
             "origin_country_source": self.origin_country_source,
             "ships_to": self.ships_to,
@@ -88,6 +98,7 @@ class ProductCard:
             "price_major": self.price_major,
             "price_source": self.price_source,
             "currency": self.currency,
+            "availability": self.availability,
             "highlights": self.highlights,
             "variants": self.variants,
             "price_min_major": self.price_min_major,
@@ -187,7 +198,12 @@ class CatalogSearchUseCase:
                 except Exception as err:  # noqa: BLE001
                     logger.warning("BM25 降级后的 rerank 不可用：%s", err)
 
-        hits = [self._to_card(score, item, spec) for score, item in scored[: spec.top_k]]
+        snapshots: list[ProductFactSnapshot] = []
+        hits: list[ProductCard] = []
+        for score, item in scored[: spec.top_k]:
+            snapshot = build_product_fact_snapshot(item)
+            snapshots.append(snapshot)
+            hits.append(self._to_card(score, item, spec, snapshot=snapshot))
         returned_count = len(hits)
         eligible_count = len(scored)
         result: dict[str, Any] = {
@@ -205,6 +221,10 @@ class CatalogSearchUseCase:
             "returned_count": returned_count,
             "is_partial": returned_count < spec.top_k,
             "filtered_count_by_reason": filtered_count_by_reason,
+            "evidence_refs": [snapshot.evidence_ref() for snapshot in snapshots],
+            "evidence_snapshots": [
+                snapshot.to_persisted_dict() for snapshot in snapshots
+            ],
         }
         if exhaustion_reason is not None:
             result["exhaustion_reason"] = exhaustion_reason
@@ -342,6 +362,8 @@ class CatalogSearchUseCase:
         score: float,
         item: StandardItem,
         spec: ProductSearchSpec,
+        *,
+        snapshot: ProductFactSnapshot | None = None,
     ) -> ProductCard:
         price = _primary_price_money(item)
         landed_price: dict | None = None
@@ -357,23 +379,9 @@ class CatalogSearchUseCase:
                 landed_price = quote.to_dict()
             except ValueError as err:
                 landed_price = {"unavailable_reason": str(err)}
-        origin_country, origin_source = derived_origin_country(item)
-        ships_to, ships_source = derived_ships_to(item)
-        return ProductCard(
-            item_id=item.item_id,
-            title=item.title,
-            brand=item.brand or "",
-            category=_category_label(item),
-            category_path=list(item.category_path),
-            origin_country=origin_country,
-            origin_country_source=origin_source,
-            ships_to=list(ships_to),
-            ships_to_source=ships_source,
-            price_major=price.to_major_units() if price is not None else None,
-            price_source=item.price_source.value,
-            currency=item.currency_raw.value if item.currency_raw else "CNY",
-            highlights=_attribute_highlights(item)[:8],
-            variants=_variant_cards(item),
+        snapshot = snapshot or build_product_fact_snapshot(item)
+        card = product_card_from_snapshot(
+            snapshot,
             score=score,
             landed_price=landed_price,
             price_min_major=_variant_price_range(item)[0],
@@ -382,6 +390,7 @@ class CatalogSearchUseCase:
             matching_variant_ids=self._constraints.evaluate(item, spec).matching_variant_ids,
             warnings=self._constraints.evaluate(item, spec).warnings,
         )
+        return card
 
 
 def _primary_price_money(item: StandardItem) -> Money | None:
