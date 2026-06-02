@@ -140,6 +140,8 @@ def parse_conversation(path: Path) -> dict:
                     "title": hit.get("title", ""),
                     "category": hit.get("category", ""),
                     "price_major": hit.get("price_major"),
+                    "price_min_major": hit.get("price_min_major"),
+                    "price_max_major": hit.get("price_max_major"),
                     "price": hit.get("price_major"),
                     "currency": hit.get("currency", "CNY"),
                     "variants": hit.get("variants", []),

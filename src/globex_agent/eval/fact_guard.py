@@ -24,6 +24,9 @@ _STORE_OR_STOCK_RE = re.compile(r"店铺|商家|店家|库存|现货|有货|缺�
 _NEGATED_STORE_OR_STOCK_RE = re.compile(
     r"(?:未|没有|无|无法|不能|不代表|不证明|不提供).{0,8}(?:店铺|商家|店家|库存|现货|有货|缺货)"
 )
+_STORE_VERIFICATION_RE = re.compile(
+    r"(?:向|联系|咨询).{0,4}(?:店铺|商家|店家).{0,4}(?:确认|询问|核实)"
+)
 _CATEGORY_CONTEXT_RE = re.compile(r"品类|参考|档位|区间|aggregate|category", re.IGNORECASE)
 _PRODUCT_CONTEXT_RE = re.compile(r"商品|这款|该款|SKU|货号|具体", re.IGNORECASE)
 _CLAUSE_BOUNDARY_RE = re.compile(r"[，,。！？；;\n]")
@@ -149,7 +152,11 @@ def validate_final_response(
                 )
             )
 
-    if _STORE_OR_STOCK_RE.search(text) and not _NEGATED_STORE_OR_STOCK_RE.search(text):
+    store_or_stock_text = _STORE_VERIFICATION_RE.sub("", text)
+    if (
+        _STORE_OR_STOCK_RE.search(store_or_stock_text)
+        and not _NEGATED_STORE_OR_STOCK_RE.search(text)
+    ):
         has_explicit_store = any(
             fact.get("shop") or fact.get("store") or fact.get("store_name")
             for fact in product_facts

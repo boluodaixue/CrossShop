@@ -15,7 +15,9 @@ from globex_agent.infrastructure.eventbus import TradeEventBus
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUTS: dict[str, float] = {
-    "product_search_tool": 15.0,
+    # CPU FP32 batch=16 measured 65.6s for 100 real documents; 75s leaves
+    # only the measured embedding/recall overhead and remains finite.
+    "product_search_tool": 75.0,
     "category_insight_tool": 15.0,
     "web_search_tool": 20.0,
     "prepare_order_tool": 10.0,

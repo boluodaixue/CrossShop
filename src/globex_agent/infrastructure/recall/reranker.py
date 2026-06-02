@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import subprocess
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
@@ -114,7 +116,7 @@ class CrossEncoderReranker:
 
 
 class SubprocessCrossEncoderReranker:
-    """Score pairs in a persistent GPU worker owned by another Python env."""
+    """Score pairs in a persistent worker owned by another Python env."""
 
     def __init__(
         self,
@@ -148,6 +150,8 @@ class SubprocessCrossEncoderReranker:
         self._use_fp16 = use_fp16
         self._local_files_only = local_files_only
         self._process: subprocess.Popen[str] | None = None
+        self._lock = threading.RLock()
+        self._process_state_lock = threading.Lock()
         self._request_id = 0
         atexit.register(self.close)
 
@@ -169,47 +173,86 @@ class SubprocessCrossEncoderReranker:
     def score_texts(self, query: str, texts: Sequence[str]) -> tuple[float, ...]:
         if not texts:
             return ()
-        process = self._ensure_started()
-        self._request_id += 1
-        payload = {
-            "id": self._request_id,
-            "query": query,
-            "documents": list(texts),
-        }
-        if process.stdin is None or process.stdout is None:
-            raise RuntimeError("reranker worker pipes are unavailable")
-        process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        process.stdin.flush()
-        response_line = process.stdout.readline()
-        if not response_line:
-            return_code = process.poll()
-            raise RuntimeError(f"reranker worker stopped unexpectedly: {return_code}")
-        response = json.loads(response_line)
-        if response.get("id") != self._request_id:
-            raise RuntimeError("reranker worker returned a mismatched request ID")
-        if "error" in response:
-            raise RuntimeError(f"reranker worker failed: {response['error']}")
-        scores = tuple(float(value) for value in response.get("scores", ()))
-        if len(scores) != len(texts):
-            raise RuntimeError("reranker worker returned the wrong number of scores")
-        return scores
+        with self._lock:
+            process = self._ensure_started_locked()
+            try:
+                self._request_id += 1
+                request_id = self._request_id
+                payload = {
+                    "id": request_id,
+                    "query": query,
+                    "documents": list(texts),
+                }
+                if process.stdin is None or process.stdout is None:
+                    raise RuntimeError("reranker worker pipes are unavailable")
+                process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                process.stdin.flush()
+                response_line = process.stdout.readline()
+                if not response_line:
+                    return_code = process.poll()
+                    raise RuntimeError(f"reranker worker stopped unexpectedly: {return_code}")
+                response = json.loads(response_line)
+                if response.get("id") != request_id:
+                    raise RuntimeError("reranker worker returned a mismatched request ID")
+                if "error" in response:
+                    raise RuntimeError(f"reranker worker failed: {response['error']}")
+                scores = tuple(float(value) for value in response.get("scores", ()))
+                if len(scores) != len(texts):
+                    raise RuntimeError("reranker worker returned the wrong number of scores")
+                if not all(math.isfinite(score) for score in scores):
+                    raise RuntimeError("reranker worker returned non-finite scores")
+                return scores
+            except Exception:
+                self._reset_process_locked(process)
+                raise
+
+    def ensure_ready(self) -> None:
+        """Start the persistent worker and validate its ready handshake."""
+
+        with self._lock:
+            self._ensure_started_locked()
+
+    def warmup(self) -> None:
+        """Run one local pair so the first request pays no model cost."""
+
+        self.score_texts("__startup__", ["__startup__"])
+
+    def abort(self) -> None:
+        """Terminate an in-flight request without waiting for its I/O lock.
+
+        ``asyncio.to_thread`` cannot stop the worker thread when its caller is
+        cancelled.  Closing the process first lets that thread release the
+        lock after its pipe read returns, while the next request starts a
+        clean persistent worker.
+        """
+
+        process = self._get_process()
+        self._set_process(None)
+        if process is not None:
+            self._terminate_process(process)
 
     def close(self) -> None:
-        process = self._process
-        self._process = None
-        if process is None or process.poll() is not None:
-            return
-        try:
-            if process.stdin is not None:
-                process.stdin.write('{"command":"shutdown"}\n')
-                process.stdin.flush()
-            process.wait(timeout=10)
-        except (BrokenPipeError, subprocess.TimeoutExpired):
-            process.terminate()
+        with self._lock:
+            process = self._get_process()
+            self._set_process(None)
+            if process is None or process.poll() is not None:
+                return
+            try:
+                if process.stdin is not None:
+                    process.stdin.write('{"command":"shutdown"}\n')
+                    process.stdin.flush()
+                process.wait(timeout=10)
+            except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                self._terminate_process(process)
 
     def _ensure_started(self) -> subprocess.Popen[str]:
-        if self._process is not None and self._process.poll() is None:
-            return self._process
+        with self._lock:
+            return self._ensure_started_locked()
+
+    def _ensure_started_locked(self) -> subprocess.Popen[str]:
+        process = self._get_process()
+        if process is not None and process.poll() is None:
+            return process
         command = [
             str(self._python_executable),
             str(self._worker_path),
@@ -230,23 +273,65 @@ class SubprocessCrossEncoderReranker:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             bufsize=1,
         )
-        if process.stdout is None:
-            process.terminate()
-            raise RuntimeError("reranker worker stdout is unavailable")
-        ready_line = process.stdout.readline()
-        if not ready_line:
-            return_code = process.poll()
-            raise RuntimeError(f"reranker worker failed to start: {return_code}")
-        ready = json.loads(ready_line)
-        if ready.get("status") != "ready":
-            process.terminate()
-            raise RuntimeError(f"reranker worker did not become ready: {ready}")
-        self._process = process
+        try:
+            if process.stdout is None:
+                raise RuntimeError("reranker worker stdout is unavailable")
+            ready_line = process.stdout.readline()
+            if not ready_line:
+                return_code = process.poll()
+                raise RuntimeError(f"reranker worker failed to start: {return_code}")
+            ready = json.loads(ready_line)
+            expected = {
+                "status": "ready",
+                "model": self._model_name,
+                "device": self._device,
+                "model_device": self._device,
+                "precision": "fp16" if self._use_fp16 else "fp32",
+                "max_length": self._max_length,
+                "batch_size": self._batch_size,
+            }
+            if any(ready.get(key) != value for key, value in expected.items()):
+                raise RuntimeError(
+                    "reranker worker contract mismatch: "
+                    f"expected={expected}, got={ready}"
+                )
+        except Exception:
+            self._terminate_process(process)
+            raise
+        self._set_process(process)
         return process
+
+    def _reset_process_locked(self, process: subprocess.Popen[str]) -> None:
+        if self._get_process() is process:
+            self._set_process(None)
+        self._terminate_process(process)
+
+    def _get_process(self) -> subprocess.Popen[str] | None:
+        with self._process_state_lock:
+            return self._process
+
+    def _set_process(self, process: subprocess.Popen[str] | None) -> None:
+        with self._process_state_lock:
+            self._process = process
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
 class RerankedSearchBackend:

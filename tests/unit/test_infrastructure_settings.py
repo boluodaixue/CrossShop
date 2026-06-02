@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from globex_agent.infrastructure.resilience import DEFAULT_TIMEOUTS
 from globex_agent.infrastructure.settings import load_settings
 
 
@@ -13,3 +14,7 @@ def test_defaults_use_json_file_storage_and_no_queue(monkeypatch) -> None:
     assert settings.database_url == "file"
     assert settings.queue_enabled is False
     assert settings.semantic_cache_enabled is True
+
+
+def test_product_search_timeout_covers_persistent_reranker_budget() -> None:
+    assert DEFAULT_TIMEOUTS["product_search_tool"] == 75.0

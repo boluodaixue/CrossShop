@@ -30,7 +30,10 @@ def main() -> None:
             "status": "ready",
             "model": args.model,
             "device": args.device,
+            "model_device": str(next(model.parameters()).device),
             "precision": "fp16" if args.fp16 else "fp32",
+            "max_length": args.max_length,
+            "batch_size": args.batch_size,
         }
     )
     for line in sys.stdin:

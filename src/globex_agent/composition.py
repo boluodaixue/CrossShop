@@ -115,6 +115,7 @@ class Container:
     confirmation_service: OrderConfirmationService
     item_repo: ItemRepository
     embedder: EmbeddingClient
+    reranker: BgeReranker
     vector_index: FaissProductIndex | PartitionedFaissProductIndex
     db_engine: object | None
     checkpoint_resource: RedisCheckpointResource
@@ -135,6 +136,9 @@ class Container:
     async def shutdown(self) -> None:
         await self.vector_index.close()
         close = getattr(self.embedder, "close", None)
+        if close is not None:
+            close()
+        close = getattr(self.reranker, "close", None)
         if close is not None:
             close()
         await self.cache.close()
@@ -167,10 +171,7 @@ async def build_container() -> Container:
             max_seq_length=settings.bge_m3_max_seq_length,
         )
         embedder = _build_query_embedder(settings)
-        reranker = BgeReranker(
-            model_name=settings.bge_reranker_model,
-            local_files_only=settings.models_local_only,
-        )
+        reranker = _build_product_reranker(settings)
 
         item_repo = _build_item_repository()
         catalog_search = CatalogSearchUseCase(
@@ -272,6 +273,7 @@ async def build_container() -> Container:
             confirmation_service=confirmation_service,
             item_repo=item_repo,
             embedder=embedder,
+            reranker=reranker,
             vector_index=vector_index,
             db_engine=db_engine,
             checkpoint_resource=checkpoint_resource,
@@ -357,6 +359,9 @@ def _build_query_embedder(settings: Settings) -> EmbeddingClient:
             local_files_only=settings.models_local_only,
         )
         embedder.ensure_ready()
+        warmup = getattr(embedder, "warmup", None)
+        if warmup is not None:
+            warmup()
         return embedder
 
     if not settings.bge_m3_device.startswith("cuda"):
@@ -383,7 +388,35 @@ def _build_query_embedder(settings: Settings) -> EmbeddingClient:
         local_files_only=settings.models_local_only,
     )
     embedder.ensure_ready()
+    warmup = getattr(embedder, "warmup", None)
+    if warmup is not None:
+        warmup()
     return embedder
+
+
+def _build_product_reranker(settings: Settings) -> BgeReranker:
+    """Use the configured persistent GPU worker when one is available."""
+
+    python_value = settings.bge_reranker_python.strip()
+    if python_value:
+        worker = SubprocessCrossEncoderReranker(
+            Path(python_value).expanduser(),
+            model_name=settings.bge_reranker_model,
+            device=settings.bge_reranker_device,
+            batch_size=settings.bge_reranker_batch_size,
+            max_length=settings.bge_reranker_max_length,
+            use_fp16=not settings.bge_reranker_fp32,
+            local_files_only=settings.models_local_only,
+        )
+        worker.ensure_ready()
+        warmup = getattr(worker, "warmup", None)
+        if warmup is not None:
+            warmup()
+        return BgeReranker(reranker=worker)
+    return BgeReranker(
+        model_name=settings.bge_reranker_model,
+        local_files_only=settings.models_local_only,
+    )
 
 
 def _validate_catalog_index_contract(model_name: str, *, max_seq_length: int) -> None:
@@ -458,7 +491,14 @@ def _build_category_insight_service(settings: Settings) -> CategoryInsightServic
     taxonomy_path = settings.category_taxonomy
     if not taxonomy_path.is_absolute():
         taxonomy_path = PROJECT_ROOT / taxonomy_path
-    encoder = SentenceTransformerTextEncoder(local_files_only=settings.models_local_only)
+    encoder = SentenceTransformerTextEncoder(
+        model_name=settings.bge_m3_model,
+        device="cpu",
+        batch_size=settings.bge_m3_batch_size,
+        max_seq_length=settings.bge_m3_max_seq_length,
+        local_files_only=settings.models_local_only,
+    )
+    encoder.ensure_ready()
     knowledge_base = OpenSearchCategoryKnowledgeBase(
         OpenSearchHttpClient(settings.opensearch_endpoint, timeout=30),
         index_name=settings.category_index,

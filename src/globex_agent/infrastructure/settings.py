@@ -75,6 +75,10 @@ class Settings:
     bge_m3_max_seq_length: int
     bge_reranker_model: str
     bge_reranker_python: str
+    bge_reranker_device: str
+    bge_reranker_batch_size: int
+    bge_reranker_max_length: int
+    bge_reranker_fp32: bool
     faiss_index_path: Path
     order_confirmation_ttl_seconds: int
 
@@ -219,6 +223,10 @@ def load_settings() -> Settings:
             ),
         ),
         bge_reranker_python=os.getenv("BGE_RERANKER_PYTHON", ""),
+        bge_reranker_device=os.getenv("BGE_RERANKER_DEVICE", "cpu"),
+        bge_reranker_batch_size=int(os.getenv("BGE_RERANKER_BATCH_SIZE", "16")),
+        bge_reranker_max_length=int(os.getenv("BGE_RERANKER_MAX_LENGTH", "256")),
+        bge_reranker_fp32=_env_flag("BGE_RERANKER_FP32", default=True),
         faiss_index_path=Path(
             os.getenv(
                 "FAISS_INDEX_PATH",

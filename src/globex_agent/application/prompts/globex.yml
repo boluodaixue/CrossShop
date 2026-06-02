@@ -43,7 +43,10 @@ main_agent:
        禁止在最终回复中点名 filtered_out 或库外候选的名称、品牌、价格；最多说明有商品因价格/配送被过滤。
     5. 最终回复为面向买家的自然语言，语言对齐买家 locale，默认中文。
     6. 商品卡 price_major 为 null 或 price_source=unavailable 时不得报价，只能说明“价格未提供”；
-       任何价格数字必须原样来自工具返回，禁止自行补一个价格。
+       任何价格数字必须原样来自工具返回，禁止自行补一个价格。若卡片只有
+       price_min_major / price_max_major，只能原样引用这两个区间端点，不能补写区间内部价、
+       颜色/规格对应价或把多个候选拼成新价格。商品卡没有 shop/store/store_name 字段时，
+       不得写店铺或商家名称，也不能从标题、品牌或其他字段推断店铺。
     7. 没有匹配商品时，不要逐条列举不相关候选或它们的价格，避免误导；直接说明没有该品类商品即可。
     8. 除非买家明确要求多个商品或做对比，否则每轮只推荐 1 个最匹配的库内商品，不并列推荐多款。
 
@@ -62,6 +65,9 @@ sub_agents:
          hits 保留 item_id/variant_id/title/price_major/currency/landed_price。
       5. 禁止伪造商品；item_id/variant_id 必须来自工具返回。
       6. 商品卡 price_major 为 null 或 price_source=unavailable 时不得报价，只能说明“价格未提供”。
+         若只有 price_min_major / price_max_major，只能原样引用区间端点，不能补写区间内部价、
+         规格对应价或颜色对应价；商品卡没有 shop/store/store_name 字段时，不得写店铺或商家名称，
+         也不能从标题或品牌推断店铺。
       7. 没有匹配商品时，不要逐条列举不相关候选或它们的价格，避免误导；直接说明没有该品类商品即可。
 
   trade:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from globex_agent.application.agents.orchestrator import _sanitize_audit_payload
+from globex_agent.application.prompts.loader import load_prompts
 from globex_agent.application.tools.category_insight_tool import (
     build_category_insight_tool,
 )
@@ -10,6 +11,7 @@ from globex_agent.category_insight.models import CategoryEvidenceRef
 from globex_agent.eval.fact_guard import validate_final_response
 from globex_agent.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from globex_agent.infrastructure.eventbus import TradeEventBus
+from scripts.eval_flow_rubric import parse_conversation
 
 
 class _Run:
@@ -138,6 +140,80 @@ def test_fact_guard_detects_unsupported_price_store_and_inventory() -> None:
         "unsourced_specific_price",
         "unsupported_store_or_inventory",
     }
+
+
+def test_fact_guard_allows_store_verification_request_but_not_store_claim() -> None:
+    facts = [{"item_id": "taobao:1", "availability": None}]
+
+    assert (
+        validate_final_response(
+            "材质未确认，建议向店铺确认。",
+            product_facts=facts,
+        )
+        == ()
+    )
+    violations = validate_final_response(
+        "店铺现货，建议向店铺确认。",
+        product_facts=facts,
+    )
+    assert {
+        violation.code for violation in violations
+    } == {"unsupported_store_or_inventory"}
+
+
+def test_flow_parser_preserves_product_price_bounds_for_fact_guard(tmp_path) -> None:
+    path = tmp_path / "conversation.jsonl"
+    rows = [
+        {"kind": "turn", "role": "buyer", "content": "找一个商品"},
+        {"kind": "turn", "role": "agent", "content": "价格是149元。"},
+        {
+            "kind": "event",
+            "type": "tool.result",
+            "payload": {
+                "tool": "product_search_tool",
+                "hits": [
+                    {
+                        "item_id": "item-1",
+                        "title": "商品",
+                        "category": "品类",
+                        "price_major": None,
+                        "price_min_major": 149.0,
+                        "price_max_major": 219.0,
+                        "currency": "CNY",
+                    }
+                ],
+            },
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
+        encoding="utf-8",
+    )
+
+    parsed = parse_conversation(path)
+
+    assert parsed["facts"][0]["price_min_major"] == 149.0
+    assert parsed["facts"][0]["price_max_major"] == 219.0
+    assert parsed["fact_violations"] == []
+
+    rows[1]["content"] = "价格是220元。"
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
+        encoding="utf-8",
+    )
+    assert {
+        violation["code"] for violation in parse_conversation(path)["fact_violations"]
+    } == {"unsourced_specific_price"}
+
+
+def test_product_fact_boundaries_are_explicit_in_agent_prompts() -> None:
+    prompts = load_prompts()
+    main_prompt = prompts["main_agent"]["system_prompt"]
+    search_prompt = prompts["sub_agents"]["search"]["system_prompt"]
+
+    for prompt in (main_prompt, search_prompt):
+        assert "shop/store/store_name" in prompt
+        assert "区间内部价" in prompt
 
 
 def test_audit_payload_redacts_pii_and_omits_raw_evidence() -> None:

@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent：整体设计与实现说明
 
-> 文档日期：2026-08-20  
+> 文档日期：2026-08-21
 > 分支：`codex/migrate-langgraph-ddd`  
 > Python：3.10.20  
 > 用途：让新读者通过本文了解项目当前的全部设计与实现，并能提出改进建议。
@@ -19,6 +19,15 @@ GlobexAgentLearning 是一个用于学习、运行和逐步组装电商搜索 Ag
 - 有基础长期买家偏好存取；CRUD、相关性、冲突、provenance、确认和安全治理仍未完成
 - 支持多轮会话持久化、事件流、语义缓存、工具熔断、模型回退；上下文当前主要是消息数截断，四层上下文、L0-L4、统一 token budget 和 Cache Breakpoint 尚未完成
 - 提供 FastAPI + WebSocket + React 前端
+
+本机 4GB GPU 验收 profile（2026-08-21）：Query Embedding 使用本地
+`D:/models/bge-m3` 的 CUDA FP16 常驻 worker；Reranker 使用本地
+`D:/models/bge-reranker-v2-m3` 的 CPU FP32 常驻 worker，`batch_size=16`。
+商品主链仍是 Faiss ANN Top-100 → BGE Reranker → Top-10；只切换运行设备，
+不改变模型、索引或召回逻辑。启动时预热 CategoryInsight CPU encoder、Embedding
+worker 和 Reranker worker；请求取消会主动终止当前子进程，避免后台线程长期占用
+请求锁。CPU FP32 对 100 条真实文档的 batch=16 精排实测约 65.6 秒，因此
+product-search 工具保留有限的 75 秒预算，不用无限放大超时。
 
 项目边界：
 
@@ -454,7 +463,7 @@ bestseller / attribute / price_range
 - 向量失败 → BM25；OpenSearch 失败 → 空结构 `confidence=0`
 - 当前淘宝中文数据已按 category-cards-taobao-zh-v3 重建 48 张卡；bestseller 是目录高频款型代理，attribute 是目录样本出现率，price_range 是品类参考区间
 - CategoryEvidenceRef、工具 source boundary、审计有界 evidence refs 和确定性 fact_guard 已落地
-- 本轮已用本地 D:/models/bge-m3 重建 v1 OpenSearch 索引并完成 50 条模块评测；test Recall/MRR 未回退但 KNN/Hybrid NDCG 有小幅下降，默认 Category Reranker 仍保持关闭。真实 8 条 Flow 因项目 .env 外部 LLM 端点的安全边界未执行，不能宣称端到端验收完成
+- 本轮已用本地 D:/models/bge-m3 重建 v1 OpenSearch 索引并完成 50 条模块评测；test Recall/MRR 未回退但 KNN/Hybrid NDCG 有小幅下降，默认 Category Reranker 仍保持关闭。8 条基础 Flow 已完成 HTTP 8/8，但事实门禁仍未通过，不能宣称端到端验收完成
 
 ## 7. 表现层与前端
 
@@ -549,10 +558,13 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 - 平均耗时约 33.5 秒/条
 - 报告：`eval/flow-report-20260820-021422.md`
 
-该结果属于历史数据/代码状态；知识卡 v3 重建后本轮未重新运行 8 条 Flow。虽然 BGE-M3
-已从本地 D:/models/bge-m3 完成索引和模块评测，但真实 Flow 会调用项目 .env 中的外部
-opencode.ai LLM 端点，可能发送查询、工具结果和对话内容，因安全边界未执行。因此当前
-仍不能宣称端到端验收完成。
+该结果属于历史数据/代码状态。2026-08-21 的本机 4GB profile 已完成独立 GPU
+Embedding/Reranker smoke，生产组合为 GPU Embedding + CPU FP32 Reranker；CPU
+Reranker、CatalogSearch、同一 FastAPI 商品 Flow 各 3 次均为 `embedding_rerank`。
+新的 8 条基础 Flow 为 8/8 HTTP 成功，平均 100109 ms，报告为
+`eval/flow-report-final-20260821.md`，仅作为事实边界修复前的检索链基线。
+随后对 6 条受影响 Flow 重跑，HTTP 6/6 成功，但 fact guard 仍有 10 项真实违规，
+因此 P0=0 未达成，未重新跑完整 8 条，也未运行 LLM Judge。
 
 串联脚本：`scripts/eval_flow_with_rubric.py`
 
@@ -576,8 +588,9 @@ opencode.ai LLM 端点，可能发送查询、工具结果和对话内容，因�
 - `3/8 PASS`，平均分 `0.667`
 - 报告：`eval/flow-rubric-20260820-023633.md`
 
-本轮已加入 evidence refs 与确定性 P0 fact guard，但未对 v3 数据重新完成上述 8 条批次；
-没有新的 P0 或总 PASS 数，不能用历史 3/8 PASS 代替当前验收。
+本轮已加入 evidence refs 与确定性 P0 fact guard。完整 Judge 的前置 P0 未通过：
+受影响 Flow 重跑后仍有乳胶枕 4 项价格、平板支架 3 项价格和 1 项店铺、汽车氛围灯
+1 项店铺、颈椎按摩器 1 项库存违规；因此 Judge 未执行，历史 3/8 PASS 不能代替当前验收。
 
 通过：羽毛球包（1.0）、乳胶枕（0.775）、颈椎按摩器（1.0）。
 

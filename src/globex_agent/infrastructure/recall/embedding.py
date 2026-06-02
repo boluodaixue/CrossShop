@@ -81,6 +81,17 @@ class SentenceTransformerTextEncoder:
     def encode_documents(self, texts: Sequence[str]) -> NDArray[np.float32]:
         return self._encode([f"{self._document_prefix}{text.strip()}" for text in texts])
 
+    def ensure_ready(self) -> None:
+        """Load the local encoder before the first user request."""
+
+        matrix = self._encode(["__startup__"])
+        if matrix.shape[0] != 1 or not np.isfinite(matrix).all():
+            raise RuntimeError(
+                f"category encoder returned an invalid startup matrix: {matrix.shape}"
+            )
+        if not np.allclose(np.linalg.norm(matrix, axis=1), 1.0, atol=2e-3):
+            raise RuntimeError("category encoder returned a non-normalized startup vector")
+
     def _encode(self, texts: Sequence[str]) -> NDArray[np.float32]:
         if not texts:
             return np.empty((0, 0), dtype=np.float32)

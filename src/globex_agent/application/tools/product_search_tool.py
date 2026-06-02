@@ -33,6 +33,10 @@ def build_product_search_tool(
     ) -> str:
         """检索跨境商品库（embedding+rerank 二阶段召回），返回 Top-K 商品卡 JSON。
 
+        商品卡是唯一商品事实来源：只使用返回字段中的显式价格和可售字段。
+        若没有 shop/store/store_name 字段，不得声称店铺；若 price_major 为空，
+        只能使用显式 price_min_major / price_max_major 区间端点，不得补造规格或颜色价格。
+
         Args:
             normalized_query: 标准化检索词，保留品类词与关键属性词。
             category: 品类槽位，可选。

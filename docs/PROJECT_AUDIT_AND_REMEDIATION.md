@@ -155,13 +155,13 @@ StandardItemVariant
 | P1-003 | P1 | 待处理 | 熔断器可能把业务校验错误当系统故障，half-open 竞争控制不足 | 需要只统计超时/连接/5xx 等可重试故障，并保证同一依赖只有一个 half-open probe。 |
 | P1-004 | P1 | 待处理 | 上下文压缩只做粗粒度截断，配置项未真正接线 | `tool_result_limit`、`reply_token_budget` 已配置但未形成统一 token budget；长工具结果和历史仍可能挤爆上下文。 |
 | P1-005 | P1 | 待处理 | 语义缓存 namespace 硬编码 `prompt-v1`，缺少数据/规则指纹 | prompt、模型、商品索引、汇率、税费规则改变后可能复用陈旧答案。 |
-| P1-006 | P1 | 部分修复，仍待验收 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 已加入 CategoryInsight evidence refs、工具来源边界和确定性 fact guard；知识卡 v3 数据与本地 OpenSearch 索引已重建，模块评测已完成，但真实 8 条 Flow 受外部 LLM 端点安全阻断，不能标记端到端完成。 |
+| P1-006 | P1 | 部分修复，P0 未通过，Judge 未运行 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 8 条基础 Flow HTTP 8/8 完成；事实边界修复后 6 条受影响 Flow HTTP 6/6 完成，但 fact guard 仍报 10 项真实违规，未达到 P0=0，故不运行 Judge。 |
 | P1-007 | P1 | 待处理 | 商品检索外部 Top-K 契约不统一 | `SearchRequest` 最大 50，而 `ProductSearchSpec` 仅要求正数；需统一默认值、最大值和过滤后补位语义。 |
 | P1-008 | P1 | 待处理 | 跨平台/locale 检索路由未进入应用主链 | 已有 router、fusion、canonical 等基础设施，但 composition 的 `CatalogSearchUseCase` 只使用分区 Faiss 合并，没有按 platform/locale 约束查询。 |
 | P1-009 | P1 | 部分修复，仍待处理 | Docker/部署产物与本机运行条件不闭合 | compose 已切到固定 Redis 8.2.8 并补 checkpoint 配置；`.dockerignore` 排除 `output`、OpenSearch 初始化和模型/索引镜像闭合仍待处理。 |
 | P1-010 | P1 | 待处理 | 测试依赖被忽略的大型本地数据，fresh clone 可复现性不足 | 部分测试/运行路径依赖 `data/processed` 与本地模型/索引；需小型提交夹具和 integration marker。 |
 | P1-011 | P1 | 待处理 | 订单存储和 API/worker 组合存在一致性风险 | 默认文件模式订单仓储可能只驻内存；多进程间不可共享；SQL `count + 1` 型 ID 需数据库唯一序列/重试保证。 |
-| P1-012 | P1 | 待处理 | 商品 runtime reranker 没有使用已配置的独立 Python/GPU worker | `Settings.bge_reranker_python` 已存在，但 composition 固定创建 CPU `BgeReranker`；真实 Top-100 单查询耗时 62.096 秒。需接入常驻子进程、超时和性能回归。 |
+| P1-012 | P1 | 已修复并验证 | 商品 runtime reranker 没有使用已配置的独立 Python/GPU worker | 已接入常驻 CPU FP32 reranker、严格 handshake、startup warmup、请求锁、协议中毒重启和取消后的 subprocess abort；CPU batch=16 100 文档精排 3 次约 66.878–67.155 秒。 |
 | P2-001 | P2 | 待处理 | WebSocket 只有实时订阅，无断线重放和有界背压 | 断线期间事件丢失；订阅队列无大小上限；前端还应以 HTTP 最终响应兜底。 |
 | P2-002 | P2 | 待处理 | streaming 对消息块类型过滤不足 | 当前从 message chunk 读取所有字符串 content，需确认只发布 AI 文本，避免 tool/system 内容混入 token 流。 |
 | P2-003 | P2 | 待处理 | PII、会话订阅和输出安全治理不足 | 工具事件/对话日志可能带地址电话；WebSocket session 订阅缺身份绑定；缺 prompt-injection/敏感输出门禁与脱敏策略。 |
@@ -207,8 +207,9 @@ StandardItemVariant
 - 当前上下文仍主要是消息数截断，缺四层上下文、L0-L4、统一 token budget 和 Cache Breakpoint。
 - 长期记忆仍是 append/list/全量注入，缺 CRUD、相关性、冲突、provenance、确认和安全治理。
 - 语义缓存仍缺完整的数据/规则版本指纹；platform/locale 路由、商品 runtime GPU reranker 和更充分 Agent 评测仍是缺口。
-- BGE-M3 已使用本地 D:/models/bge-m3 完成 v1 OpenSearch 索引重建和 50 条模块评测；真实 8 条 Flow 启动所需的 Redis、索引和本地模型配置已就绪。
-- 本轮真实 8 条 Flow 未完成：项目 .env 的 LLM 端点为外部 opencode.ai，运行会把查询、工具结果和对话发送到外部服务，因安全边界被阻止；因此没有新的 Flow/P0/Judge 结果，历史 3/8 PASS 不能写成当前 v3 数据的通过结论。
+- BGE-M3 已使用本地 D:/models/bge-m3 完成索引和模块评测；Docker Redis/OpenSearch、索引和本地模型配置已就绪。4GB profile 的 GPU Embedding smoke、GPU Reranker smoke、CPU Reranker 3 次、CatalogSearch 3 次和同一 FastAPI Flow 3 次均通过，商品检索策略均为 `embedding_rerank`。
+- 新 8 条基础 Flow 批次 HTTP 8/8 完成，平均 100109 ms；事实边界提示词修复后重跑 6 条受影响 Flow，HTTP 6/6 完成但 fact guard 仍有 10 项真实违规（按违规记录计价格 7、店铺/库存 3）。因此 P0=0 未通过，不重新跑全量 8 条，也不运行 LLM Judge。
+- 旧 `eval/flow-report-20260821-154138.md` / `160642.md` 是 Docker/worker/硬件未就绪阶段的基础设施故障证据；`eval/flow-rubric-progress.json` 是中断临时产物，不提交。
 
 ## 6. P0-001 验证记录
 
