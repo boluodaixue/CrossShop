@@ -155,13 +155,13 @@ StandardItemVariant
 | P1-003 | P1 | 待处理 | 熔断器可能把业务校验错误当系统故障，half-open 竞争控制不足 | 需要只统计超时/连接/5xx 等可重试故障，并保证同一依赖只有一个 half-open probe。 |
 | P1-004 | P1 | 待处理 | 上下文压缩只做粗粒度截断，配置项未真正接线 | `tool_result_limit`、`reply_token_budget` 已配置但未形成统一 token budget；长工具结果和历史仍可能挤爆上下文。 |
 | P1-005 | P1 | 待处理 | 语义缓存 namespace 硬编码 `prompt-v1`，缺少数据/规则指纹 | prompt、模型、商品索引、汇率、税费规则改变后可能复用陈旧答案。 |
-| P1-006 | P1 | 部分修复，P0 未通过，Judge 未运行 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 8 条基础 Flow HTTP 8/8 完成；事实边界修复后 6 条受影响 Flow HTTP 6/6 完成，但 fact guard 仍报 10 项真实违规，未达到 P0=0，故不运行 Judge。 |
+| P1-006 | P1 | 证据契约已修复，确定性验收完成 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 旧批次原始 18 项 `fact_violations`（`3/0/3/1/4/2/2/3`）均为评测假阳性，根因分为审计深层截断、变体别名映射、范围/跨商品绑定、预算/非商品金额与重叠正则四类；新批次 8/8 Flow 正常且确定性 P0=0。LLM Judge 有界尝试因外部 endpoint HTTP 500 阻塞，未形成评分。 |
 | P1-007 | P1 | 待处理 | 商品检索外部 Top-K 契约不统一 | `SearchRequest` 最大 50，而 `ProductSearchSpec` 仅要求正数；需统一默认值、最大值和过滤后补位语义。 |
 | P1-008 | P1 | 待处理 | 跨平台/locale 检索路由未进入应用主链 | 已有 router、fusion、canonical 等基础设施，但 composition 的 `CatalogSearchUseCase` 只使用分区 Faiss 合并，没有按 platform/locale 约束查询。 |
 | P1-009 | P1 | 部分修复，仍待处理 | Docker/部署产物与本机运行条件不闭合 | compose 已切到固定 Redis 8.2.8 并补 checkpoint 配置；`.dockerignore` 排除 `output`、OpenSearch 初始化和模型/索引镜像闭合仍待处理。 |
 | P1-010 | P1 | 待处理 | 测试依赖被忽略的大型本地数据，fresh clone 可复现性不足 | 部分测试/运行路径依赖 `data/processed` 与本地模型/索引；需小型提交夹具和 integration marker。 |
 | P1-011 | P1 | 待处理 | 订单存储和 API/worker 组合存在一致性风险 | 默认文件模式订单仓储可能只驻内存；多进程间不可共享；SQL `count + 1` 型 ID 需数据库唯一序列/重试保证。 |
-| P1-012 | P1 | 已修复并验证 | 商品 runtime reranker 没有使用已配置的独立 Python/GPU worker | 已接入常驻 CPU FP32 reranker、严格 handshake、startup warmup、请求锁、协议中毒重启和取消后的 subprocess abort；CPU batch=16 100 文档精排 3 次约 66.878–67.155 秒。 |
+| P1-012 | P1 | 已修复并验证 | 商品 runtime reranker 没有使用已配置的独立 Python/GPU worker | 已接入常驻 CUDA FP16 reranker、严格 handshake、startup warmup、请求锁、协议中毒重启和取消后的 subprocess abort；本机真实 batch 4/8/16 均无 OOM，batch=16 100 文档三次中位 1620.227 ms。 |
 | P2-001 | P2 | 待处理 | WebSocket 只有实时订阅，无断线重放和有界背压 | 断线期间事件丢失；订阅队列无大小上限；前端还应以 HTTP 最终响应兜底。 |
 | P2-002 | P2 | 待处理 | streaming 对消息块类型过滤不足 | 当前从 message chunk 读取所有字符串 content，需确认只发布 AI 文本，避免 tool/system 内容混入 token 流。 |
 | P2-003 | P2 | 待处理 | PII、会话订阅和输出安全治理不足 | 工具事件/对话日志可能带地址电话；WebSocket session 订阅缺身份绑定；缺 prompt-injection/敏感输出门禁与脱敏策略。 |
@@ -198,7 +198,7 @@ StandardItemVariant
     .\.venv\Scripts\python.exe -m pytest -q tests\unit\test_category_insight_service.py tests\unit\test_category_kb.py tests\unit\test_category_card_dataset.py tests\unit\test_category_evidence_and_fact_guard.py
     .\.venv\Scripts\ruff.exe check src scripts tests
 
-结果：聚焦 pytest 50 passed；Ruff All checks passed；数据门禁通过，污染 0、无效价格 0、manifest hash 通过；完整 pytest 199 passed, 9 warnings。
+结果：聚焦 pytest 50 passed；Ruff All checks passed；数据门禁通过，污染 0、无效价格 0、manifest hash 通过；该阶段的完整 pytest 199 passed, 9 warnings 属于历史记录，当前提交验收以最新命令为准。
 
 模块 test split（50 条、@10）重建后四路均为 Recall=1.0000、MRR=1.0000、AllTypes=1.0000；NDCG 为 BM25 0.8723、KNN 0.8633、Hybrid 0.8651、Hybrid+Reranker 0.8744。相对重建前冻结报告，Recall/MRR 未回退，但 KNN/Hybrid NDCG 有小幅下降，故未开启默认 Category Reranker。
 
@@ -206,9 +206,9 @@ StandardItemVariant
 
 - 当前上下文仍主要是消息数截断，缺四层上下文、L0-L4、统一 token budget 和 Cache Breakpoint。
 - 长期记忆仍是 append/list/全量注入，缺 CRUD、相关性、冲突、provenance、确认和安全治理。
-- 语义缓存仍缺完整的数据/规则版本指纹；platform/locale 路由、商品 runtime GPU reranker 和更充分 Agent 评测仍是缺口。
-- BGE-M3 已使用本地 D:/models/bge-m3 完成索引和模块评测；Docker Redis/OpenSearch、索引和本地模型配置已就绪。4GB profile 的 GPU Embedding smoke、GPU Reranker smoke、CPU Reranker 3 次、CatalogSearch 3 次和同一 FastAPI Flow 3 次均通过，商品检索策略均为 `embedding_rerank`。
-- 新 8 条基础 Flow 批次 HTTP 8/8 完成，平均 100109 ms；事实边界提示词修复后重跑 6 条受影响 Flow，HTTP 6/6 完成但 fact guard 仍有 10 项真实违规（按违规记录计价格 7、店铺/库存 3）。因此 P0=0 未通过，不重新跑全量 8 条，也不运行 LLM Judge。
+- 语义缓存仍缺完整的数据/规则版本指纹；platform/locale 路由和更充分 Agent 评测仍是缺口。
+- BGE-M3 已使用本地 D:/models/bge-m3 完成索引和模块评测；本轮 4GB profile 的 CPU Query/GPU Reranker 真实基准完成：3 条 query 的 Top-100 overlap 均为 1.0，batch 4/8/16 均无 OOM，batch=16 最快，组合链路三次中位 1820.656 ms。CategoryInsight encoder 继续 CPU 预热，生产 GPU Embedding + GPU Reranker 分离能力保留。
+- 旧 Flow 批次按原始 `fact_violations` 对账的 18 项 P0 均为评测假阳性；新的 Snapshot/exposed-facts 链路完成 8/8 Flow 重测，确定性 P0=0。四类根因是 CategoryInsight 审计深层截断、变体别名/选项映射、范围端点与跨商品绑定、预算/非商品金额及重叠正则解析。
 - 旧 `eval/flow-report-20260821-154138.md` / `160642.md` 是 Docker/worker/硬件未就绪阶段的基础设施故障证据；`eval/flow-rubric-progress.json` 是中断临时产物，不提交。
 
 ## 6. P0-001 验证记录
@@ -301,3 +301,62 @@ uv --cache-dir .uv-cache run --no-sync pytest -q
 容器注入，生产 `build_container` 仍保持 Redis fail-fast。此前 C 盘 worktree 缺 Amazon catalog SQLite 的
 2 项失败与中文路径导致的 1 项 Faiss 写入失败，已在 `D:\PycharmProjects\GlobexAgentLearning` 的真实数据、
 ASCII 路径环境中单独复验为 `3 passed in 0.45s`。本轮新增回归为 0，真实 Redis 集成不再跳过。
+
+## 2026-08-22 Judge 评测链路修复验收（历史中间记录，已被权威基线取代）
+
+已在正式项目实现评测输入和判定修复：`scripts/eval_flow_rubric.py` 以同一个有界
+exposed evidence 同时驱动 rubric 与 Judge，保留 Snapshot 变体价格及 CategoryInsight
+实际暴露字段；加入 evidence-field 校验、`not_evaluable` 状态、旧结果格式兼容和单 Flow
+隔离入口。该修复针对旧批次 18 项 `fact_violations` 的四类评测假阳性：CategoryInsight
+审计深层截断、变体别名/选项映射、范围/跨商品绑定，以及预算/非商品金额和重叠正则解析。
+这 18 项仍不能据此认定为真实 Agent 幻觉。
+
+实际验证：
+
+- 专用临时目录完整 pytest：`235 passed, 9 warnings`。
+- 相关证据链测试：默认 Windows 临时目录复现 `WinError 5`；专用目录复核 `17 passed`。
+- Ruff 与 `git diff --check` 均通过。
+- 既有 8 Flow 报告确定性门禁为 `P0=0`；本轮未重跑 Agent Flow。
+
+Judge 外部重评尚未完成：请求在向配置的第三方 endpoint 发出既有会话/商品证据前被
+运行环境安全策略拦截，未产生 HTTP 响应，也没有新的评分报告。故 Judge 分数、8 项
+有效样本和平均分保持 N/A；不得将历史 `0/7` 或本轮未发出的请求改写为通过。FastAPI
+和模型 worker 未启动/无残留，Redis/OpenSearch 可保留。
+
+## 2026-08-22 稳定 ID 权威评测基线
+
+历史 `0/7` 和 18 项 fact violation 是旧证据截断、字段解析及提示词放大造成的无效评测
+结果，仅在问题账本中保留这一简述。整理后的权威结果见
+`output/eval/flow-rubric-luna-final-20260822.md` 与同名 JSON：确定性 Fact Guard 为
+8/8、P0=0；Judge 8/8 有效，平均分 0.99125（样本 8/8）；适用 P0 criterion 20/20
+通过，P0 fail Flow 数为 0。Flow 1、2、7 无适用 P0 criterion，不计为 P0 pass。
+
+本轮完整 pytest 为 238 passed、9 warnings，稳定 ID 相关测试 20 passed，Ruff 与
+`git diff --check` 通过。4GB 最终基准沿用 `output/eval/local_4gb_profile.json`，未在
+整理阶段重跑。旧外部 ConnectError/HTTP500/blocked 产物已按精确保留集清理。
+
+## 当前流程技术债与下一阶段（非阻塞）
+
+以下是根据真实代码链核对出的技术债，属于当前项目的后续设计，不构成当前基线失败：
+
+| 状态 | 问题 | 真实边界 |
+|---|---|---|
+| 未实现/下一阶段 | 在线 final-answer Fact Guard | 当前 `validate_final_response` 只由离线 eval parser 调用 |
+| 未实现/下一阶段 | grounded rewrite 与 deterministic fallback | 当前只有模型上游瞬时故障 fallback，没有事实失败后的回答修复 |
+| 评测规范 | P0=0 后运行 Judge | 当前是执行顺序约定，不是脚本不可绕过状态机 |
+| 设计风险 | CategoryInsight 调用顺序依赖 LLM prompt | 没有代码级“先品类、后商品”的强制编排 |
+| 设计风险 | semantic cache 可能绕过当轮证据刷新 | cache hit 可直接返回历史 final text |
+| 评测覆盖待核对 | CategoryInsight `components` 在线/审计存在，但 Judge parser 当前主要覆盖 category、tiers、attributes、bestsellers | 需要决定是否纳入稳定 catalog |
+
+下一阶段建议流程：
+
+```text
+ProductFactSnapshot / CategoryInsight
+  → LLM draft answer
+  → 在线 Fact Guard
+  → 通过返回；失败则 grounded rewrite
+  → 再次 Fact Guard
+  → 仍失败时 deterministic fallback
+```
+
+该流程目前未实现，不能与当前离线 P0/Judge 报告混为在线门禁。

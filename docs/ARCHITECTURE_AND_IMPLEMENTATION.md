@@ -21,13 +21,15 @@ GlobexAgentLearning 是一个用于学习、运行和逐步组装电商搜索 Ag
 - 提供 FastAPI + WebSocket + React 前端
 
 本机 4GB GPU 验收 profile（2026-08-21）：Query Embedding 使用本地
-`D:/models/bge-m3` 的 CUDA FP16 常驻 worker；Reranker 使用本地
-`D:/models/bge-reranker-v2-m3` 的 CPU FP32 常驻 worker，`batch_size=16`。
+`D:/models/bge-m3` 的 CPU FP32 常驻 worker；Reranker 使用本地
+`D:/models/bge-reranker-v2-m3` 的 CUDA FP16 常驻 worker，`batch_size=16`。
 商品主链仍是 Faiss ANN Top-100 → BGE Reranker → Top-10；只切换运行设备，
 不改变模型、索引或召回逻辑。启动时预热 CategoryInsight CPU encoder、Embedding
 worker 和 Reranker worker；请求取消会主动终止当前子进程，避免后台线程长期占用
-请求锁。CPU FP32 对 100 条真实文档的 batch=16 精排实测约 65.6 秒，因此
-product-search 工具保留有限的 75 秒预算，不用无限放大超时。
+请求锁。真实基准中 CPU/GPU Query Top-100 重叠为 3/3=1.0；GPU FP16 Reranker
+batch 4/8/16 均未 OOM，中位分别为 1788.322/1695.567/1620.227 ms，选择 16；
+CPU Query → Faiss Top-100 → GPU Reranker 组合三次中位为 1820.656 ms。完整原始结果在
+`output/eval/local_4gb_profile.json`，不能把该本机延迟外推为生产 SLA。
 
 项目边界：
 
@@ -73,6 +75,76 @@ POST /commerce/intents
       → final.result
     → conversation_store 记录对话和事件
 ```
+
+商品事实采用单向证据链：
+
+```text
+StandardItem → ProductFactSnapshot → ProductCard → LLM 最终回答
+```
+
+- `ProductFactSnapshot` 是内部、版本化、可审计的证据 DTO，保存商品/变体精确事实、价格与变体绑定、店铺/库存、provenance、hash 及 `exposed_facts`。
+- `ProductCard` 是给 Search Agent/LLM 的紧凑结构化投影，只增加 `evidence_id` 作为引用，不承载整份原始商品或审计状态。
+- 最终回答只能使用 Snapshot 明确暴露给 Card 的 facts；Fact Guard 不因 Snapshot 内部存在某字段就放行未暴露事实。
+
+商品工具在同一次构造中生成 Card 与 Snapshot。模型只收到 Card 和 evidence ref；审计/评测事件保存 schema-aware Snapshot 白名单，避免通用审计深度限制把 `variants`/`highlights` 截成 `[omitted]`。
+
+### 2.2.1 在线生产链与离线质量链
+
+两条链必须分开理解。在线生产链负责完成一次用户请求；Fact Guard、P0 门禁和
+LLM Judge 不在在线返回路径中。
+
+在线生产链：
+
+```text
+Query
+  → Orchestrator / context / cache
+  → Main LLM 工具规划
+  → 可选 CategoryInsight（品类 aggregate/reference）
+  → ProductSearch
+  → StandardItem
+  → ProductFactSnapshot + ProductCard
+  → LLM final answer
+  → audit / ConversationStore 持久化
+```
+
+CategoryInsight 是由 LLM 选择的可选工具，不直接参与商品硬过滤或商品排序；商品硬约束
+和商品 rerank 在 `CatalogSearchUseCase` 内完成。`ProductFactSnapshot` 从
+`StandardItem` 确定性生成，不是 LLM 生成的证据。
+
+离线质量链：
+
+```text
+persisted conversation / audit
+  → exposed-evidence parser
+  → deterministic Fact Guard
+  → P0=0 评测门禁
+  → stable evidence catalog
+  → rubric generator
+  → LLM Judge
+  → local schema/ID validation
+  → validated report
+```
+
+当前“P0=0 后才运行 Judge”是评测执行规范，不是在线生产状态机，也尚未被普通评测命令
+实现为不可绕过的脚本门禁。
+
+### 2.2.2 未实现的下一阶段可信回答设计
+
+以下流程是下一阶段设计，当前未实现，不应描述为在线已有能力：
+
+```text
+ProductFactSnapshot / CategoryInsight
+  → LLM draft answer
+  → 在线 Fact Guard
+      ├─ 通过 → 返回
+      └─ 失败 → grounded rewrite
+                   → 再次 Fact Guard
+                       ├─ 通过 → 返回
+                       └─ 失败 → deterministic fallback
+```
+
+当前实现只有离线 `validate_final_response`；没有在线 final-answer Fact Guard、grounded
+rewrite 或确定性 fallback。
 
 ### 2.3 事件模型
 
@@ -463,7 +535,8 @@ bestseller / attribute / price_range
 - 向量失败 → BM25；OpenSearch 失败 → 空结构 `confidence=0`
 - 当前淘宝中文数据已按 category-cards-taobao-zh-v3 重建 48 张卡；bestseller 是目录高频款型代理，attribute 是目录样本出现率，price_range 是品类参考区间
 - CategoryEvidenceRef、工具 source boundary、审计有界 evidence refs 和确定性 fact_guard 已落地
-- 本轮已用本地 D:/models/bge-m3 重建 v1 OpenSearch 索引并完成 50 条模块评测；test Recall/MRR 未回退但 KNN/Hybrid NDCG 有小幅下降，默认 Category Reranker 仍保持关闭。8 条基础 Flow 已完成 HTTP 8/8，但事实门禁仍未通过，不能宣称端到端验收完成
+- 历史模块记录曾完成 50 条评测；其中“8 条基础 Flow 事实门禁仍未通过”属于旧批次描述，
+  已被当前稳定 ID 权威基线取代。当前基线见 `output/eval/flow-rubric-luna-final-20260822.md`。
 
 ## 7. 表现层与前端
 
@@ -513,7 +586,7 @@ GET  /health
 
 ## 8. 评测体系与当前结果
 
-### 8.1 自动化测试
+### 8.1 自动化测试（历史阶段记录）
 
 ```text
 历史 Redis checkpoint 验收曾为 192 passed；本轮知识卡聚焦测试为 50 passed，完整 pytest 为 199 passed, 9 warnings。
@@ -527,7 +600,7 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 
 覆盖：领域模型、订单状态机、召回、知识卡、事件、熔断、模型回退、会话恢复、并发隔离、表现层。
 
-### 8.2 基础 13 条真实模型回归
+### 8.2 基础 13 条真实模型回归（历史阶段记录）
 
 文件：
 
@@ -538,7 +611,7 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 
 报告：`eval/report-20260819-223705.md`
 
-### 8.3 Flow Query 全流程运行
+### 8.3 Flow Query 全流程运行（历史阶段记录）
 
 脚本：`scripts/eval_flow_queries.py`
 
@@ -558,17 +631,18 @@ Redis checkpoint 集成测试为 `6 passed`，使用真实 `redis:8.2.8-bookworm
 - 平均耗时约 33.5 秒/条
 - 报告：`eval/flow-report-20260820-021422.md`
 
-该结果属于历史数据/代码状态。2026-08-21 的本机 4GB profile 已完成独立 GPU
-Embedding/Reranker smoke，生产组合为 GPU Embedding + CPU FP32 Reranker；CPU
-Reranker、CatalogSearch、同一 FastAPI 商品 Flow 各 3 次均为 `embedding_rerank`。
-新的 8 条基础 Flow 为 8/8 HTTP 成功，平均 100109 ms，报告为
-`eval/flow-report-final-20260821.md`，仅作为事实边界修复前的检索链基线。
-随后对 6 条受影响 Flow 重跑，HTTP 6/6 成功，但 fact guard 仍有 10 项真实违规，
-因此 P0=0 未达成，未重新跑完整 8 条，也未运行 LLM Judge。
+该结果属于历史数据/代码状态。新的本机 4GB profile 已完成 CPU Query/GPU
+Reranker 真实基准，契约和结果见本文开头及 `output/eval/local_4gb_profile.json`。
+此前批次的 18 项确定性违规（各 Flow 原始计数 `3/0/3/1/4/2/2/3`）经按
+`fact_violations` 原始条目重新对账，均属于评测假阳性，不是已证实的真实幻觉。根因是
+旧审计深度截断、变体别名/选项映射不足、范围端点与跨商品绑定不足，以及预算/非商品金额
+和重叠正则命中未过滤去重。新的 Snapshot/exposed-facts 链路已完成重测：8/8 Flow 正常，
+确定性 P0 为 0；外部 HTTP 500 是历史排障过程，当前稳定 ID 权威 Judge 结果统一见
+`output/eval/flow-rubric-luna-final-20260822.md` 和对应 JSON。
 
 串联脚本：`scripts/eval_flow_with_rubric.py`
 
-### 8.4 Per-case LLM Rubric
+### 8.4 Per-case LLM Rubric（历史中间结果）
 
 脚本：`scripts/eval_flow_rubric.py`
 
@@ -588,11 +662,13 @@ Reranker、CatalogSearch、同一 FastAPI 商品 Flow 各 3 次均为 `embedding
 - `3/8 PASS`，平均分 `0.667`
 - 报告：`eval/flow-rubric-20260820-023633.md`
 
-本轮已加入 evidence refs 与确定性 P0 fact guard。完整 Judge 的前置 P0 未通过：
-受影响 Flow 重跑后仍有乳胶枕 4 项价格、平板支架 3 项价格和 1 项店铺、汽车氛围灯
-1 项店铺、颈椎按摩器 1 项库存违规；因此 Judge 未执行，历史 3/8 PASS 不能代替当前验收。
+本轮已加入 ProductFactSnapshot、evidence refs 与确定性 P0 fact guard。旧批次的 18 项
+原始 `fact_violations` 均已归类为评测假阳性：CategoryInsight 深层审计截断、变体别名
+匹配、范围/跨商品绑定、预算与重叠价格解析四类问题造成了误报；不是对最终回答真实错误
+的确认。新批次确定性 P0=0；HTTP 500 属于历史失效评测过程，当前有效 Judge 评分和
+样本口径以稳定 ID 权威报告为准。
 
-通过：羽毛球包（1.0）、乳胶枕（0.775）、颈椎按摩器（1.0）。
+以下通过/失败列表属于旧 rubric 口径，仅用于复盘，不能作为当前质量结论。通过：羽毛球包（1.0）、乳胶枕（0.775）、颈椎按摩器（1.0）。
 
 失败：汽车氛围灯（0.2）、儿童学习椅（0.7）、手机直播补光灯（0.487）、户外电源（0.7）、平板电脑支架（0.475）。
 
@@ -603,6 +679,27 @@ Reranker、CatalogSearch、同一 FastAPI 商品 Flow 各 3 次均为 `embedding
 - 添加商品库中不存在的店铺、库存、尺码
 - 无匹配时仍声称“存在但超预算”
 - 未按 rubric 要求列出全部符合条件商品
+
+### 8.4.1 Judge exposed-evidence 修复（2026-08-22）
+
+旧的 LLM Judge `0/7` 结果因 facts 渲染遗漏 Snapshot 变体和 CategoryInsight 暴露字段，
+并被“事实表未列出即不存在”的提示语放大，不能作为 Agent 真实问题结论。本轮只修复
+评测链路，不改 Agent 生产检索流程：
+
+- `scripts/eval_flow_rubric.py` 构造有界 `judge-evidence-v1`，rubric generator 与
+  `call_judge` 接收同一对象；实际 exposed 的 `variants`、变体价格/库存、店铺、商品库存、
+  `evidence_id/content_hash/schema_version` 均可被引用。
+- CategoryInsight 仅保留实际暴露的 `price_tiers`、`attributes`、`bestsellers` 和
+  category/reference scope；未知不等于不存在，CategoryInsight 不证明具体 SKU。
+- rubric criteria 记录稳定 id、source_scope、evidence_fields、applies_if；Judge 输出
+  `pass|fail|not_evaluable`，本地校验阻止引用不存在的 evidence 字段，`not_evaluable`
+  不计作 P0 fail；历史布尔 `pass` 结果仍可解析。
+
+验收：专用临时目录完整 pytest `235 passed, 9 warnings`；相关证据链测试在专用目录
+`17 passed`；Ruff 和 `git diff --check` 通过。已有 8 Flow 确定性门禁为 P0=0，未重跑
+Flow。重新发送 Judge 前，运行环境因第三方数据出站安全策略拦截了本轮首个外部请求，
+未获得 HTTP 响应，故本轮没有有效 Judge 报告、评分或平均分；这些项目保持 N/A。
+FastAPI/模型 worker 无残留，Redis/OpenSearch 可保留。
 
 ### 8.5 召回与知识卡评测
 
@@ -677,6 +774,18 @@ docker compose -f docker\docker-compose.yaml up -d --wait
 - 语义缓存若开启会覆盖 Agent 行为 → 评测必须关闭
 - 文件持久化无并发控制 → 多 worker 时需要 SQL/Redis
 - 自动审批/联网限制只影响外部 LLM 运行，不影响本地单测
+
+## 12. 2026-08-22 评测权威基线
+
+稳定 evidence ID 契约的最新 8 Flow 汇总保存在
+`output/eval/flow-rubric-luna-final-20260822.md` 和对应 JSON。确定性 Fact Guard 为
+8/8、P0=0；LLM Judge 8/8 有效，平均分 0.99125，适用 P0 criterion 20/20 通过，P0
+fail Flow 数为 0。Flow 1、2、7 没有适用 P0 criterion，因此不把它们写成 P0 pass。
+
+旧 0/7 及旧 18 项违规结论来自不完整审计证据、字段/正则解析和提示词误导，已判定为
+无效评测假阳性，不代表当前 Agent 真实幻觉。4GB 本机最终配置与基准只引用
+`output/eval/local_4gb_profile.json`：CPU FP32 Query Embedding、GPU FP16 Reranker
+batch16，Top-100 overlap 1.0，组合链路 median 1820.656 ms。
 
 ## 11. 建议输入点
 

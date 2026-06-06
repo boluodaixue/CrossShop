@@ -109,6 +109,14 @@
 | 8 | 评测 / 训练 | 端到端 **cases.yaml + LLM judge P0/P1/P2**（仓库）+ 模块级**召回门禁 Recall@K/MRR/NDCG**（现有）；SFT/RL 不落地 | 仓库 B + 现有 |
 | 9 | 部署 | 仓库 compose 精简结构，**qdrant 换成 opensearch**（本机 Docker 2.19.1 + IK 已自部署） | 仓库 B + 现有 |
 
+### 4.1 当前证据与本机推理配置补充
+
+- 商品事实不再由 ProductCard 与审计事件分别拼装。`StandardItem → ProductFactSnapshot → ProductCard → LLM` 是唯一方向；ProductCard 只保留紧凑模型字段与 `evidence_id`，Snapshot 保存版本、hash、provenance 和 `exposed_facts`。
+- Fact Guard/eval parser 只消费 Snapshot 明确暴露的事实；变体价格必须和同一变体选项绑定。审计仍使用全局 PII 脱敏和载荷上限，但 Snapshot 使用 schema-aware 白名单，避免 variants/highlights 被通用 depth 截断。
+- 本机 4GB 仅改变设备分配：Query Embedding 为 CPU FP32 常驻 worker，Reranker 为 GPU FP16 常驻 worker；生产仍支持 Embedding GPU + Reranker GPU 的分离部署。模型、Faiss 四分区、schema-v2、Top-100→Top-10 主链不变。
+- 旧 Flow 的 P0 条目因证据截断和解析问题属于历史失效结果；当前稳定 ID 权威基线已完成
+  8/8 Flow、确定性 P0=0 和 Judge 8/8 有效。P0=0 后运行 Judge 是评测执行规范，不是在线生产链门禁。
+
 ---
 
 ## 5. 目标架构

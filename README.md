@@ -1,364 +1,107 @@
 # Globex Agent Learning
 
-用于学习、运行并逐步组装“电商搜索 Agent”课程中的关键模块。
-
-完整实施路线见 [ENGINEERING_PLAN.md](ENGINEERING_PLAN.md)。
-
-当前整体设计与各模块实现说明见 [ARCHITECTURE_AND_IMPLEMENTATION.md](docs/ARCHITECTURE_AND_IMPLEMENTATION.md)。
-
-## 当前架构
-
-项目已迁移为 **LangGraph + DDD 洋葱架构**：
-
-- `src/globex_agent/domain/`：`StandardItem`、`CategoryCard`、Money、订单状态机、关税运费规则与端口。
-- `src/globex_agent/application/`：`catalog_search` / `order_usecases`、业务工具、Main/Search/Trade Agent 与编排器。
-- `src/globex_agent/infrastructure/`：召回（BGE-M3 + Faiss）、CategoryInsight OpenSearch 路径、事件总线、缓存、队列、JSON/SQL 仓储与韧性组件。
-- `src/globex_agent/presentation/`：FastAPI + WebSocket；`frontend/` 为 React 对话界面。
-- 主 Agent 默认单干，需要时通过批量 `task_dispatch(dispatches)` 并行调用 `search_agent` / `trade_agent`。
-
-### LangGraph Checkpoint 与队列边界
-
-- FastAPI 主线在 lifespan startup 创建一个共享的官方 `AsyncRedisSaver`，调用
-  `asetup()` 后注入 Main/Search/Trade 图；shutdown 通过其异步上下文退出关闭连接，绝不按请求创建 saver。
-- Checkpoint 使用 Redis 8.2.8（RedisJSON/RediSearch 能力由 Redis 8 提供），默认 TTL 为 7 天，读取时刷新。
-  官方 saver 自己管理内部 key；应用 completion marker 才使用 `globex:{env}:v1:*` 前缀。
-- `main_thread_id` 是 shopping session ID 的 HMAC 摘要；child ID 由父 ID、agent role 和稳定
-  `tool_call_id`/dispatch ID 派生，不放原始 session、查询或 PII。根 `checkpoint_ns` 固定为空字符串。
-- 用户重试或再次请求同一 thread ID 时恢复；不做启动扫描，也不重新引入任务队列。进程内同一匿名 session
-  串行，不同 session 可并行；checkpoint 负责持久化，不替代逻辑锁。
-- Checkpoint 只保存 Agent 图运行状态。`ConversationStore` 保存可读对话/事件，订单仓储保存业务订单，偏好/长期记忆
-  继续独立；旧 JSON/SQL `SessionStore` 仅作 legacy 兼容，不自动迁移且不由 composition/runtime 使用。
-- 本地不配置 `LANGGRAPH_AES_KEY` 可以运行。当前 `langgraph-checkpoint-redis==0.5.2` 的
-  `AsyncRedisSaver` 没有公开 serializer 注入，配置密钥或在非本地环境启动会诚实拒绝，不能声称已加密，待官方支持/升级。
-- Redis Stream worker 是可选多用户部署能力，与 checkpoint 不同；默认 `QUEUE_ENABLED=0`。需要时使用
-  `docker compose --profile queue` 并显式打开队列，GPU embedding/reranker 常驻 worker 仍独立保留。
-
-Amazon US/ES/JP 与 Taobao CN 数据库、Query/qrel 和分区检索的实际构建记录见
-[docs/data/multiplatform_catalog.md](docs/data/multiplatform_catalog.md)。
-
-## 资料与代码分离
-
-- 课程资料：`D:\刘诗恩\Obsidian\电商搜索Agent资料`
-- 项目代码：`D:\PycharmProjects\GlobexAgentLearning`
-
-课程资料通过 Codex 本地项目的辅助文件夹提供上下文，不复制到本仓库。
-
-## 学习流程
-
-每个章节按以下顺序推进：
-
-1. 阅读对应课程文档和必要的前置章节。
-2. 说明本章解决的问题与核心设计。
-3. 在 `examples/` 中运行关键代码。
-4. 将可复用部分逐步整理进 `src/globex_agent/`。
-5. 在 `tests/` 中验证当前实现。
-6. 把运行结果和面试解释记录到 Obsidian 的“我的学习记录”。
-
-## 阶段规划
-
-1. AgentLoop 与多轮工具调用
-2. 多 Agent 按需 fork
-3. 商品搜索、比价与运费工具
-4. Query/Item 向量召回与 Reranker（BM25/Hybrid 为基线与扩展消融）
-5. 上下文压缩与长期记忆
-6. AGUI、WebSocket 与 FastAPI
-7. Globex 主链路组装
-8. 评测、部署思想与面试复盘
+Globex Agent Learning 是用于学习、运行和逐步组装电商搜索 Agent 的正式项目。课程原文唯一来源是 D:\刘诗恩\Obsidian\电商搜索Agent资料，课程文件不复制进仓库；项目代码、测试和运行记录只保存在本仓库。
 
 ## 当前状态
 
-- [x] LangGraph + DDD 架构迁移 Phase 0-4 完成，Phase 5 评测/部署/文档已完成首轮落地
-- [x] 主 Agent 单干、search/trade 派发与并行时间重叠均有自动化验收
-- [x] FastAPI `/health`、WebSocket 事件、前端构建验收通过
-- [x] 运行时已接入 SQLite 商品库 + Faiss + BGE Reranker，实测 `embedding_rerank`
-- [x] 商品主链已切换正式 `item-text-v5-catalog-schema-v2` 四分区 Faiss（45,238 商品）；BM25 仅 ANN 故障降级，索引记录见 `docs/data/catalog_faiss_schema_v2_20260820.md`
-- [x] 订单写操作已切换 Prepare → 可信 Confirm 两阶段门禁；LLM 只能准备预览，token 仅经结构化确认 API 提交，订单/取消旧直调会被应用层拒绝
-- [x] 最新完整真实模型回归 `13/13 PASS`（平均分 `1.000`），报告见 [eval/report-20260819-223705.md](eval/report-20260819-223705.md)
-- [ ] 新增 flow query 真实模型评测：历史 9 条 RAG/召回/ESCI query 已跑完整流程；知识卡 v3 重建后的真实 OpenSearch + CategoryInsight RAG 8 条 Flow 因外部 LLM 端点安全边界未执行，不能沿用历史 `3/8 PASS`
-- [x] 真实 LLM smoke 通过；核心 Redis checkpoint 迁移单测 `26 passed`；真实 Redis 集成 `6 passed`；本轮完整 pytest `199 passed, 9 warnings`，知识卡聚焦测试 `50 passed`
-- [x] 前端 `npm run build` 通过，`package-lock.json` 已由当前 `package.json` 重新生成；Redis 8.2.8 Compose 健康检查、`docker compose config` 与 `git diff --check` 已通过
-
-- [x] 初始化独立项目目录
-- [x] 建立 Codex 项目规则
-- [x] 关联课程资料路径
-- [x] 阅读课程资料至第 15 章
-- [x] 建立完整工程计划
-- [x] 完成工程阶段 0：环境与测试基线
-- [x] 完成工程阶段 1：领域模型与小型商品数据
-- [x] 完成工程阶段 2：确定性工具链 MVP
-- [x] 完成工程阶段 3：脚本化与真实模型单 AgentLoop 闭环
-- [x] 完成工程阶段 4：BM25 检索基线、ESCI 子集与离线指标
-- [x] 淘宝多商品检索集 shopsimulator_retrieval_v1 已冻结（115 query）并跑出 FTS/BGE-M3/Hybrid/Reranker 四路指标
-- [x] 完成工程阶段 5：商品召回（淘宝检索集冻结 + 两库四路指标 + 双语翻译方案归档）
-- [ ] 工程阶段 6 中文化整改：真实淘宝中文底座、知识卡整改和事实边界已落地；完整指标与端到端 Flow 尚未验收
-- [x] 使用本地 `.env` 完成真实模型固定 case 和自由文本 smoke test
-
-## 快速开始
-
-当前 VS Code 项目已经有 `.venv`。在 VS Code 的 CMD 终端中直接执行：
-
-```bat
-.\scripts\start_dev.ps1
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe examples\00_smoke.py
-.\.venv\Scripts\python.exe examples\01_load_catalog.py
-.\.venv\Scripts\python.exe scripts\eval\run_recall_eval.py --prepare
-.\.venv\Scripts\python.exe -m uvicorn globex_agent.presentation.server:app --port 8000
-.\.venv\Scripts\python.exe scripts\smoke_e2e.py
-.\.venv\Scripts\python.exe scripts\eval_regression.py
-.\.venv\Scripts\python.exe scripts\index\build_item_index.py --batch-size 4
-.\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-.\.venv\Scripts\python.exe examples\04_semantic_retrieval.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-.\.venv\Scripts\python.exe scripts\data\build_category_cards_taobao_zh.py
-.\.venv\Scripts\python.exe scripts\data\build_category_eval_taobao_zh.py
-docker compose -f infra\opensearch\docker-compose.yml build
-docker compose -f infra\opensearch\docker-compose.yml up -d --wait
-.\.venv\Scripts\python.exe scripts\index\build_category_kb_taobao_zh.py --embedding-model D:\models\bge-m3 --local-files-only --recreate
-.\.venv\Scripts\python.exe scripts\eval\run_category_recall.py --data-dir data\category_insight\taobao_zh --index-name globex_category_kb_taobao_zh_v1 --cards-filename category_cards_taobao_zh.jsonl --cases-filename category_recall_cases_taobao_zh.jsonl --manifest-filename category_recall_manifest_taobao_zh.json --embedding-model D:\models\bge-m3 --reranker-model D:\models\bge-reranker-v2-m3 --reranker-python C:\Anaconda\envs\blog_04\python.exe --local-files-only
-.\.venv\Scripts\python.exe examples\05_category_insight.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\ruff.exe check src scripts examples tests
-```
-
-`start_dev.ps1` 会同时启动后端和前端，等待 `/health` 通过后打印访问地址；按 `Ctrl+C` 会一起停止。也可只启动后端：
-
-正式商品查询编码使用 BGE-M3 `cuda:0`。若主项目 Python 是 CPU-only，请在 `.env` 中将
-`BGE_M3_PYTHON` 指向 CUDA-enabled Python；项目会启动常驻查询 worker，不会按查询重复
-加载模型，也不会在 CUDA 配置错误时静默回退 CPU。契约固定为 512 token、FP16、CLS pooling、
-L2 normalization、1024 维；BM25 仅用于 ANN 故障降级。
-
-```powershell
-.\scripts\start_dev.ps1 -SkipFrontend
-```
-
-如果 CMD 中中文乱码，先执行 `set PYTHONUTF8=1`；PowerShell 对应写法才是 `$env:PYTHONUTF8 = "1"`。需要重建环境时再使用 `python -m uv sync`。
-
-在 VS Code 中阅读代码，建议按这条路径：
-
-阶段一、二历史代码已删除，可查看 `git show main:src/globex_agent/tools/item_search.py` 等旧版本。
-
-迁移后主链：`application/prompts/globex.yml` → `application/agents/main_agent.py` → `application/agents/search_agent.py` / `trade_agent.py` → `application/tools/*` → `application/agents/orchestrator.py`。
-
-阶段四：`infrastructure/recall/base.py` → `infrastructure/recall/keyword.py` → `src/globex_agent/eval/recall_metrics.py` → `scripts/data/prepare_esci_subset.py` → `scripts/eval/run_recall_eval.py` → `data/eval/recall_manifest.json`
-
-阶段五主链：`infrastructure/recall/embedding.py` → `infrastructure/recall/index.py` → `scripts/index/build_item_index.py` → `infrastructure/recall/reranker.py` → `scripts/eval/run_retrieval_comparison.py` → `examples/04_semantic_retrieval.py`。
-
-阶段六知识卡：`data/category_insight/taobao_zh/category_taxonomy_taobao_zh.json` → `scripts/data/build_category_cards_taobao_zh.py` → `scripts/data/build_category_eval_taobao_zh.py` → `infrastructure/recall/category_kb.py` → `scripts/index/build_category_kb_taobao_zh.py` → `category_insight/reranking.py` → `category_insight/service.py` → `application/tools/category_insight_tool.py` → `examples/05_category_insight.py`。
-
-## 已实现模块
-
-- `LocalCatalog`：逐行校验平台级 `StandardItem`；同平台、同 canonical、同语言的重复行保留评分更高/更新的一条，EN/ZH parallel listing 保持分离。
-- 演示数据：36 条平台级 `StandardItem`，通过 12 个 `same_group_id` 关联跨平台同款，覆盖 3 个品类和 3 个平台。
-- 确定性工具链：`ItemSearch → PriceCompare → ShippingCalc → ItemPicker → ShoppingSummary`。
-- 单 AgentLoop：LangGraph 实际执行 `human → ai(tool_call) → tool → ... → ai(final)` 消息循环；固定 case 可用脚本模型，`--query --real` 使用 DeepSeek 解析自由文本并编排工具。
-- 检索基线：可替换 `SearchBackend`、无外部依赖的 BM25、35 个 ESCI 封闭查询组和 Recall/MRR/NDCG/空召回率报告；每个返回商品都有显式标注。
-- 双塔检索：商品 runtime 采用纯 BGE-M3/Faiss ANN `100 → 200 → 400 → 500` 渐进召回；每轮先读取新增 `StandardItem` 并执行事实型硬约束，足够后才对合格池做 BGE Reranker 和 requested Top-K。BM25 仅在 ANN 未配置或故障时降级；Hybrid 不属于商品主链。索引和 runtime 共用仅含搜索字段的 SearchDocument，旧 text-format 索引会被显式跳过并要求重建。
-- 商品知识卡 RAG：OpenSearch 使用独立的动态 Hybrid 配置；runtime 默认不启用当前会降分的通用 Reranker，只有显式 opt-in 时才运行，失败时保留 Hybrid 顺序。知识卡配置不混入商品召回主链。
-- 验证结果：Python 3.10.20；Ruff 与 pytest 通过；固定 case、真实自由文本、阶段四基线、阶段五商品召回和阶段六 CategoryInsight 均已实际运行成功。
-
-阶段 2 的计算口径：
-
-- ItemSearch 按原文一次检索一个平台，每个平台返回一个 `ItemSearchOutput`；本地实现委托给 BM25 `SearchBackend`，召回不读取用户画像。
-- PriceCompare 直接接收多平台合流的 `list[Candidate]`，使用 `Decimal` 和版本化演示汇率，按标价排序并截断到 Top-12。
-- ShippingCalc 只接收 `PriceCompare.ranked`，按第 12 章的 0.5 kg 占位重量、运费表和税率表估算 `landed_cny`。
-- ItemPicker 先执行预算、材质和属性硬约束，再综合到手价、评分、时效、税档和偏好打分；打分后才按 `same_group_id` 去掉同款重复推荐。
-- ShoppingSummary 使用固定模板收敛，不调用模型，并明确披露模拟数据与估算规则。
-
-当前依赖保持最小：
-
-| 依赖 | 用途 | 可选替代 |
-| --- | --- | --- |
-| `pydantic` | 定义 `StandardItem`、`Candidate`、`PricePoint`、`LandedCost`、`PickedItem` 等稳定契约 | 标准库 dataclass + 手写校验，但错误定位和 JSON 解析成本更高 |
-| `langchain` / `langchain-openai` | 第 10 章统一模型入口、消息和工具抽象 | 纯 SDK 手写消息协议，但偏离课程 |
-| `langgraph` | 第 2 章 AgentLoop、检查点和循环限制 | 纯 Python `while`，但缺少课程状态图语义 |
-| `langgraph-checkpoint-redis` | 官方 RedisJSON/RediSearch LangGraph checkpoint，节点级持久化与 TTL | `InMemorySaver` 仅用于单测；旧 JSON/SQL bridge 不再用于正式运行 |
-| `PyYAML` | 从 `prompts.yml` 加载版本化提示词 | Python 字符串常量，但不符合第 10 章配置方式 |
-| `python-dotenv` | 真实模型模式读取本地 `.env` | 由终端手动设置环境变量 |
-| `numpy` | 向量归一化、精确检索基线与索引测试 | 纯 Faiss，但不便保留可解释的正确性基线 |
-| `pyarrow` | 流式读取 Amazon ESCI 官方 parquet，避免把百万行一次性载入内存 | Hugging Face Viewer 小批量下载，但全量分组筛选更慢 |
-| `faiss-cpu` | 构建 HNSW + Inner Product 商品 ANN 索引 | Milvus，适合更大规模和服务化 |
-| `sentence-transformers` | 在主环境加载 BGE-M3 Query/Item 编码器 | 直接使用 Transformers，但要手写池化和批处理 |
-| `pytest` | 参数化测试、夹具和清晰失败报告 | 标准库 `unittest` |
-| `ruff` | 一次完成导入排序与静态规范检查 | Flake8 + isort 等组合 |
+当前主线已进入 LangGraph + DDD 组合项目：商品检索、CategoryInsight 品类参考、订单两阶段门禁、FastAPI/WebSocket、Redis checkpoint、Faiss/BGE 检索、证据快照、确定性 Fact Guard 和稳定 ID Judge 评测链均有代码与测试。
 
-## 阶段 2 面试解释
+权威质量基线：
 
-| 模块 | 为什么这样设计 | 替代方案 | 主要失败模式与代码位置 |
-| --- | --- | --- | --- |
-| ItemSearch | 先建立可复现关键词基线，后续才能证明向量召回是否改进 | BM25、Embedding、混合召回 | 同义词和跨语言召回弱；见 `src/globex_agent/tools/item_search.py` |
-| PriceCompare | 接收合流候选、币种归一并做 Top-N 剪枝，金额使用 Decimal 避免浮点误差 | 实时汇率服务 | 演示汇率不代表实时值；见 `src/globex_agent/tools/price_compare.py` |
-| ShippingCalc | 与标价比较分离，允许标价 Top-N 后再估算到手价 | HS Code + 原产地税费服务 | 税率和时效是简化规则；见 `src/globex_agent/tools/shipping_calc.py` |
-| ItemPicker | 硬约束先过滤，偏好只能影响排序，不能覆盖预算和黑名单 | Learning-to-Rank 或 LLM Reranker | 未知硬约束会安全停止；见 `src/globex_agent/tools/item_picker.py` |
-| ShoppingSummary | 模板输出稳定、可测、零模型成本 | LLM 生成摘要 | 表达较固定；见 `src/globex_agent/tools/shopping_summary.py` |
+- 确定性 Fact Guard：8/8 Flow，P0=0。
+- 稳定 ID Judge：8/8 有效，分数 1, 1, 0.93, 1, 1, 1, 1, 1，平均 0.99125，适用 P0 20/20 全通过。
+- 完整 pytest 历史基线：238 passed, 9 warnings；本轮修复后的最终命令结果以提交前验收记录为准。
+- 本机 4GB 权威配置：CPU FP32 Query Embedding + GPU FP16 Reranker batch 16；结果见 output/eval/local_4gb_profile.json，不重建索引、不改 Top-100→Top-10 契约。
 
-## 阶段 3：单 AgentLoop
+当前明确未实现或非在线门禁：最终回答在线 Fact Guard、grounded rewrite、确定性 fallback；P0=0 是离线评测执行门槛，不是生产请求不可绕过的状态机。CategoryInsight 是可选的品类参考工具，不直接参与商品硬过滤或排序。
 
-默认运行不需要模型密钥：
+## 两条真实流程
 
-```bat
-.\.venv\Scripts\python.exe examples\03_single_agent.py --case 1
-```
+在线生产链：
 
-消息顺序应为：
+    Query → Orchestrator / context / cache / checkpoint
+          → LLM 工具规划 → (可选) CategoryInsight 品类参考
+          → ProductSearch → StandardItem
+          → ProductFactSnapshot + ProductCard → LLM final answer
+          → audit / conversation persistence
 
-```text
-planner
-→ item_search × 3（单 Loop 顺序调用三个平台）
-→ price_compare
-→ shipping_calc
-→ item_picker
-→ shopping_summary（终结）
-```
+离线质量链：
 
-真实模型模式需要把 `.env.example` 复制为 `.env`，填写 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`LLM_MAIN`，然后运行：
+    persisted conversation + audit → exposed evidence parser
+      → deterministic Fact Guard → P0=0 评测门槛
+      → stable evidence catalog → rubric → Judge → validated report
 
-```bat
-.\.venv\Scripts\python.exe examples\03_single_agent.py --case 1 --real
-```
+在线链目前没有把 P0/Judge 接入生产请求。下一阶段设计为：Snapshot/CategoryInsight → draft → online Fact Guard → pass return；失败则 grounded rewrite → Fact Guard，仍失败才走 deterministic fallback。该设计是后续增强，并非当前基线中的已实现能力。
 
-固定 `--case` 用 `queries.jsonl` 中预先校验的结构化请求；要验证真正的自然语言 Planner，运行：
+## 关键边界
 
-```bat
-.\.venv\Scripts\python.exe examples\03_single_agent.py --real --query "500元以内防泼水、不要真皮的通勤背包"
-```
+- CategoryInsight：检索品类知识卡并返回有范围标识的属性、价格档位、参考款型和 provenance。它证明品类级参考事实，不证明某个 SKU 的精确价格、库存、店铺或订单事实。
+- ProductFactSnapshot：由 StandardItem 一次性生成的版本化内部证据 DTO，含内容 hash、evidence ID、变体绑定、来源和实际 exposed facts，是审计与评测证据边界。
+- ProductCard：从同一个 Snapshot 投影出的紧凑商品结构，只服务 Search Agent/LLM；不携带完整审计状态。
+- 最终回答：LLM 面向用户的自然语言结果。当前由离线 Fact Guard/评测验证，生产运行时尚未接入最终回答重写与 fallback。
 
-这时 Planner 使用同一个真实模型输出课程规定的结构化字段，并把预算、平台和硬约束更新到本轮 `runtime.request`；商品数据和后续业务计算仍是本地演示实现。
+商品硬事实链保持单向关系：StandardItem → ProductFactSnapshot → ProductCard → LLM。商品检索固定为 BGE-M3 Query/Item → Faiss Top-100 → BGE-Reranker Top-10；CategoryInsight 的 OpenSearch/RAG 路径与商品 Faiss 主链分离。
 
-课程原文使用 `langgraph.prebuilt.create_react_agent`；LangGraph 1.x 已将它标记为弃用并推荐 `langchain.agents.create_agent`。为了让当前代码与原文可逐行对应，阶段三暂时保留原 API，不在本阶段擅自迁移。
+## 目录与入口
 
-### 阶段 3 面试解释
+    src/globex_agent/domain/              领域模型与业务规则
+    src/globex_agent/application/         编排、usecase、工具、证据模型
+    src/globex_agent/infrastructure/      Faiss/OpenSearch、模型、缓存、仓储、韧性组件
+    src/globex_agent/presentation/        FastAPI 与 WebSocket
+    tests/                                单元、契约、集成测试
+    scripts/                              启动、索引、基准、评测脚本
+    docs/                                 当前架构、数据契约、实验和问题账本
+    frontend/                             React 对话界面
+    data/                                 小规模正式演示数据与本地运行数据
 
-| 模块 | 为什么这样设计 | 替代方案 | 主要失败模式与代码位置 |
-| --- | --- | --- | --- |
-| `main_agent` | 忠实使用课程的 `create_react_agent + tools + prompt + checkpointer` 组成单 AgentLoop，并加迭代上限和超时 | 手写 `while` 循环或迁移到 `create_agent` | 模型反复调用工具会触发最大迭代，外部调用过慢会超时；见 `src/globex_agent/agent/main_agent.py` |
-| 工具适配层 | 只把阶段二纯函数包装成 LangChain Tool，业务规则仍由确定性代码负责 | 让模型直接完成检索、计算和筛选 | 工具输入输出契约漂移会中断链路；见 `src/globex_agent/tools/agent_tools.py` |
-| YAML 提示词与工具注册表 | 对应课程第 10、14 章，集中约束调用顺序、终结工具和可见工具集 | 在 Python 中散落字符串和工具列表 | 提示词只能引导、不能保证模型服从，因此终结判断和运行上限仍由代码兜底；见 `src/globex_agent/prompt/prompts.yml`、`src/globex_agent/agent/tool_registry.py` |
-| `ScriptedShoppingModel` | 在没有密钥时仍真实走 LangGraph 消息、ToolNode、检查点和终结链路，测试结果可复现 | 测试时调用真实 LLM | 它验证编排和契约，不验证自然语言规划质量；见 `src/globex_agent/agent/scripted_model.py` |
+主要代码入口：
 
-当前已为 CategoryInsight 在本机 Docker 引入单节点 OpenSearch；尚未引入 fork、vLLM、AGUI 或 K8s。同质子 AgentLoop fork 留到后续多 Agent 阶段；商品召回层继续使用 Faiss，不依赖知识卡 OpenSearch。
+- src/globex_agent/composition.py：生产容器、模型设备和服务组装。
+- src/globex_agent/application/agents/orchestrator.py：工具编排、审计 sanitizer 和会话持久化边界。
+- src/globex_agent/application/usecases/catalog_search.py：商品召回、Snapshot 构建和 Card 投影。
+- src/globex_agent/application/tools/product_search_tool.py：LLM 工具输出与审计 evidence 关联。
+- src/globex_agent/application/evidence.py：ProductFactSnapshot、稳定 hash/evidence ID 和有界持久化。
+- src/globex_agent/eval/fact_guard.py：确定性事实与变体/范围/价格绑定检查。
+- scripts/eval_flow_rubric.py：exposed evidence、稳定 ID catalog、rubric 和 Judge 解析。
 
-## 阶段 4：离线检索基线
+## 环境与快速开始
 
-阶段四不调用 LLM，也不构建向量模型。`ItemSearch` 只依赖稳定的 `SearchBackend` 接口；本阶段先用 `keyword-bm25-v1` 建立基线，阶段五再在不修改模型可见工具参数的前提下注入 Query/Item 向量召回与精排。按本项目约定取消 User 塔：画像不编码、不建索引，也不是 `SearchBackend` 的输入；在 query 和平台相同的前提下，换用户不会改变召回。画像仍可作为 Agent 上下文，并在后置 `ItemPicker` 中处理黑名单和软偏好。
+项目使用 Python >=3.10,<3.11，依赖和命令以 pyproject.toml 为准。密钥只放本地 .env，不要提交 .env。
 
-公开评测子集来自 Amazon Shopping Queries ESCI 数据集（Apache-2.0），通过已连接商品文本的 `tasksource/esci` 镜像按 query_id 下载小样本。最终保存 35 个互不交叉的查询组和 720 个去重商品，拆分为 train/dev/test=21/6/8；完整多 GB 数据不进入仓库。
+    uv sync
+    $env:PYTHONPATH = "."
+    uv run pytest -q --basetemp D:\PycharmProjects\GlobexAgentLearning\.pytest_tmp-review
+    uv run ruff check --no-cache src scripts examples tests
+    .\scripts\start_dev.ps1 -SkipFrontend
+    Invoke-RestMethod http://127.0.0.1:8000/health
 
-评测采用逐 query 封闭候选池，候选必须 100% 有 ESCI 标注。Recall/MRR 只把 Exact 当正例，每个 query 保留 2～5 个 Exact；Complement/Substitute 仅保留给分级 NDCG。当前数据仅含英文，因此不能据此声称中文或中英跨语言效果。此处不制作训练样本，也不执行训练截断、正负采样、Hard Negative 或微调。
+不依赖外部模型的示例：
 
-离线复现命令：
+    $env:PYTHONPATH = "."
+    uv run python examples\00_smoke.py
+    uv run python examples\03_single_agent.py --case 1
 
-```bat
-.\.venv\Scripts\python.exe scripts\eval\run_recall_eval.py --prepare
-```
+scripts/start_dev.ps1 会等待 FastAPI /health；退出脚本会清理本轮启动的后端和前端进程。Redis/OpenSearch 按各自 compose 文档启动，未启动时不要把离线测试结果写成在线服务已通过。
 
-2026-08-15 按新口径重跑的 BM25 实际结果：Recall@10=0.531429、MRR@10=0.650079、NDCG@10=0.484503、空召回率=0.028571；Recall@100=0.813810。报告本地生成到 `output/eval/`，该目录不提交。候选池最多只有 51 条，因此 Recall@100 是封闭池内的深度诊断，不是全商品库召回指标。
+## 本机 4GB 与生产部署
 
-## 阶段 5：Query/Item 向量召回与精排
+本机模板 .env.example 使用 CPU FP32 Query Embedding 常驻 worker、GPU FP16 Reranker 常驻 worker（实际 CUDA Python 路径按机器填写）。生产仍支持 Query Embedding GPU + Reranker GPU 的分离配置；本机设备分配不是生产语义变更。
 
-本阶段没有 User 塔。Query 在线编码，Item 离线编码；画像继续只供 Planner 和后置 ItemPicker 使用。课程主实现使用官方原始 `BAAI/bge-m3` 在项目主环境 CPU 编码，使用 `BAAI/bge-reranker-v2-m3` 在 Conda `blog_04` 的 CUDA 11.8 常驻子进程中运行时转 FP16；没有下载第三方 FP16 重打包。Item 文本先删除重复 title 和字面量 `None`，再以 title 优先的字段格式编码；Embedding 窗口为 512，Reranker 按课程 Query/Doc 预算使用 256 token。
+契约固定为 query 1024 维、归一化、max sequence length 512，商品候选保持 Top-100，Reranker 输出 Top-10。CategoryInsight encoder 保持 CPU 预热。最终 benchmark 已写入 output/eval/local_4gb_profile.json，只引用该权威文件，不在文档治理阶段重跑。
 
-`blog_04` 已有的 CUDA 版 PyTorch 保持不变；精排进程只需补齐固定版本的 Transformers 运行依赖，不需要在主项目环境安装 CUDA 包：
+## 测试与评测
 
-```bat
-C:\Anaconda\envs\blog_04\python.exe -m pip install -r scripts\reranker\requirements-blog-04.txt
-```
+代码变更至少运行相关 pytest、完整 pytest、Ruff 和 git diff --check。Windows pytest 临时目录清理若出现 WinError 5，必须将测试主体通过与清理权限问题分开报告。
 
-首次运行需要联网构建索引并让 GPU 子进程下载一次官方精排权重：
+离线评测只消费已持久化的 conversation/audit exposed evidence；stable catalog 使用业务稳定 ID，Judge criterion 必须完整覆盖且只能引用 catalog ID。当前权威报告为 output/eval/flow-rubric-luna-final-20260822.md 及同名 JSON。
 
-```bat
-.\.venv\Scripts\python.exe scripts\index\build_item_index.py --batch-size 4
-.\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --reranker-python C:\Anaconda\envs\blog_04\python.exe
-```
+## 文档导航与项目主线
 
-两套模型缓存齐全后可完全离线运行：
+- 权威文档导航：docs/README.md，每份文档标注 current / historical / design / proposal。
+- 架构与实现：docs/ARCHITECTURE_AND_IMPLEMENTATION.md。
+- 项目状态与路线图：docs/PROJECT_STATUS_AND_ROADMAP.md。
+- 问题账本：docs/PROJECT_AUDIT_AND_REMEDIATION.md。
+- 检索与数据契约：docs/data/catalog_faiss_schema_v2_20260820.md、docs/data/category_card_data_contract.md。
+- 8 Flow 评测记录：docs/experiments/flow_query_eval_20260820.md。
 
-```bat
-.\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-.\.venv\Scripts\python.exe examples\04_semantic_retrieval.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe
-```
-
-商品召回的课程主结果固定为 `BGE-M3 Query/Item → Faiss HNSW + IP Top-100 → BGE-Reranker-v2-m3 Top-10`。720 个 Item 已真实编码为1024维归一化向量，索引参数为 `M=32、efConstruction=200、efSearch=128`。BM25 只作词法基线，Hybrid 不进入主链，也不再复用知识卡 RAG 的动态权重或 Top-30/Top-8 配置。
-
-2026-08-15 本机重跑结果如下。准确率取独立 test split（8 个 query）；候选 Recall@100 和延迟是 35 个 query 的整体诊断，因此列名显式区分口径。
-
-| 角色/方案 | Test Recall@10 | Test MRR@10 | Test NDCG@10 | Overall Recall@100 | Overall P50 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| BM25 基线 | 0.6333 | 0.7139 | 0.5646 | 0.8138 | 0.10 ms |
-| BGE-M3 + Faiss HNSW/IP | 0.7583 | 0.7135 | 0.6448 | 1.0000 | 86.68 ms |
-| ANN Top-100 → BGE Reranker Top-10（课程主结果） | 0.8750 | 0.8750 | 0.7886 | 1.0000 | 528.32 ms |
-
-三路结果的 judged coverage 均为 1.0。BGE Reranker 把独立 test 的 Recall@10 从 0.7583 提升到 0.8750，NDCG@10 从 0.6448 提升到 0.7886。35-query overall 的主链 Recall@10=0.633810、NDCG@10=0.592388，只作诊断，不与 test 主结果混报。当前封闭候选池只有8～51条，所以代码请求 Top-100、候选 Recall@100=1.0，但不能声称每个 query 实际精排了100条。完整结果和 bad case 位于本地 `output/eval/retrieval_comparison.json`。
-
-可提交、可长期追溯的实验环境、数据哈希、完整指标与复现命令记录在 `docs/experiments/phase5_bge_m3_retrieval_2026-08-15.md`。
-
-Hybrid 仅在明确要求扩展消融时启用，而且必须显式给出静态权重；脚本不会自动套用知识卡 RAG 的动态分类权重。例如复现历史的 0.4/0.6 诊断可另存报告：
-
-```bat
-.\.venv\Scripts\python.exe scripts\eval\run_retrieval_comparison.py --local-files-only --reranker-python C:\Anaconda\envs\blog_04\python.exe --include-hybrid-extension --semantic-weight 0.4 --lexical-weight 0.6 --output output\eval\retrieval_hybrid_ablation.json
-```
-
-## 阶段 6：CategoryInsight 商品知识卡 RAG（数据整改与事实闭环已落地，端到端待验收）
-
-当前知识卡底座是阶段五使用的真实 ShopSimulator 淘宝中文目录。首期冻结 8 个普通
-品类：乳胶枕、儿童学习椅、手机直播补光灯、汽车氛围灯、平板电脑支架、颈椎按摩器、
-羽毛球包、户外电源。每个品类生成 2 张 `bestseller`、3 张 `attribute`、1 张
-`price_range`，共 48 张课程七字段 `CategoryCard`。
-
-淘宝目录没有真实销量，bestseller 使用同质商品数和 `source_attributes` 覆盖度作
-“目录高频款型代理”，并显式标记 `generated_offline_proxy`，不伪造销量。属性百分比只表示
-当前目录标题/属性出现率，医疗或功效词只是未验证的标题声明。价格来自真实
-`price_cny` 或 `variants[].price_cny`，经过正数下界、不可比标题项排除和品类内
-log-space IQR 1.5 稳健围栏；卡片与 provenance 明确标注“挂牌/规格价品类参考区间，
-不是成交价、具体 SKU 价格或实时价格”。完整口径见
-`docs/data/category_card_data_contract.md`。
-
-当前重建版本为 `category-cards-taobao-zh-v3`：779 条 facts、48 张卡、8 个既有品类。
-CategoryInsight 已保留 `CategoryEvidenceRef`，工具结果标注 category aggregate/reference，
-审计事件保留有界 evidence refs，Flow rubric 已接入确定性 fact guard。BGE-M3 已使用本地
-模型完成 v1 索引和 50 条模块评测；真实 8 条 Flow 仍因项目 .env 的外部 LLM 端点安全
-边界未执行，故端到端验收仍为 partial。
-
-```powershell
-$env:PYTHONIOENCODING = "utf-8"
-.\.venv\Scripts\python.exe scripts\data\build_category_cards_taobao_zh.py
-.\.venv\Scripts\python.exe scripts\data\build_category_eval_taobao_zh.py
-```
-
-中文检索评测集冻结为 50 条 Query，覆盖名词型、属性约束型、气质/风格型和口语
-型，split 为 train/dev/test=30/10/10。每条 Query 对全局 48 张卡全部显式判断，
-恰有 5 张相关卡，按顺序获得 5、4、3、2、1 gain。
-
-OpenSearch 使用 `analysis-ik`，本轮 v1 验证索引为 `globex_category_kb_taobao_zh_v1`，以
-`ik_max_word` 建索引、`ik_smart` 查询；中文检索文本从 sidecar 写入
-`retrieval_text` 和 `retrieval_text_zh`。BGE-M3 和 BGE Reranker 分别使用本地
-`D:\models\bge-m3` 与 `D:\models\bge-reranker-v2-m3`。
-
-独立 test split 的四路重建后实测（50 条、按当前脚本取 @10）：
-
-| 方案 | Recall@8 | MRR@8 | NDCG@8 | AllCardTypes@8 |
-| --- | ---: | ---: | ---: | ---: |
-| BM25 | 1.0000 | 1.0000 | 0.8723 | 1.0000 |
-| KNN / BGE-M3 | 1.0000 | 1.0000 | 0.8633 | 1.0000 |
-| Hybrid | 1.0000 | 1.0000 | 0.8651 | 1.0000 |
-| Hybrid + BGE Reranker（0.92 跳过） | 1.0000 | 1.0000 | 0.8744 | 1.0000 |
-
-本轮 50 条 test split 四路 Recall/MRR/AllTypes 均为 1.0；Reranker 实际执行 12 条、
-旁路 38 条。相对重建前冻结结果，KNN/Hybrid NDCG 有小幅下降，故生产默认仍保留
-0.92 首分跳过且不强制开启。
-
-旧英文 ESCI 演示版仍保留在 `data/category_insight/` 根目录，作为历史实验，不覆盖：
-
-- 12 个英文 ESCI 品类、72 张卡，standard 分词。
-- 50 条英文 Query 与固定种子价格/销量合成字段。
-- 历史实验记录见 `docs/experiments/phase6_category_insight_2026-08-15.md`、
-  `docs/experiments/phase6_category_insight_v2_2026-08-15.md` 和
-  `docs/experiments/phase6_bilingual_v3_2026-08-15.md`。
-
-`CategoryInsightService` 仍保留 quick/deep 提炼、品类归一、普通品类空组件、
-向量失败降级 BM25、OpenSearch 失败返回 confidence=0，以及 Reranker 失败保留粗排。
-默认 Category Reranker 仍关闭。当前尚无 WebSearch 工具，低置信度 WebSearch 补充仍是后续项。
-上下文四层/L0-L4/token budget/Cache Breakpoint、长期记忆治理、语义缓存完整版本指纹、
-platform/locale 路由、商品 runtime GPU reranker 和完整 Agent 评测仍未完成。
-# 当前商品契约
-
-商品事实已采用 `catalog-schema-v2`：`StandardItem` 使用 typed attributes/materials/variants、三态 availability 和显式 `ships_to`；有规格价格只在 variant，无规格订单才读取 item 价格。迁移 staging、真实四分区计数和 hash 见 [catalog-schema-v2 迁移记录](docs/data/catalog_schema_v2_migration_20260820.md)。Faiss 尚未按 v5 文本重建，运行时会拒绝旧索引并诚实降级。
+推荐当前项目主线：在稳定证据链之上做一个有 feature flag 的在线 grounded answer 安全闭环；先实现 shadow mode、单次 bounded rewrite 和确定性 fallback，再决定是否切换生产默认。详细入口和验收见 docs/PROJECT_STATUS_AND_ROADMAP.md。

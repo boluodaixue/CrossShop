@@ -41,12 +41,11 @@ normalization，输出 float32 向量。每个 index 旁保存 `bge-m3-hnsw-ip.m
 ## Agent 查询编码运行时
 
 正式 Agent 启动入口为 `src/globex_agent/presentation/server.py` 的 FastAPI lifespan，
-通过 `composition.build_container()` 创建查询编码器。运行时使用 `BGE_M3_DEVICE=cuda:0`；
-当主项目 Python 没有 CUDA-enabled torch 时，由 `BGE_M3_PYTHON` 指定的 CUDA Python
-环境启动 `scripts/embedding/bge_m3_query_worker.py`。worker 常驻加载 BGE-M3，使用
-512 token、FP16、CLS pooling、L2 normalization、1024 维输出，连续查询复用同一进程和模型。
+通过 `composition.build_container()` 创建查询编码器。本机 4GB profile 使用
+`BGE_M3_DEVICE=cpu` + `BGE_M3_PYTHON` 启动 CPU FP32 常驻 worker；生产仍可使用
+`BGE_M3_DEVICE=cuda:0` 指向 CUDA Python。worker 常驻加载 BGE-M3，使用
+512 token、按设备选择 FP32/FP16、CLS pooling、L2 normalization、1024 维输出，连续查询复用同一进程和模型。
 启动时会校验四个 Faiss manifest 的模型、维度、text 版本、pooling、精度和 normalized 契约；
-CUDA 不可用或契约不一致会直接失败，不会静默切 CPU。2026-08-20 本机实测使用
-`C:\Anaconda\envs\blog_04\python.exe`、`cuda:0`、PID 34348，连续两批输出
-`(2, 1024)`/`(1, 1024)`，有限且范数约 1；真实两次 ANN 查询均为 `embedding_only`，未走 BM25，
-同一 worker 的 `model_reuse_count=2`。
+CUDA 配置不可用或契约不一致会直接失败，不会静默切换设备。2026-08-21 本机实测 CPU
+worker 与 GPU worker 的 3 条查询 Top-100 overlap 均为 1.0；Reranker 另以 CUDA FP16
+对 batch 4/8/16 做三次有界比较，结果见 `output/eval/local_4gb_profile.json`。
