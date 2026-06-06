@@ -89,8 +89,8 @@ class SubprocessBgeM3EmbeddingClient(EmbeddingClient):
     ) -> None:
         if not python_executable.is_file():
             raise ValueError(f"BGE-M3 CUDA Python does not exist: {python_executable}")
-        if not device.startswith("cuda"):
-            raise ValueError("SubprocessBgeM3EmbeddingClient requires a CUDA device")
+        if not (device == "cpu" or device.startswith("cuda")):
+            raise ValueError("BGE-M3 worker device must be cpu or cuda:<index>")
         if batch_size < 1:
             raise ValueError("batch_size must be at least 1")
         if max_seq_length != DEFAULT_EMBEDDING_MAX_SEQ_LENGTH:
@@ -270,8 +270,8 @@ class SubprocessBgeM3EmbeddingClient(EmbeddingClient):
                 "model": self._model_name,
                 "device": self._device,
                 "model_device": self._device,
-                "cuda_available": True,
-                "precision": "fp16",
+                "cuda_available": self._device.startswith("cuda"),
+                "precision": "fp16" if self._device.startswith("cuda") else "fp32",
                 "pooling": "cls",
                 "normalized": True,
                 "dimension": self._dimension,

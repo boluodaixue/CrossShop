@@ -35,7 +35,7 @@ def main() -> None:
             "device": args.device,
             "model_device": str(next(model.parameters()).device),
             "cuda_available": bool(torch.cuda.is_available()),
-            "precision": "fp16",
+            "precision": "fp16" if args.device.startswith("cuda") else "fp32",
             "pooling": "cls",
             "normalized": True,
             "dimension": dimension,
@@ -81,9 +81,9 @@ def _load_model(
     from transformers import AutoModel, AutoTokenizer, logging
 
     logging.set_verbosity_error()
-    if not device.startswith("cuda"):
-        raise RuntimeError(f"BGE-M3 query worker requires CUDA, got {device}")
-    if not torch.cuda.is_available():
+    if device != "cpu" and not device.startswith("cuda"):
+        raise RuntimeError(f"BGE-M3 query worker device must be cpu or cuda, got {device}")
+    if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError(
             "CUDA is not available in the configured BGE-M3 worker environment"
         )
@@ -93,7 +93,7 @@ def _load_model(
     )
     model = AutoModel.from_pretrained(
         model_name,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float16 if device.startswith("cuda") else torch.float32,
         local_files_only=local_files_only,
     ).to(device)
     model.eval()

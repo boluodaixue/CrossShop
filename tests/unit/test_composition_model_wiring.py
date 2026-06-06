@@ -93,3 +93,48 @@ def test_category_encoder_uses_configured_local_bge_model(monkeypatch) -> None:
         "local_files_only": True,
         "ready": True,
     }
+
+
+def test_local_profile_uses_cpu_query_worker_and_keeps_device_contract(monkeypatch) -> None:
+    created: dict = {}
+
+    class FakeWorker:
+        dimension = 1024
+
+        def __init__(self, python_executable: Path, **kwargs) -> None:
+            created.update({"python_executable": python_executable, **kwargs})
+
+        def ensure_ready(self) -> None:
+            created["ready"] = True
+
+        def warmup(self) -> None:
+            created["warmup"] = True
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(composition, "SubprocessBgeM3EmbeddingClient", FakeWorker)
+    settings = SimpleNamespace(
+        bge_m3_python="D:/PycharmProjects/GlobexAgentLearning/.venv/Scripts/python.exe",
+        bge_m3_model="D:/models/bge-m3",
+        bge_m3_device="cpu",
+        bge_m3_batch_size=4,
+        bge_m3_max_seq_length=512,
+        models_local_only=True,
+    )
+
+    result = composition._build_query_embedder(settings)
+
+    assert result is not None
+    assert created == {
+        "python_executable": Path(
+            "D:/PycharmProjects/GlobexAgentLearning/.venv/Scripts/python.exe"
+        ),
+        "model_name": "D:/models/bge-m3",
+        "device": "cpu",
+        "batch_size": 4,
+        "max_seq_length": 512,
+        "local_files_only": True,
+        "ready": True,
+        "warmup": True,
+    }

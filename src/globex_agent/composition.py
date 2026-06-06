@@ -343,7 +343,7 @@ def _build_vector_index() -> FaissProductIndex | PartitionedFaissProductIndex:
 
 
 def _build_query_embedder(settings: Settings) -> EmbeddingClient:
-    """Build a fail-fast CUDA query encoder for the formal catalog path."""
+    """Build the configured persistent query encoder and preserve GPU mode."""
 
     if settings.bge_m3_max_seq_length != 512:
         raise RuntimeError("formal BGE-M3 query max_seq_length must be 512")
@@ -364,9 +364,22 @@ def _build_query_embedder(settings: Settings) -> EmbeddingClient:
             warmup()
         return embedder
 
+    if settings.bge_m3_device == "cpu":
+        embedder = BgeM3EmbeddingClient(
+            model_name=settings.bge_m3_model,
+            device="cpu",
+            batch_size=settings.bge_m3_batch_size,
+            max_seq_length=settings.bge_m3_max_seq_length,
+            local_files_only=settings.models_local_only,
+        )
+        embedder.ensure_ready()
+        warmup = getattr(embedder, "warmup", None)
+        if warmup is not None:
+            warmup()
+        return embedder
     if not settings.bge_m3_device.startswith("cuda"):
         raise RuntimeError(
-            "formal BGE-M3 query encoder must use CUDA; "
+            "formal BGE-M3 query encoder device must be cpu or CUDA; "
             f"got BGE_M3_DEVICE={settings.bge_m3_device!r}"
         )
     try:
