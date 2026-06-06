@@ -1,82 +1,74 @@
 # 项目状态与路线图（current）
 
-本文档以当前代码、测试和权威评测文件为准，不把课程设计或历史实验当作已实现能力。
+本文档重新按“课程目标是否形成可交付项目”审计。证据以当前代码、仓库文档、实际测试和课程原文为准；课程原文只读。
 
-## 审计结论
+## 一级模块审计
 
-| 一级模块 | 当前状态 | 证据入口 |
-| --- | --- | --- |
-| 用户端产品能力 | partial | FastAPI/WebSocket、前端、搜索和订单接口已接入；在线最终回答安全闭环尚未接入 |
-| Agent 业务闭环 | current/partial | application/agents、orchestrator、工具和 checkpoint 已组成主链；调用顺序仍受 LLM 工具规划影响 |
-| 商品搜索 | current | Faiss 四分区 schema-v2、Query/Item BGE-M3、Top-100、Reranker Top-10 |
-| CategoryInsight | current/partial | OpenSearch/RAG、CPU encoder、价格档位/属性/bestseller 有界暴露；是可选参考工具，不是商品硬过滤/排序器 |
-| 订单链路 | current | Prepare → trusted Confirm 两阶段门禁，结构化 API 才能提交 token |
-| 前后端/API | current/partial | FastAPI /health、commerce intents、WebSocket 和订单路由已存在；完整生产部署编排仍不完整 |
-| 数据与索引生命周期 | current/partial | StandardItem/schema-v2、Faiss 和 CategoryInsight 资料有契约；自动增量重建与生产生命周期治理仍有限 |
-| 部署与服务编排 | partial | 本机启动脚本、Redis/OpenSearch compose、独立模型 worker 已有；课程部署章节中的 vLLM/K8s 全套不是当前实现 |
-| 可观测性与故障恢复 | partial | audit/conversation、缓存、checkpoint、韧性组件存在；完整 LangFuse/队列恢复和端到端告警未闭环 |
-| 质量与安全 | current/partial | Snapshot、PII/载荷边界、Fact Guard、稳定 ID Judge 和 8 Flow 基线已完成；在线 final-answer gate 仍缺失 |
+| 一级模块 | 已完成 | 部分完成/缺失 | 证据 |
+| --- | --- | --- | --- |
+| 面向用户的产品体验 | React 对话框、会话 ID、事件时间线、商品卡片和最终回答展示已存在 | 前端没有课程目标中的完整任务控制、取消、文件/图片入口；订单 prepare/confirm 没有完整 UI；当前提交接口同步等待结果，不能完整体现课程的“启动任务后实时消费”体验 | frontend/src/App.tsx、frontend/src/components/EventTimeline.tsx、frontend/src/components/ProductCards.tsx；src/globex_agent/presentation/server.py；课程部署观测篇/15 FastAPI接口与前后端闭环.md |
+| Agent 业务闭环 | Main/Search/Trade Agent、商品检索、比价/到手价、CategoryInsight、prepare/confirm/cancel 订单链路和 checkpoint 已进入 src | 没有真实支付或外部履约；购物车不是当前课程工具目标，不能把它伪装成缺陷；跨平台 fork 的运行体验与课程 AGUI 目标仍需端到端交付验证 | src/globex_agent/application/agents/、application/tools/、application/usecases/、domain/order/；课程项目配置篇/09 Globex项目总览与工程初始化.md、工具设计篇 11–13 |
+| 后端 API | /health、/commerce/intents、异步任务查询、WebSocket 事件、订单查询/准备/确认/取消 API 已存在 | 与课程示例的 /api/task、/ws/{thread_id}、取消和文件接口不是同一完整协议；API 与前端的重连、任务状态和错误恢复尚未形成验收闭环 | src/globex_agent/presentation/server.py、presentation/connection.py、frontend/src/App.tsx；课程部署观测篇/15 FastAPI接口与前后端闭环.md |
+| 数据与索引生命周期 | StandardItem/schema-v2、数据迁移、Faiss 四分区索引、CategoryInsight OpenSearch 构建脚本和 hash/manifest 契约已存在 | 生产级增量导入、原子切换、回滚、版本观测和索引重建后的服务切换没有形成完整运行流程 | scripts/data/、scripts/index/、src/globex_agent/infrastructure/recall/；docs/data/catalog_faiss_schema_v2_20260820.md |
+| 服务部署编排 | Dockerfile、docker/docker-compose.yaml、OpenSearch compose、本机启动脚本、Redis checkpoint 和本机模型 worker 已存在 | Compose 没有课程目标中的 vLLM、Embedding、GPU Reranker 独立服务；模型路径依赖宿主机挂载，ready/health 只覆盖基础服务；生产 profile、secret、服务切换和完整启动验收尚未闭环 | Dockerfile、docker/docker-compose.yaml、infra/opensearch/、scripts/start_dev.ps1；课程部署观测篇/16-1 Docker Compose 全栈编排与环境锁定.md、16-2 vLLM推理服务与GPU部署.md |
+| 可观测性与运维 | logging、audit/conversation、事件总线、/health、checkpoint、Redis Stream 可选队列、韧性组件已存在 | 没有 LangFuse/Trace、指标看板、工具 P99 告警、完整 token/cost 观测、灰度回滚和 K8s graceful shutdown 交付 | src/globex_agent/infrastructure/resilience.py、application/agents/orchestrator.py、presentation/server.py；课程部署观测篇/16-3 至 16-6 |
+| 质量与安全 | pytest/Ruff、8 Flow 确定性 Fact Guard、Snapshot、PII/payload sanitizer、stable-ID Judge 和权威评测已完成 | 在线 Fact Guard/rewrite/fallback、P0 脚本硬门禁、CategoryInsight 调用状态机、semantic cache 证据刷新属于细节增强；生产 prompt-injection/output/security 清单仍需后续运维阶段落地 | src/globex_agent/application/evidence.py、eval/fact_guard.py、scripts/eval_flow_rubric.py、tests/；课程部署观测篇/16-6 安全护栏与K8s生产化.md |
 
-examples 目录是可独立运行的课程/实验示例，不等同于 src 中的完整运行时；当前项目主链以 src/globex_agent、scripts 和 tests 为准。
+结论：项目的 Agent 核心业务和离线可信评测已经形成，真正阻止它成为当前课程目标下“可交付完整项目”的最大一级缺口是课程级的端到端交付与运行化：前端/API 协议闭环、可复现的全栈模型服务编排，以及基本观测/运维验收尚未统一完成。它不是单个回答校验器缺失。
 
-## 已完成
+## 非阻塞细节增强
 
-- StandardItem → ProductFactSnapshot → ProductCard 的单向证据链；Snapshot 有 schema version、hash、evidence ID、provenance 和 exposed facts。
-- ProductSearch 在同一次构造中生成 Card 与 Snapshot；audit 仅保留白名单、有界且脱敏的 CategoryInsight/Snapshot 信息。
-- CategoryInsight 品类知识卡检索与范围标识；品类价格档位不会被误当作 SKU 精确价格。
-- Fact Guard 的变体价格绑定、别名保守匹配、范围语境、预算/运费排除和重叠 claim 去重。
-- stable evidence catalog、criterion ID 双向覆盖校验、pass/fail/not_evaluable 语义和旧格式读取兼容。
-- 本机 4GB 配置：CPU FP32 query embedding、GPU FP16 reranker batch 16；生产仍支持 embedding GPU + reranker GPU。
-- 权威评测：确定性 Fact Guard 8/8、P0=0；Judge 8/8、平均 0.99125、适用 P0 20/20；权威文件在 output/eval/flow-rubric-luna-final-20260822.md 与同名 JSON。
+下列项目必须保留为后续增强，不能作为下一主线：
 
-## 部分完成与非阻塞技术债
+- 在线 final-answer Fact Guard、grounded rewrite、deterministic fallback。
+- P0=0 的脚本不可绕过状态机；P0/Judge 当前属于离线质量链。
+- CategoryInsight 调用顺序或状态机强制化。
+- semantic cache 的 evidence/version 刷新策略。
+- Judge 对 CategoryInsight components 的持续覆盖核对。
 
-- 没有在线 final answer Fact Guard、grounded rewrite 或 deterministic fallback。
-- P0=0 是离线评测执行规范，不是在线生产状态机不可绕过的硬门禁。
-- CategoryInsight 的调用顺序依赖 LLM prompt；代码没有把它强制成每次商品检索前置步骤。
-- semantic cache 可能复用旧结果，绕过当轮证据刷新；需要完整版本指纹/失效策略。
-- CategoryInsight components 在线/审计存在，但 Judge 覆盖仍需持续核对 exposed evidence 是否完整。
-- 课程部署/观测章节中的 vLLM、LangFuse、K8s、完整 token/circuit/queue 运维能力不应写成当前已交付。
+它们改善可信度和评测严谨性，但不阻止当前 Agent、前端基础交互、API、订单门禁和离线质量链继续运行。
 
-这些问题不阻塞当前证据链基线，也不是本轮提交的理由之外的功能扩展。
+## 推荐唯一下一主阶段：课程级可交付运行闭环
 
-## 未实现与非目标
+### 范围
 
-未实现：在线 rewrite/fallback 闭环、自动化增量索引生命周期、完整生产级模型服务编排、完整外部观测平台接入。非目标：修改商品 schema-v2、重建既有 Faiss 索引、改变 Top-100 或 Top-10、量化模型、替换 Redis checkpoint/订单门禁、修改课程原文。
+1. 对齐前端与 API 的任务协议：启动任务、任务状态、取消、WebSocket 会话重连、最终商品卡/事件展示；按课程目标决定是否补齐文件/图片入口。
+2. 固化一个可复现 Compose profile：FastAPI、React、Redis、OpenSearch 和模型服务边界可启动、可探活、可停止；本机 4GB profile 保持 CPU Query Embedding + GPU Reranker，生产 profile 保留 GPU embedding + GPU reranker/vLLM 的独立配置。
+3. 为模型服务、索引服务和应用增加 readiness/依赖失败说明；启动文档必须能从空服务状态得到明确诊断。
+4. 建立最小运行观测：请求/任务/会话关联 ID、工具耗时和错误事件可查；先以仓库内可复现日志/health 为基线，再为 LangFuse/指标平台保留适配边界。
+5. 用一个浏览器到商品回答、事件流、订单 prepare/confirm 的端到端验收场景收尾。
 
-## 依赖关系与推荐唯一下一主阶段
+### 为什么优先
 
-推荐下一主阶段：在线 grounded answer 安全闭环（先 shadow mode，后决定默认开启）。
+课程第 15 章把“浏览器输入 → AGUI 事件 → 商品清单”定义为工程最终闭环；第 16-1 至 16-6 继续要求全栈编排、模型服务、观测、成本/韧性、安全和发布能力。当前代码已经有可复用的 Agent、API、React、Docker、Redis、OpenSearch 和模型 worker 基础，最短路径是把这些边界交付成一条可重复启动和验收的系统链。
 
-理由是商品证据链、exposed facts 和离线 Guard 已稳定，在线回答目前仍是唯一明显的可信度断点；它可以在不改变召回、商品 schema、订单门禁和生产默认设备分配的前提下独立验收。该阶段不是当前基线的前置依赖，而是证据链完成后的后续增强。
+### 依赖
 
-依赖图：
+- src/globex_agent/presentation/server.py、presentation/connection.py
+- frontend/src/App.tsx、EventTimeline.tsx、ProductCards.tsx
+- src/globex_agent/composition.py
+- docker/docker-compose.yaml、Dockerfile
+- scripts/start_dev.ps1
+- 现有 Redis/OpenSearch、4GB profile 和权威测试
 
-    ProductFactSnapshot + CategoryInsight exposed facts
-      → final-answer context contract
-      → draft answer
-      → online Fact Guard
-      → pass return
-      → fail: one bounded grounded rewrite
-      → re-check
-      → fail again: deterministic fallback
+### 非目标
 
-主要入口：
+不在本阶段修改商品 schema-v2、重建既有 Faiss 索引、改变 Top-100→Top-10、加入真实支付/外部履约、改变订单确认门禁，也不把在线 Fact Guard/rewrite/fallback、P0 硬门禁、CategoryInsight 状态机或 cache 版本刷新混入主线。
 
-- 证据：src/globex_agent/application/evidence.py
-- 编排与回答落点：src/globex_agent/application/agents/orchestrator.py
-- 商品工具：src/globex_agent/application/tools/product_search_tool.py
-- 确定性规则：src/globex_agent/eval/fact_guard.py
-- 评测参考：scripts/eval_flow_rubric.py
-- 服务组装：src/globex_agent/composition.py
+### 可验收标准
 
-## 下一阶段可验收标准
+1. 新环境按一条文档命令启动 Compose profile，FastAPI、前端、Redis、OpenSearch 和声明的模型边界均有明确 healthy/blocked 结果。
+2. 浏览器提交购物 query 后能看到实时事件、商品卡和最终回答；断线可重连，用户可查询/取消任务，失败状态可见。
+3. 商品搜索、CategoryInsight、订单 prepare→confirm 的一次完整用户场景通过；不声称已实现真实支付。
+4. 记录 query、session/task、tool elapsed、error 和 final result 的关联日志；至少 /health 和模型/索引依赖状态可诊断。
+5. 运行 frontend build、相关集成测试、完整 pytest、Ruff、diff check；现有确定性 8 Flow P0=0 不回退。
 
-1. 用 feature flag 接入 final-answer guard，默认 shadow mode，不改变现有生产返回语义。
-2. Guard 只消费当前 Snapshot exposed facts 和 CategoryInsight 明确 scope 的事实；价格必须同一 item/evidence/variant 绑定。
-3. 失败最多执行一次 grounded rewrite；rewrite 后再次运行同一 Guard，禁止无限循环。
-4. 二次失败返回 deterministic fallback，并在 audit/conversation 中记录 guard、rewrite 和 fallback 的原因及 evidence IDs。
-5. 增加无证据、错误变体价、CategoryInsight 越界、PII、rewrite 仍失败的单测/集成测；历史 8 Flow 的确定性 P0 仍为 0。
-6. 运行完整 pytest、Ruff、diff check 和不依赖外部 Judge 的 8 Flow 回归；再以明确授权决定是否重跑 Judge。
+## 后续两级路线图
 
-后续候选但不应抢占下一主阶段：semantic cache freshness、队列/故障恢复与完整观测、生产模型服务编排、索引增量治理。
+### 第二级：生产运维与安全
+
+在可交付运行闭环稳定后，补齐 LangFuse/指标告警、token budget 与路由降级、工具熔断/优先级队列、prompt-injection/output guard、日志治理、K8s graceful shutdown、灰度与回滚。此阶段才处理课程 16-3 至 16-6 的生产化深度。
+
+### 第三级：数据与业务扩展
+
+再处理增量数据导入、索引原子切换/回滚、证据和 cache 版本生命周期，以及有明确业务需求时的购物车、真实支付/履约适配。在线 Fact Guard/rewrite/fallback 和 P0 硬门禁可作为质量增强插入，但不改变这一级主干顺序。

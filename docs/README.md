@@ -48,3 +48,5 @@
 3. data/catalog_faiss_schema_v2_20260820.md 和 data/category_card_data_contract.md：核对商品与品类事实契约。
 4. experiments/flow_query_eval_20260820.md：读取当前 8 Flow 权威基线。
 5. historical 文档：需要追溯实验或排障时再读。
+
+当前项目主干缺口是课程级可交付运行闭环：前端/API 任务协议、全栈模型服务编排和最小运行观测尚未统一验收。在线 Fact Guard/rewrite/fallback、P0 硬门禁、CategoryInsight 状态机和 cache evidence 刷新均是非阻塞细节增强。下一主阶段及验收以 PROJECT_STATUS_AND_ROADMAP.md 为准。

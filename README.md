@@ -104,4 +104,4 @@ scripts/start_dev.ps1 会等待 FastAPI /health；退出脚本会清理本轮启
 - 检索与数据契约：docs/data/catalog_faiss_schema_v2_20260820.md、docs/data/category_card_data_contract.md。
 - 8 Flow 评测记录：docs/experiments/flow_query_eval_20260820.md。
 
-推荐当前项目主线：在稳定证据链之上做一个有 feature flag 的在线 grounded answer 安全闭环；先实现 shadow mode、单次 bounded rewrite 和确定性 fallback，再决定是否切换生产默认。详细入口和验收见 docs/PROJECT_STATUS_AND_ROADMAP.md。
+推荐当前项目主线：完成课程级可交付运行闭环——对齐前端/API 任务协议，固化 FastAPI、React、Redis、OpenSearch 和模型服务的可复现 Compose profile，并补齐最小 readiness、关联日志和端到端验收。在线 grounded answer、P0 硬门禁、CategoryInsight 状态机和 cache 证据刷新属于后续细节增强。详细入口和验收见 docs/PROJECT_STATUS_AND_ROADMAP.md。
