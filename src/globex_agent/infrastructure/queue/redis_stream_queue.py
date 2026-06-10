@@ -52,7 +52,10 @@ class RedisStreamTaskQueue(TaskQueue):
                 {
                     "task_id": status.task_id,
                     "state": status.state,
+                    "text": status.text or status.final_text,
                     "final_text": status.final_text,
+                    "recommended_cards": status.recommended_cards,
+                    "verification_status": status.verification_status,
                     "error": status.error,
                 },
                 ensure_ascii=False,
@@ -69,7 +72,10 @@ class RedisStreamTaskQueue(TaskQueue):
         return TaskStatus(
             task_id=data["task_id"],
             state=data["state"],
+            text=data.get("text", data.get("final_text", "")),
             final_text=data.get("final_text", ""),
+            recommended_cards=data.get("recommended_cards", []),
+            verification_status=data.get("verification_status", "unavailable"),
             error=data.get("error", ""),
             queue_position=position,
         )

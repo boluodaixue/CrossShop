@@ -71,7 +71,7 @@ class TestQueue:
         assert len(client.entries) == 1
         await queue.set_status(TaskStatus(task_id="task-1", state="done", final_text="ok"))
         status = await queue.get_status("task-1")
-        assert status is not None and status.final_text == "ok"
+        assert status is not None and status.text == "ok" and status.final_text == "ok"
 
     async def test_unparsable_payload_goes_to_dead_letter(self) -> None:
         client = FakeStreamClient()

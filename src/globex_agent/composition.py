@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 import numpy as np
 
 from globex_agent.application.agents.identity import ThreadIdentity
@@ -20,6 +21,10 @@ from globex_agent.application.agents.main_agent import (
 from globex_agent.application.agents.orchestrator import MainAgentOrchestrator
 from globex_agent.application.agents.search_agent import SearchAgentFactory
 from globex_agent.application.agents.trade_agent import TradeAgentFactory
+from globex_agent.application.evidence_verification import (
+    EvidenceVerificationService,
+    OpenAIEvidenceJudge,
+)
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
 from globex_agent.application.usecases.confirmation_usecases import (
     OrderConfirmationService,
@@ -34,8 +39,10 @@ from globex_agent.category_insight import (
     CategoryInsightService,
     CategoryTaxonomy,
 )
+from globex_agent.domain.catalog.exchange_rate import ExchangeRateTable
 from globex_agent.domain.catalog.ports.item_repository import ItemRepository
 from globex_agent.domain.catalog.ports.retrieval_ports import EmbeddingClient
+from globex_agent.domain.shipping.tariff_schedule import TariffSchedule
 from globex_agent.infrastructure.cache.redis_cache import RedisCache
 from globex_agent.infrastructure.cache.semantic_cache import SemanticCache
 from globex_agent.infrastructure.checkpoint import (
@@ -48,6 +55,7 @@ from globex_agent.infrastructure.embedding.bge_m3_embedding import (
     SubprocessBgeM3EmbeddingClient,
 )
 from globex_agent.infrastructure.eventbus import TradeEventBus
+from globex_agent.infrastructure.llm import create_chat_model
 from globex_agent.infrastructure.persistence.in_memory_repositories import (
     InMemoryItemRepository,
     InMemoryOrderRepository,
@@ -120,6 +128,7 @@ class Container:
     db_engine: object | None
     checkpoint_resource: RedisCheckpointResource
     dispatch_result_store: RedisDispatchResultStore
+    evidence_judge_client: httpx.AsyncClient | None = None
 
     async def startup(self) -> None:
         if self.db_engine is not None:
@@ -134,6 +143,8 @@ class Container:
                 logger.warning("队列消费者组创建失败：%s", err)
 
     async def shutdown(self) -> None:
+        if self.evidence_judge_client is not None:
+            await self.evidence_judge_client.aclose()
         await self.vector_index.close()
         close = getattr(self.embedder, "close", None)
         if close is not None:
@@ -174,11 +185,13 @@ async def build_container() -> Container:
         reranker = _build_product_reranker(settings)
 
         item_repo = _build_item_repository()
+        tariff_schedule = TariffSchedule(rates=ExchangeRateTable())
         catalog_search = CatalogSearchUseCase(
             item_repo,
             embedder=embedder,
             vector_index=vector_index,
             reranker=reranker,
+            tariff_schedule=tariff_schedule,
         )
 
         use_database = settings.database_url != "file"
@@ -192,7 +205,7 @@ async def build_container() -> Container:
             preference_store = JsonFilePreferenceStore(settings.data_dir)
             conversation_store = JsonFileConversationStore(settings.data_dir)
 
-        place_order = PlaceOrderUseCase(item_repo, order_repo)
+        place_order = PlaceOrderUseCase(item_repo, order_repo, tariff_schedule=tariff_schedule)
         query_order = QueryOrderUseCase(order_repo)
         cancel_order = CancelOrderUseCase(order_repo)
         confirmation_service = OrderConfirmationService(
@@ -200,6 +213,7 @@ async def build_container() -> Container:
             order_repo,
             place_order,
             cancel_order,
+            tariff_schedule=tariff_schedule,
             ttl_seconds=settings.order_confirmation_ttl_seconds,
         )
 
@@ -252,6 +266,20 @@ async def build_container() -> Container:
             dispatch_result_store=dispatch_result_store,
         )
         sessions = SessionRegistry(main_factory, identity)
+        evidence_judge_client = None
+        evidence_judge = None
+        if settings.online_evidence_judge_model and settings.llm_base_url:
+            evidence_judge_client = httpx.AsyncClient()
+            evidence_judge = OpenAIEvidenceJudge(
+                evidence_judge_client,
+                base_url=settings.llm_base_url,
+                api_key=settings.llm_api_key,
+                model=settings.online_evidence_judge_model,
+                timeout_seconds=settings.evidence_judge_timeout_seconds,
+            )
+        # Retry/fallback turns are plain answer finalization and must not have
+        # access to the production tools or durable Agent graph.
+        answer_finalizer = create_chat_model(settings, bus).bind_tools([])
         orchestrator = MainAgentOrchestrator(
             sessions,
             bus,
@@ -259,6 +287,16 @@ async def build_container() -> Container:
             conversation_store,
             semantic_cache,
             context_size=settings.context_size,
+            evidence_verifier=EvidenceVerificationService(
+                evidence_judge,
+                judge_timeout_seconds=settings.evidence_judge_timeout_seconds,
+                judge_total_timeout_seconds=settings.evidence_judge_total_timeout_seconds,
+            ),
+            answer_finalizer=answer_finalizer,
+            max_generation_attempts=3,
+            turn_timeout_seconds=settings.turn_timeout_seconds,
+            generation_timeout_seconds=settings.generation_timeout_seconds,
+            rewrite_timeout_seconds=settings.rewrite_timeout_seconds,
         )
         return Container(
             settings=settings,
@@ -278,6 +316,7 @@ async def build_container() -> Container:
             db_engine=db_engine,
             checkpoint_resource=checkpoint_resource,
             dispatch_result_store=dispatch_result_store,
+            evidence_judge_client=evidence_judge_client,
         )
     except Exception:
         if dispatch_result_store is not None:
@@ -436,9 +475,7 @@ def _validate_catalog_index_contract(model_name: str, *, max_seq_length: int) ->
     """Ensure query settings match every canonical item-index manifest."""
 
     manifest_paths = sorted(
-        (PROJECT_ROOT / "output" / "index" / "catalog").glob(
-            "*/*/bge-m3-hnsw-ip.manifest.json"
-        )
+        (PROJECT_ROOT / "output" / "index" / "catalog").glob("*/*/bge-m3-hnsw-ip.manifest.json")
     )
     if not manifest_paths:
         raise RuntimeError("formal catalog Faiss manifests are missing")

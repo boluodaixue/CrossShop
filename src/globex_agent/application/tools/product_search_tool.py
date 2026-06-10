@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 from langchain_core.tools import tool
 
@@ -63,7 +64,12 @@ def build_product_search_tool(
             "material_exclude": material_exclude or [],
             "material_unknown_policy": material_unknown_policy,
         }
-        bus.publish(session_id, "tool.invoke", {"tool": "product_search_tool", "args": args})
+        tool_call_id = f"product-search-{uuid4().hex}"
+        bus.publish(
+            session_id,
+            "tool.invoke",
+            {"tool": "product_search_tool", "tool_call_id": tool_call_id, "args": args},
+        )
         try:
             spec = ProductSearchSpec(
                 normalized_query=normalized_query,
@@ -84,26 +90,35 @@ def build_product_search_tool(
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "product_search_tool", "error": str(err)},
+                {
+                    "tool": "product_search_tool",
+                    "tool_call_id": tool_call_id,
+                    "error": str(err),
+                    "model_output": {"error": str(err)},
+                },
             )
             return f"[error] {err}"
+        model_result = {
+            key: value
+            for key, value in result.items()
+            if key != "evidence_snapshots"
+        }
+        model_result["tool_call_id"] = tool_call_id
+        # Keep the exact model-visible payload in the event for audit and
+        # evaluation; no derived field-level evidence catalog is constructed.
         bus.publish(
             session_id,
             "tool.result",
             {
                 "tool": "product_search_tool",
+                "tool_call_id": tool_call_id,
                 "hit_count": len(result["hits"]),
                 "recall_strategy": result["recall_strategy"],
                 "hits": result["hits"],
-                "evidence_refs": result.get("evidence_refs", []),
-                # Snapshots stay in the bounded audit/evaluation event.  The
-                # model receives only ProductCard plus the compact refs below.
                 "evidence_snapshots": result.get("evidence_snapshots", []),
+                "model_output": model_result,
             },
         )
-        model_result = {
-            key: value for key, value in result.items() if key != "evidence_snapshots"
-        }
         return json.dumps(model_result, ensure_ascii=False)
 
     return product_search_tool

@@ -1,6 +1,6 @@
 # Globex 电商搜索 Agent：整体设计与实现说明
 
-> 文档日期：2026-08-21
+> 文档日期：2026-08-23
 > 分支：`codex/migrate-langgraph-ddd`  
 > Python：3.10.20  
 > 用途：让新读者通过本文了解项目当前的全部设计与实现，并能提出改进建议。
@@ -23,7 +23,7 @@ GlobexAgentLearning 是一个用于学习、运行和逐步组装电商搜索 Ag
 本机 4GB GPU 验收 profile（2026-08-21）：Query Embedding 使用本地
 `D:/models/bge-m3` 的 CPU FP32 常驻 worker；Reranker 使用本地
 `D:/models/bge-reranker-v2-m3` 的 CUDA FP16 常驻 worker，`batch_size=16`。
-商品主链仍是 Faiss ANN Top-100 → BGE Reranker → Top-10；只切换运行设备，
+商品主链仍是 Faiss ANN Top-100 → BGE Reranker → 请求 Top-K（在线默认 K=5）；只切换运行设备，
 不改变模型、索引或召回逻辑。启动时预热 CategoryInsight CPU encoder、Embedding
 worker 和 Reranker worker；请求取消会主动终止当前子进程，避免后台线程长期占用
 请求锁。真实基准中 CPU/GPU Query Top-100 重叠为 3/3=1.0；GPU FP16 Reranker
@@ -76,36 +76,31 @@ POST /commerce/intents
     → conversation_store 记录对话和事件
 ```
 
-商品事实采用单向证据链：
+商品事实采用单向冻结链：
 
 ```text
 StandardItem → ProductFactSnapshot → ProductCard → LLM 最终回答
 ```
 
-- `ProductFactSnapshot` 是内部、版本化、可审计的证据 DTO，保存商品/变体精确事实、价格与变体绑定、店铺/库存、provenance、hash 及 `exposed_facts`。
-- `ProductCard` 是给 Search Agent/LLM 的紧凑结构化投影，只增加 `evidence_id` 作为引用，不承载整份原始商品或审计状态。
-- 最终回答只能使用 Snapshot 明确暴露给 Card 的 facts；Fact Guard 不因 Snapshot 内部存在某字段就放行未暴露事实。
-
-商品工具在同一次构造中生成 Card 与 Snapshot。模型只收到 Card 和 evidence ref；审计/评测事件保存 schema-aware Snapshot 白名单，避免通用审计深度限制把 `variants`/`highlights` 截成 `[omitted]`。
-其中 `exposed_facts.highlights` 与 Snapshot/Card 使用同一份最多 8 条的 bounded 商品属性摘要；完整 `StandardItem.attributes` 不进入暴露事实。
+- `ProductFactSnapshot` 是内部、版本化、可审计的事实快照，保留完整 `highlights` 与全部 `variants`；审计保存模型实际收到的精确工具输出，不构造字段级 evidence catalog 或 bounded evidence。
+- 模型只生成最小 `RecommendationDraft`：`answer_text` 与 `selections[{item_id, variant_id|null}]`。它不能生成商品卡结构字段；`answer_text` 可以在冻结证据支持下自然提及商品名、规格、价格和到手价。
+- 后端从本轮冻结 Top-K 的原始 ProductCard/ProductFactSnapshot/ShippingQuote 按选择组装 `recommended_cards`，模型不能填写商品事实。
+- `SemanticEvidenceBundle` 是后端从完整冻结事实确定性生成的在线 Judge 投影：只包含回答 selections 涉及的商品、选中 variant、可说出的报价事实及 CategoryInsight `source_boundary`。完整 SKU、variants、highlights、快照和所有搜索历史仍进入本地审计，但不重复发送给在线 Judge；该投影不拆 claim、不生成 evidence ID。
 
 ### 2.2.1 在线生产链与离线质量链
 
-两条链必须分开理解。在线生产链负责完成一次用户请求；Fact Guard、P0 门禁和
-LLM Judge 不在在线返回路径中。
+两条链必须分开理解。在线生产链负责完成一次用户请求，并强制通过确定性 Fact Guard
+与一次整段 Evidence Judge；未通过或不可用时返回固定保守回答和空卡片。
 
 在线生产链：
 
 ```text
 Query
-  → Orchestrator / context / cache
-  → Main LLM 工具规划
-  → 可选 CategoryInsight（品类 aggregate/reference）
-  → ProductSearch
-  → StandardItem
-  → ProductFactSnapshot + ProductCard
-  → LLM final answer
-  → audit / ConversationStore 持久化
+  → 必要时 CategoryInsight / ProductSearch
+  → 硬过滤 → BGE Reranker → 冻结 Top-K（默认 K=5）
+  → 最小 RecommendationDraft
+  → Fact Guard → 整段 Evidence Judge
+  → 后端 hydrate recommended_cards → final.result / audit
 ```
 
 CategoryInsight 是由 LLM 选择的可选工具，不直接参与商品硬过滤或商品排序；商品硬约束
@@ -116,22 +111,20 @@ CategoryInsight 是由 LLM 选择的可选工具，不直接参与商品硬过�
 
 ```text
 persisted conversation / audit
-  → exposed-evidence parser
-  → deterministic Fact Guard
-  → P0=0 评测门禁
-  → stable evidence catalog
-  → rubric generator
-  → LLM Judge
-  → local schema/ID validation
+  → 真实在线最终回答、卡片、完整模型可见工具输出与在线状态
+  → 独立 Final LLM-as-Judge
+  → local schema validation
   → validated report
 ```
 
-当前“P0=0 后才运行 Judge”是评测执行规范，不是在线生产状态机，也尚未被普通评测命令
-实现为不可绕过的脚本门禁。
+离线不重新运行 Fact Guard、Claim Ledger、逐 claim verifier、evidence catalog 或在线 P0 门禁；
+只运行独立 Final LLM-as-Judge，并按 P0 50%、P1 35%、P2 15%计算 score。PASS 要求在线状态 supported、所有适用 P0 supported 且 score >= 0.7；
+证据缺失、在线状态不可用、Schema 无效、score 缺失或 Judge 异常均为 inconclusive。
 
-### 2.2.2 未实现的下一阶段可信回答设计
+### 2.2.2 历史可信回答设计记录（已由 2026-08-23 在线协议落地）
 
-以下流程是下一阶段设计，当前未实现，不应描述为在线已有能力：
+以下流程保留为历史设计记录；当前在线实现已采用同一原则，并增加最多三次生成、冻结工具证据、
+单次整段 Evidence Judge 和不可用时的保守回答：
 
 ```text
 ProductFactSnapshot / CategoryInsight
@@ -144,17 +137,18 @@ ProductFactSnapshot / CategoryInsight
                        └─ 失败 → deterministic fallback
 ```
 
-当前实现只有离线 `validate_final_response`；没有在线 final-answer Fact Guard、grounded
-rewrite 或确定性 fallback。
+历史版本曾只有离线 `validate_final_response`。截至 2026-08-23，在线
+`evidence_verification.py` 已提供 Fact Guard、SemanticEvidenceBundle、整段 Evidence Judge、有限重写与确定性 fallback；
+离线脚本仍只保留独立 Final LLM-as-Judge。
 
 ### 2.3 事件模型
 
-事件总线是 `TradeEventBus`，按 `shopping_session_id` 路由。事件类型固定为 12 类：
+事件总线是 `TradeEventBus`，按 `shopping_session_id` 路由。事件类型固定为 13 类：
 
 ```text
 agent.dispatch / tool.invoke / tool.result / token.delta / plan.update
 context.compressed / model.fallback / cache.hit / task.queued / task.started
-final.result / error
+final.result / evidence.verify / error
 ```
 
 事件既被 WebSocket 推给前端，也会在启用了 Redis 背板时跨进程广播。
@@ -306,7 +300,8 @@ ProductSearchSpec
 
 初始 Top-100 是运行时粗召回深度；过滤后的合格候选不足 `top_k` 时才逐级补到
 200、400、500。每轮只处理新 `item_id`；达到数量、索引耗尽或 500 即停止。评测文档
-中的 Top-10 是 Recall/MRR/NDCG 的截断口径。达到上限仍不足时返回部分结果和完整诊断。
+中的 Top-10 是历史 Recall/MRR/NDCG 截断口径；在线运行时按请求返回 Top-K，默认 K=5。
+达到上限仍不足时返回部分结果和完整诊断。
 
 召回策略：
 
@@ -787,6 +782,22 @@ fail Flow 数为 0。Flow 1、2、7 没有适用 P0 criterion，因此不把它�
 无效评测假阳性，不代表当前 Agent 真实幻觉。4GB 本机最终配置与基准只引用
 `output/eval/local_4gb_profile.json`：CPU FP32 Query Embedding、GPU FP16 Reranker
 batch16，Top-100 overlap 1.0，组合链路 median 1820.656 ms。
+
+## 12.1 2026-08-23 在线协议最终候选记录
+
+最终 budgetfix 复跑报告为 `output/eval/flow-online-20260823-semantic-0823budgetfix.json/.md`
+和 `output/eval/final-judge-online-20260823-semantic-0823budgetfix.json/.md`：在线 14/14
+REST HTTP 200、14/14 WS `final.result`、14/14 Flow valid/supported，平均 33.151 秒；
+Final Judge 14/14 completed、13/14 quality PASS、mean 0.975。唯一失败为 `legacy-flow-05`：
+P0/P2 通过，P1 因未满足“防水”约束失败，score 0.65。由于未达到 14/14 quality PASS，
+本次是 candidate/诊断记录，不替代旧 8 Flow 权威基线。
+
+当前在线实现的证据分层是：完整冻结 ProductSearch/ProductFactSnapshot/ShippingQuote 供
+Fact Guard、卡片 hydrate 和本地审计使用；后端从 selections 确定性生成
+`SemanticEvidenceBundle`，只把回答涉及的商品、选中 variant、可说出的报价事实和
+CategoryInsight `source_boundary` 发送给整段 Evidence Judge。完整 SKU、variants、highlights
+和历史工具输出不因在线精简而删除。离线只运行 Final LLM-as-Judge，按 P0 50%、P1 35%、P2
+15%计算 score，适用 P0 全过且 score >= 0.7 才能 quality PASS。
 
 ## 11. 建议输入点
 

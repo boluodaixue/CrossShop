@@ -136,13 +136,19 @@ def build_app() -> FastAPI:
             result = await current.orchestrator.handle_intent(intent)
             return SubmitIntentResponse(
                 shopping_session_id=result.shopping_session_id,
+                text=result.final_text,
                 final_text=result.final_text,
+                recommended_cards=result.recommended_cards,
+                verification_status=result.verification_status,
             )
         task_id = await _enqueue(current, intent)
-        final_text = await _await_result(current, task_id, session_id)
+        queued_result = await _await_result(current, task_id, session_id)
         return SubmitIntentResponse(
             shopping_session_id=session_id,
-            final_text=final_text,
+            text=str(queued_result.get("text", queued_result.get("final_text", ""))),
+            final_text=str(queued_result.get("text", queued_result.get("final_text", ""))),
+            recommended_cards=queued_result.get("recommended_cards", []),
+            verification_status=queued_result.get("verification_status", "unavailable"),
         )
 
     @api.post("/commerce/intents/async")
@@ -175,7 +181,10 @@ def build_app() -> FastAPI:
         return {
             "task_id": status.task_id,
             "state": status.state,
-            "final_text": status.final_text,
+            "text": status.text or status.final_text,
+            "final_text": status.text or status.final_text,
+            "recommended_cards": status.recommended_cards,
+            "verification_status": status.verification_status,
             "error": status.error,
             "queue_position": status.queue_position,
         }
@@ -313,7 +322,7 @@ async def _await_result(
     container: Container,
     task_id: str,
     session_id: str,
-) -> str:
+) -> dict:
     assert container.task_queue is not None
     queue = container.bus.subscribe(session_id)
     deadline = time.monotonic() + container.settings.queue_wait_seconds
@@ -324,13 +333,29 @@ async def _await_result(
             except asyncio.TimeoutError:
                 status = await container.task_queue.get_status(task_id)
                 if status is not None and status.state == "done":
-                    return status.final_text
+                    text_value = status.text or status.final_text
+                    return {
+                        "text": text_value,
+                        "final_text": text_value,
+                        "recommended_cards": status.recommended_cards,
+                        "verification_status": status.verification_status,
+                    }
                 if status is not None and status.state == "failed":
-                    return f"[error] {status.error}"
+                    return {
+                        "text": f"[error] {status.error}",
+                        "final_text": f"[error] {status.error}",
+                        "recommended_cards": [],
+                        "verification_status": "unavailable",
+                    }
                 continue
             if event.type == "final.result":
-                return str(event.payload.get("text", ""))
-        return "[error] 处理超时，请稍后重试或改用异步接口查询任务状态"
+                return dict(event.payload)
+        return {
+            "text": "[error] 处理超时，请稍后重试或改用异步接口查询任务状态",
+            "final_text": "[error] 处理超时，请稍后重试或改用异步接口查询任务状态",
+            "recommended_cards": [],
+            "verification_status": "unavailable",
+        }
     finally:
         container.bus.unsubscribe(session_id, queue)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from uuid import uuid4
 
 from langchain_core.tools import tool
 
@@ -40,28 +41,38 @@ def build_category_insight_tool(
             depth: quick 或 deep，deep 额外返回属性分布。
         """
         session_id = ShoppingContext.current_session_id()
+        tool_call_id = f"category-insight-{uuid4().hex}"
         bus.publish(
             session_id,
             "tool.invoke",
-            {"tool": "category_insight_tool", "args": {"category": category, "depth": depth}},
+            {
+                "tool": "category_insight_tool",
+                "tool_call_id": tool_call_id,
+                "args": {"category": category, "depth": depth},
+            },
         )
         try:
             run = await asyncio.to_thread(service.insight, category, depth=depth)
             payload = run.output.model_dump(mode="json")
-            evidence_refs = [
-                ref.model_dump(mode="json")
-                for ref in run.diagnostics.evidence_refs
-            ]
+            evidence_refs = [ref.model_dump(mode="json") for ref in run.diagnostics.evidence_refs]
+            category = str(payload.get("category") or category)
             result = {
                 "insights": payload,
-                "evidence_refs": evidence_refs,
+                # Provenance is an audit/source boundary, not a field-level
+                # evidence catalog and not a model-generated citation list.
+                "provenance": evidence_refs,
                 "source_boundary": _SOURCE_BOUNDARY,
             }
         except Exception as err:  # noqa: BLE001 - knowledge base may be down
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "category_insight_tool", "error": str(err)},
+                {
+                    "tool": "category_insight_tool",
+                    "tool_call_id": tool_call_id,
+                    "error": str(err),
+                    "model_output": {"error": str(err)},
+                },
             )
             return f"[error] 品类知识库不可用：{err}"
         bus.publish(
@@ -69,10 +80,12 @@ def build_category_insight_tool(
             "tool.result",
             {
                 "tool": "category_insight_tool",
+                "tool_call_id": tool_call_id,
                 "category": payload.get("category"),
                 "insights": payload,
-                "evidence_refs": result["evidence_refs"],
+                "provenance": result["provenance"],
                 "source_boundary": _SOURCE_BOUNDARY,
+                "model_output": result,
             },
         )
         return json.dumps(result, ensure_ascii=False)

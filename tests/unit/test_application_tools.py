@@ -107,6 +107,16 @@ class TestProductSearchTool:
         assert payload["hits"]
         assert payload["hits"][0]["item_id"]
         assert queue.qsize() == 2
+        events = [queue.get_nowait(), queue.get_nowait()]
+        result_event = next(event for event in events if event.type == "tool.result")
+        snapshots = {
+            snapshot["item_id"]: snapshot
+            for snapshot in result_event.payload["evidence_snapshots"]
+        }
+        for hit in result_event.payload["hits"]:
+            assert hit["variants"] == snapshots[hit["item_id"]]["exposed_facts"][
+                "variants"
+            ]
 
 
 class TestOrderTools:
@@ -280,7 +290,9 @@ class TestTaskDispatchParallel:
             if event.type == "tool.result"
             and event.payload.get("tool") == "task_dispatch"
         ]
-        assert len(events) == 2
-        starts = [datetime.fromisoformat(event["started_at"]) for event in events]
-        ends = [datetime.fromisoformat(event["finished_at"]) for event in events]
+        assert len(events) >= 2
+        per_dispatch = [event for event in events if event.get("agent")]
+        assert len(per_dispatch) == 2
+        starts = [datetime.fromisoformat(event["started_at"]) for event in per_dispatch]
+        ends = [datetime.fromisoformat(event["finished_at"]) for event in per_dispatch]
         assert starts[0] < ends[1] and starts[1] < ends[0]

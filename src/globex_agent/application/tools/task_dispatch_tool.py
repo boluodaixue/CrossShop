@@ -93,6 +93,7 @@ def build_task_dispatch_tool(
                         "dispatch_id": dispatch_id,
                         "thread_id": thread_id,
                         "cached": True,
+                        "model_output": cached_result,
                     },
                 )
                 return cached_result
@@ -138,6 +139,11 @@ def build_task_dispatch_tool(
                     "started_at": started_at,
                     "finished_at": finished_at,
                     "elapsed_ms": elapsed_ms,
+                    "model_output": {
+                        "subagent_type": subagent_type,
+                        "dispatch_id": dispatch_id,
+                        "output": output,
+                    },
                 },
             )
             result = {
@@ -154,7 +160,11 @@ def build_task_dispatch_tool(
             return result
 
         async def _publish_subagent_event(event_type: str, payload: dict) -> None:
-            bus.publish(session_id, event_type, payload)
+            # A subagent is part of the same unverified generation turn.  Its
+            # token stream must not escape to REST/WS before the parent draft
+            # passes the mandatory verification gate.
+            if event_type != "token.delta":
+                bus.publish(session_id, event_type, payload)
 
         results = await asyncio.gather(
             *(run_one(index, dispatch) for index, dispatch in enumerate(dispatches)),
@@ -168,6 +178,17 @@ def build_task_dispatch_tool(
             )
             for result in results
         ]
-        return json.dumps({"dispatches": payload}, ensure_ascii=False)
+        model_output = {"dispatches": payload}
+        bus.publish(
+            session_id,
+            "tool.result",
+            {
+                "tool": "task_dispatch",
+                "tool_call_id": tool_call_id,
+                "dispatch_count": len(payload),
+                "model_output": model_output,
+            },
+        )
+        return json.dumps(model_output, ensure_ascii=False)
 
     return task_dispatch

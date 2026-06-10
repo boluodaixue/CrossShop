@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from globex_agent.domain.catalog.exchange_rate import ExchangeRateTable
 from globex_agent.domain.catalog.models import AvailabilityStatus, StandardItem
 from globex_agent.domain.catalog.money import Money
 from globex_agent.domain.catalog.ports.item_repository import ItemRepository
@@ -11,6 +12,7 @@ from globex_agent.domain.order.address import Address
 from globex_agent.domain.order.order import Order
 from globex_agent.domain.order.order_line import OrderLine
 from globex_agent.domain.order.ports.order_repository import OrderRepository
+from globex_agent.domain.shipping.tariff_schedule import TariffSchedule
 
 
 @dataclass(frozen=True)
@@ -21,9 +23,19 @@ class OrderItemInput:
 
 
 class PlaceOrderUseCase:
-    def __init__(self, item_repo: ItemRepository, order_repo: OrderRepository) -> None:
+    def __init__(
+        self,
+        item_repo: ItemRepository,
+        order_repo: OrderRepository,
+        tariff_schedule: TariffSchedule | None = None,
+    ) -> None:
         self._item_repo = item_repo
         self._order_repo = order_repo
+        self._tariff = tariff_schedule or TariffSchedule(rates=ExchangeRateTable())
+
+    @property
+    def tariff_schedule(self) -> TariffSchedule:
+        return self._tariff
 
     async def execute(
         self,
@@ -96,6 +108,7 @@ async def _build_order_lines(
                 "variant_id": variant.variant_id if variant is not None else None,
                 "quantity": item.quantity,
                 "title": title,
+                "category": catalog_item.category_path[-1],
                 "variant_display_name": variant_display_name,
                 "unit_price_minor": unit_price.amount_in_minor_units,
                 "currency": unit_price.currency,

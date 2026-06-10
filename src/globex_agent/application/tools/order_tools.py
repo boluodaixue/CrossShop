@@ -151,7 +151,11 @@ def build_prepare_order_tool(
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "prepare_order_tool", "error": str(err)},
+                {
+                    "tool": "prepare_order_tool",
+                    "error": str(err),
+                    "model_output": {"error": str(err)},
+                },
             )
             return f"[error] {err}"
         bus.publish(
@@ -161,6 +165,7 @@ def build_prepare_order_tool(
                 "tool": "prepare_order_tool",
                 "confirmation_required": True,
                 "confirmation_id": preview["confirmation_id"],
+                "model_output": preview,
             },
         )
         return json.dumps(preview, ensure_ascii=False)
@@ -204,13 +209,17 @@ def build_query_order_tool(usecase: QueryOrderUseCase, bus: TradeEventBus):
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "query_order_tool", "error": str(err)},
+                {
+                    "tool": "query_order_tool",
+                    "error": str(err),
+                    "model_output": {"error": str(err)},
+                },
             )
             return f"[error] {err}"
         bus.publish(
             session_id,
             "tool.result",
-            {"tool": "query_order_tool", "order": snapshot},
+            {"tool": "query_order_tool", "order": snapshot, "model_output": snapshot},
         )
         return json.dumps(snapshot, ensure_ascii=False)
 
@@ -250,7 +259,11 @@ def build_prepare_cancel_tool(
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "prepare_cancel_order_tool", "error": str(err)},
+                {
+                    "tool": "prepare_cancel_order_tool",
+                    "error": str(err),
+                    "model_output": {"error": str(err)},
+                },
             )
             return f"[error] {err}"
         bus.publish(
@@ -260,6 +273,7 @@ def build_prepare_cancel_tool(
                 "tool": "prepare_cancel_order_tool",
                 "confirmation_required": True,
                 "confirmation_id": preview["confirmation_id"],
+                "model_output": preview,
             },
         )
         return json.dumps(preview, ensure_ascii=False)

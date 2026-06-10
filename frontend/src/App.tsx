@@ -56,10 +56,9 @@ export default function App() {
       };
       ws.onmessage = (message) => {
         const event: TradeEvent = JSON.parse(message.data);
-        if (event.type === "token.delta") {
-          setStreaming((prev) => prev + (event.payload.token ?? ""));
-          return;
-        }
+        // Unverified generation deltas are intentionally not published by
+        // the backend.  Ignore a stale/legacy delta defensively as well.
+        if (event.type === "token.delta") return;
         setEvents((prev) => [...prev, event]);
         if (event.type === "final.result") {
           setStreaming("");

@@ -12,6 +12,8 @@ export type TradeEventType =
   | "task.queued"
   | "task.started"
   | "final.result"
+  | "evidence.freeze"
+  | "evidence.verify"
   | "error";
 
 export interface TradeEvent {
@@ -29,6 +31,7 @@ export interface LandedPrice {
   de_minimis_applied: boolean;
   landed_total_major: number;
   currency: string;
+  quantity: number;
   unavailable_reason?: string;
 }
 
@@ -38,10 +41,19 @@ export interface ProductCard {
   brand: string;
   category: string;
   origin_country: string;
-  price_major: number;
+  price_major: number | null;
   currency: string;
   highlights: string[];
-  variants: { variant_id: string; spec: string; price_major: number; currency: string }[];
+  variants: {
+    variant_id: string;
+    display_name: string;
+    options: { code?: string; name: string; value: string }[];
+    price_major: number | null;
+    currency: string;
+    availability: string;
+    landed_price?: LandedPrice;
+  }[];
+  selected_variant_id?: string;
   score: number;
   landed_price?: LandedPrice;
 }

@@ -57,7 +57,6 @@ _PLATFORM_ORIGIN: dict[Platform, str] = {
 
 @dataclass(frozen=True)
 class ProductCard:
-    evidence_id: str
     item_id: str
     title: str
     brand: str
@@ -84,7 +83,6 @@ class ProductCard:
 
     def to_dict(self) -> dict:
         card: dict[str, Any] = {
-            "evidence_id": self.evidence_id,
             "item_id": self.item_id,
             "title": self.title,
             "brand": self.brand,
@@ -221,10 +219,7 @@ class CatalogSearchUseCase:
             "returned_count": returned_count,
             "is_partial": returned_count < spec.top_k,
             "filtered_count_by_reason": filtered_count_by_reason,
-            "evidence_refs": [snapshot.evidence_ref() for snapshot in snapshots],
-            "evidence_snapshots": [
-                snapshot.to_persisted_dict() for snapshot in snapshots
-            ],
+            "evidence_snapshots": [snapshot.to_persisted_dict() for snapshot in snapshots],
         }
         if exhaustion_reason is not None:
             result["exhaustion_reason"] = exhaustion_reason
@@ -367,7 +362,8 @@ class CatalogSearchUseCase:
     ) -> ProductCard:
         price = _primary_price_money(item)
         landed_price: dict | None = None
-        if spec.ship_to and price is not None:
+        variant_landed_prices: dict[str, dict] = {}
+        if spec.ship_to and not item.variants and price is not None:
             try:
                 quote = self._tariff.quote(
                     subtotal=price,
@@ -378,12 +374,43 @@ class CatalogSearchUseCase:
                 )
                 landed_price = quote.to_dict()
             except ValueError as err:
-                landed_price = {"unavailable_reason": str(err)}
+                landed_price = {
+                    "unavailable_reason": str(err),
+                    "currency": spec.target_currency,
+                    "ship_to": spec.ship_to.strip().upper(),
+                    "quantity": 1,
+                }
+        elif spec.ship_to and item.variants:
+            for variant in item.variants:
+                if (
+                    variant.price_cny is None
+                    or variant.availability is not AvailabilityStatus.AVAILABLE
+                ):
+                    continue
+                try:
+                    quote = self._tariff.quote(
+                        subtotal=Money.from_major_units(float(variant.price_cny), "CNY"),
+                        category=_category_label(item),
+                        ship_to=spec.ship_to,
+                        quantity=1,
+                        target_currency=spec.target_currency,
+                    )
+                    variant_landed_prices[variant.variant_id] = quote.to_dict()
+                except ValueError as err:
+                    # Keep the reason beside the exact SKU.  A top-level
+                    # unavailable quote would incorrectly apply to every SKU.
+                    variant_landed_prices[variant.variant_id] = {
+                        "unavailable_reason": str(err),
+                        "currency": spec.target_currency,
+                        "ship_to": spec.ship_to.strip().upper(),
+                        "quantity": 1,
+                    }
         snapshot = snapshot or build_product_fact_snapshot(item)
         card = product_card_from_snapshot(
             snapshot,
             score=score,
             landed_price=landed_price,
+            variant_landed_prices=variant_landed_prices,
             price_min_major=_variant_price_range(item)[0],
             price_max_major=_variant_price_range(item)[1],
             requires_variant_selection=bool(item.variants),

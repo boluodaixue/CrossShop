@@ -11,6 +11,7 @@ const LABELS: Record<string, string> = {
   "task.queued": "任务入队",
   "task.started": "任务开始",
   "final.result": "最终回复",
+  "evidence.verify": "在线证据验证",
   error: "异常",
 };
 
@@ -48,6 +49,8 @@ function summarize(event: TradeEvent): string {
       return `任务 ${p.task_id ?? ""} ${event.type === "task.started" ? "开始" : "已入队"}`;
     case "final.result":
       return String(p.text ?? "").slice(0, 60);
+    case "evidence.verify":
+      return `${p.verification_status ?? ""}：${String(p.reason ?? "").slice(0, 80)}`;
     case "error":
       return String(p.message ?? "");
     default:

@@ -10,6 +10,11 @@
 | PROJECT_STATUS_AND_ROADMAP.md | current | 项目完整性审计、依赖关系和下一主阶段验收 |
 | PROJECT_AUDIT_AND_REMEDIATION.md | current + historical sections | 问题修复、历史失效评测和非阻塞技术债 |
 | experiments/flow_query_eval_20260820.md | current + historical sections | 8 Flow 权威评测及历史中间结果边界 |
+| experiments/flow_rag_regression_20260822.md | candidate + historical evidence | 扩展 14 Flow RAG 回归评测、来源盘点和外部阻塞记录 |
+| experiments/flow_rag_regression_complete_snapshot_20260822.md | historical candidate | 旧商品/SKU exposed snapshot 口径下的 14 Flow 记录；其中逐 claim 结果已被当前在线整段验证协议替代 |
+| experiments/flow_online_evidence_verification_20260823.md | candidate + diagnostic | 当前在线证据验证协议、SemanticEvidenceBundle、预算修复和最终 14 Flow 结果 |
+| output/eval/flow-online-20260823-0309.json | candidate + inconclusive | 新在线协议的 14 Flow 逐项原始结果；外部主模型连接失败时的完整样本 |
+| output/eval/final-judge-online-20260823-0309.md | candidate + inconclusive | 独立 Final LLM-as-Judge 汇总；缺在线证据的样本不计通过 |
 | data/catalog_faiss_schema_v2_20260820.md | current | 商品索引 schema-v2、分区和运行契约 |
 | data/catalog_schema_v2_migration_20260820.md | current | schema-v2 迁移记录与验证 |
 | data/category_card_data_contract.md | current | CategoryInsight 卡片、provenance 和价格范围口径 |
@@ -49,4 +54,4 @@
 4. experiments/flow_query_eval_20260820.md：读取当前 8 Flow 权威基线。
 5. historical 文档：需要追溯实验或排障时再读。
 
-当前项目主干缺口是课程级可交付运行闭环：前端/API 任务协议、全栈模型服务编排和最小运行观测尚未统一验收。在线 Fact Guard/rewrite/fallback、P0 硬门禁、CategoryInsight 状态机和 cache evidence 刷新均是非阻塞细节增强。下一主阶段及验收以 PROJECT_STATUS_AND_ROADMAP.md 为准。
+当前项目主干缺口仍是课程级可交付运行闭环：前端/API 任务协议、全栈模型服务编排和最小运行观测尚未统一验收。本轮在线 Fact Guard、SemanticEvidenceBundle、整段 Evidence Judge、后端卡片 hydrate、订单报价一致性、WS/预算修复与 Final Judge score 已落地；最终 14 Flow 为 14/14 REST/WS valid、14/14 online supported，Final Judge 为 14/14 completed、13/14 quality PASS、mean 0.975。`legacy-flow-05` 因 P1 防水约束失败，score 0.65，因此仍是 candidate/诊断记录，不替代旧 8 Flow。详见 `output/eval/flow-online-20260823-semantic-0823budgetfix.json/.md` 与 `output/eval/final-judge-online-20260823-semantic-0823budgetfix.json/.md`。下一主阶段及验收以 PROJECT_STATUS_AND_ROADMAP.md 为准。

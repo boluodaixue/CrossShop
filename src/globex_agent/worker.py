@@ -66,7 +66,10 @@ async def main() -> None:
                 TaskStatus(
                     task_id=task.task_id,
                     state="done",
+                    text=result.final_text,
                     final_text=result.final_text,
+                    recommended_cards=result.recommended_cards,
+                    verification_status=result.verification_status,
                 )
             )
         except Exception as err:  # noqa: BLE001 - queue decides redelivery

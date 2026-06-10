@@ -18,7 +18,12 @@ class SubmitIntentRequest(BaseModel):
 
 class SubmitIntentResponse(BaseModel):
     shopping_session_id: str
+    text: str
+    # Kept for clients that still read the pre-2026-08-23 field.  The server
+    # always sets it to the same value as text.
     final_text: str
+    recommended_cards: list[dict] = Field(default_factory=list)
+    verification_status: str = "unavailable"
 
 
 class CancelOrderRequest(BaseModel):

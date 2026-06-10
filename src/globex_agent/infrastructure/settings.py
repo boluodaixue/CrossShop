@@ -31,6 +31,8 @@ class Settings:
     llm_model: str
     llm_fallback_model: str
     llm_judge: str
+    online_evidence_judge_model: str
+    eval_final_judge_model: str
     port: int
     log_level: str
     data_dir: Path
@@ -57,6 +59,11 @@ class Settings:
     llm_max_concurrency: int
     llm_min_interval_seconds: float
     llm_max_retries: int
+    turn_timeout_seconds: float
+    generation_timeout_seconds: float
+    rewrite_timeout_seconds: float
+    evidence_judge_timeout_seconds: float
+    evidence_judge_total_timeout_seconds: float
     tavily_api_key: str
     opensearch_endpoint: str
     category_index: str
@@ -128,6 +135,14 @@ def load_settings() -> Settings:
         llm_model=llm_model,
         llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL", "qwen-plus"),
         llm_judge=os.getenv("LLM_JUDGE", ""),
+        online_evidence_judge_model=os.getenv(
+            "ONLINE_EVIDENCE_JUDGE_MODEL",
+            "qwen-plus",
+        ),
+        eval_final_judge_model=os.getenv(
+            "EVAL_FINAL_JUDGE_MODEL",
+            "qwen-plus",
+        ),
         port=int(os.getenv("PORT", "8000")),
         log_level=os.getenv("LOG_LEVEL", "info"),
         data_dir=data_dir,
@@ -152,9 +167,7 @@ def load_settings() -> Settings:
         tool_result_limit=int(os.getenv("TOOL_RESULT_LIMIT", "20000")),
         reply_token_budget=int(os.getenv("REPLY_TOKEN_BUDGET", "0")),
         tool_failure_threshold=int(os.getenv("TOOL_FAILURE_THRESHOLD", "3")),
-        tool_circuit_reset_seconds=float(
-            os.getenv("TOOL_CIRCUIT_RESET_SECONDS", "60")
-        ),
+        tool_circuit_reset_seconds=float(os.getenv("TOOL_CIRCUIT_RESET_SECONDS", "60")),
         cors_origins=[
             origin.strip()
             for origin in os.getenv(
@@ -164,10 +177,17 @@ def load_settings() -> Settings:
             if origin.strip()
         ],
         llm_max_concurrency=int(os.getenv("LLM_MAX_CONCURRENCY", "2")),
-        llm_min_interval_seconds=float(
-            os.getenv("LLM_MIN_INTERVAL_SECONDS", "1.0")
-        ),
+        llm_min_interval_seconds=float(os.getenv("LLM_MIN_INTERVAL_SECONDS", "1.0")),
         llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "2")),
+        turn_timeout_seconds=float(os.getenv("TURN_TIMEOUT_SECONDS", "85")),
+        generation_timeout_seconds=float(os.getenv("GENERATION_TIMEOUT_SECONDS", "45")),
+        rewrite_timeout_seconds=float(os.getenv("REWRITE_TIMEOUT_SECONDS", "25")),
+        evidence_judge_timeout_seconds=float(
+            os.getenv("EVIDENCE_JUDGE_TIMEOUT_SECONDS", "30")
+        ),
+        evidence_judge_total_timeout_seconds=float(
+            os.getenv("EVIDENCE_JUDGE_TOTAL_TIMEOUT_SECONDS", "70")
+        ),
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         opensearch_endpoint=os.getenv(
             "GLOBEX_OPENSEARCH_ENDPOINT",
@@ -196,9 +216,7 @@ def load_settings() -> Settings:
             "GLOBEX_CATEGORY_RERANKER_DEVICE",
             "cuda:0",
         ),
-        category_reranker_batch_size=int(
-            os.getenv("GLOBEX_CATEGORY_RERANKER_BATCH_SIZE", "1")
-        ),
+        category_reranker_batch_size=int(os.getenv("GLOBEX_CATEGORY_RERANKER_BATCH_SIZE", "1")),
         category_reranker_fp32=_env_flag(
             "GLOBEX_CATEGORY_RERANKER_FP32",
             default=False,
@@ -233,7 +251,5 @@ def load_settings() -> Settings:
                 str(data_dir / "indexes" / "globex_items.faiss"),
             )
         ),
-        order_confirmation_ttl_seconds=int(
-            os.getenv("ORDER_CONFIRMATION_TTL_SECONDS", "300")
-        ),
+        order_confirmation_ttl_seconds=int(os.getenv("ORDER_CONFIRMATION_TTL_SECONDS", "300")),
     )

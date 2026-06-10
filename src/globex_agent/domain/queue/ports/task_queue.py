@@ -56,7 +56,10 @@ class IntentTask:
 class TaskStatus:
     task_id: str
     state: str  # queued / running / done / failed
+    text: str = ""
     final_text: str = ""
+    recommended_cards: list[dict] = field(default_factory=list)
+    verification_status: str = "unavailable"
     error: str = ""
     queue_position: int = 0
 

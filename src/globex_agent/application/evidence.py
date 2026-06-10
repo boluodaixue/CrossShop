@@ -24,11 +24,17 @@ from globex_agent.domain.catalog.models import (
 )
 
 PRODUCT_FACT_SCHEMA_VERSION = "product-fact-snapshot-v1"
-_SNAPSHOT_MAX_BYTES = 120_000
 _SNAPSHOT_MAX_DEPTH = 8
 _SNAPSHOT_MAX_LIST_ITEMS = 20
-_SNAPSHOT_MAX_VARIANTS = 20
 _SNAPSHOT_MAX_STRING_CHARS = 2_000
+_FULL_EVIDENCE_LIST_KEYS = {
+    "variants",
+    "options",
+    "highlights",
+    "category_path",
+    "ships_to",
+    "exposed_fields",
+}
 
 
 class EvidenceModel(BaseModel):
@@ -55,9 +61,9 @@ class VariantFact(EvidenceModel):
 class ProductFactSnapshot(EvidenceModel):
     """Internal, versioned evidence DTO for one normalized product.
 
-    ``exposed_fields`` and ``exposed_facts`` are the boundary consumed by the
-    final-answer guard.  Fields present elsewhere in this snapshot are not
-    automatically legal to claim.
+    ``exposed_fields`` and ``exposed_facts`` describe the exact complete
+    projection that was made available to the model and is persisted for
+    audit.  They are descriptive data, not a field-level evidence catalog.
     """
 
     evidence_id: str
@@ -97,7 +103,6 @@ class ProductFactSnapshot(EvidenceModel):
             "schema_version": self.schema_version,
         }
 
-
 def build_product_fact_snapshot(item: StandardItem) -> ProductFactSnapshot:
     """Build one deterministic snapshot from one ``StandardItem``."""
 
@@ -119,7 +124,7 @@ def build_product_fact_snapshot(item: StandardItem) -> ProductFactSnapshot:
     highlights = [
         f"{attribute.name}: {attribute.value}{(' ' + attribute.unit) if attribute.unit else ''}"
         for attribute in item.attributes
-    ][:8]
+    ]
     exposed_fields = [
         "item_id",
         "title",
@@ -211,6 +216,7 @@ def product_card_from_snapshot(
     *,
     score: float,
     landed_price: dict[str, Any] | None,
+    variant_landed_prices: dict[str, dict[str, Any]] | None = None,
     price_min_major: float | None,
     price_max_major: float | None,
     requires_variant_selection: bool,
@@ -224,7 +230,6 @@ def product_card_from_snapshot(
     from globex_agent.application.usecases.catalog_search import ProductCard
 
     return ProductCard(
-        evidence_id=snapshot.evidence_id,
         item_id=snapshot.item_id,
         title=snapshot.title,
         brand=snapshot.brand or "",
@@ -241,14 +246,7 @@ def product_card_from_snapshot(
         availability=snapshot.inventory.status.value,
         highlights=list(snapshot.highlights),
         variants=[
-            {
-                "variant_id": variant.variant_id,
-                "options": list(variant.options),
-                "display_name": variant.display_name,
-                "price_major": _decimal_float(variant.price_major),
-                "currency": variant.currency.value,
-                "availability": variant.inventory.status.value,
-            }
+            _variant_card(variant, (variant_landed_prices or {}).get(variant.variant_id))
             for variant in snapshot.variants
         ],
         score=score,
@@ -262,7 +260,12 @@ def product_card_from_snapshot(
 
 
 def sanitize_snapshot_payload(value: Any) -> Any:
-    """Persist only the ProductFactSnapshot whitelist, preserving variants."""
+    """Persist the complete model-visible ProductFactSnapshot whitelist.
+
+    The product search projection and this payload are both built from the
+    same snapshot.  PII is still redacted and provenance remains bounded, but
+    model-visible product fields are never reduced by an audit-size fallback.
+    """
 
     if isinstance(value, ProductFactSnapshot):
         value = value.model_dump(mode="python")
@@ -293,28 +296,28 @@ def sanitize_snapshot_payload(value: Any) -> Any:
             "exposed_fields",
             "exposed_facts",
         }
-        payload = _sanitize_snapshot_pii(
-            {key: _jsonable(value[key]) for key in allowed if key in value}
+        return _sanitize_snapshot_pii(
+            {key: _jsonable(value[key]) for key in allowed if key in value},
+            max_string_chars=None,
         )
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded.encode("utf-8")) > _SNAPSHOT_MAX_BYTES:
-            # Keep the useful exposed variant facts while reducing only the
-            # bounded audit projection.  Do not use the generic depth marker
-            # for variants/highlights: those fields must remain inspectable.
-            payload["variants"] = list(payload.get("variants") or [])[
-                : _SNAPSHOT_MAX_VARIANTS
-            ]
-            payload["highlights"] = list(payload.get("highlights") or [])[:8]
-            payload["provenance"] = _sanitize_snapshot_pii(
-                payload.get("provenance", {}),
-                max_list_items=8,
-                max_string_chars=600,
-            )
-            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded.encode("utf-8")) > _SNAPSHOT_MAX_BYTES:
-            payload["provenance"] = {"completeness": "bounded_truncated"}
-        return payload
     return value
+
+
+def _variant_card(
+    variant: VariantFact,
+    landed_price: dict[str, Any] | None,
+) -> dict[str, Any]:
+    card = {
+        "variant_id": variant.variant_id,
+        "options": list(variant.options),
+        "display_name": variant.display_name,
+        "price_major": _decimal_float(variant.price_major),
+        "currency": variant.currency.value,
+        "availability": variant.inventory.status.value,
+    }
+    if landed_price is not None:
+        card["landed_price"] = landed_price
+    return card
 
 
 def _variant_fact(variant: StandardItemVariant) -> VariantFact:
@@ -325,9 +328,7 @@ def _variant_fact(variant: StandardItemVariant) -> VariantFact:
             {"code": option.code, "name": option.name, "value": option.value}
             for option in variant.options
         ],
-        display_name=" / ".join(
-            f"{option.name}: {option.value}" for option in variant.options
-        ),
+        display_name=" / ".join(f"{option.name}: {option.value}" for option in variant.options),
         price_major=variant.price_cny,
         price_source=variant.price_source.value,
         inventory=InventoryFact(
@@ -351,9 +352,7 @@ def _derived_origin(item: StandardItem) -> tuple[str, str]:
     )
     if explicit:
         return explicit, "explicit"
-    locale_country = {"cn": "CN", "jp": "JP"}.get(
-        item.locale.value if item.locale else ""
-    )
+    locale_country = {"cn": "CN", "jp": "JP"}.get(item.locale.value if item.locale else "")
     if locale_country:
         return locale_country, "derived"
     return (
@@ -371,9 +370,7 @@ def _derived_origin(item: StandardItem) -> tuple[str, str]:
 def _derived_ships_to(item: StandardItem) -> tuple[list[str], str]:
     if item.ships_to is not None:
         return list(item.ships_to), "explicit"
-    locale_ships = {"cn": ["CN"], "jp": ["JP"]}.get(
-        item.locale.value if item.locale else ""
-    )
+    locale_ships = {"cn": ["CN"], "jp": ["JP"]}.get(item.locale.value if item.locale else "")
     if locale_ships:
         return locale_ships, "derived"
     return {
@@ -393,8 +390,7 @@ def _variant_price_range(
     prices = [
         float(variant.price_cny)
         for variant in item.variants
-        if variant.price_cny is not None
-        and variant.availability is AvailabilityStatus.AVAILABLE
+        if variant.price_cny is not None and variant.availability is AvailabilityStatus.AVAILABLE
     ]
     if not prices:
         return None
@@ -404,8 +400,10 @@ def _variant_price_range(
 def _attribute_text(item: StandardItem, names: set[str]) -> str | None:
     for attribute in item.attributes:
         if (
-            attribute.code.casefold() in names or attribute.name.casefold() in names
-        ) and isinstance(attribute.value, str) and attribute.value.strip():
+            (attribute.code.casefold() in names or attribute.name.casefold() in names)
+            and isinstance(attribute.value, str)
+            and attribute.value.strip()
+        ):
             return attribute.value.strip()
     return None
 
@@ -457,7 +455,7 @@ def _sanitize_snapshot_pii(
     key: str = "",
     depth: int = 0,
     max_list_items: int = _SNAPSHOT_MAX_LIST_ITEMS,
-    max_string_chars: int = _SNAPSHOT_MAX_STRING_CHARS,
+    max_string_chars: int | None = _SNAPSHOT_MAX_STRING_CHARS,
 ) -> Any:
     if key.casefold() in _PII_KEYS:
         return "[redacted]"
@@ -470,12 +468,17 @@ def _sanitize_snapshot_pii(
                 key=str(child_key),
                 depth=depth + 1,
                 max_list_items=max_list_items,
-                max_string_chars=max_string_chars,
+                max_string_chars=(
+                    _SNAPSHOT_MAX_STRING_CHARS
+                    if str(child_key) == "provenance"
+                    else max_string_chars
+                ),
             )
-            for child_key, child in list(value.items())[:50]
+            for child_key, child in value.items()
         }
     if isinstance(value, list):
-        limit = _SNAPSHOT_MAX_VARIANTS if key == "variants" else max_list_items
+        limit = None if key in _FULL_EVIDENCE_LIST_KEYS else max_list_items
+        children = value if limit is None else value[:limit]
         return [
             _sanitize_snapshot_pii(
                 child,
@@ -484,8 +487,9 @@ def _sanitize_snapshot_pii(
                 max_list_items=max_list_items,
                 max_string_chars=max_string_chars,
             )
-            for child in value[:limit]
+            for child in children
         ]
     if isinstance(value, str):
-        return _PHONE_RE.sub("[redacted]", value)[:max_string_chars]
+        sanitized = _PHONE_RE.sub("[redacted]", value)
+        return sanitized if max_string_chars is None else sanitized[:max_string_chars]
     return value

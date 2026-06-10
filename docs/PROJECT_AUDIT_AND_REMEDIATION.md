@@ -16,7 +16,7 @@
 
 ### D-003 修复顺序
 
-本轮只处理 P0-001“运行时检索链与已评测主链不一致”。P0-002 规格/下单问题已经完成根因定位和统一契约草案，但本轮不修改其代码或数据。
+本节记录建立时的 P0-001 检索链审计；随后累积的 P0-002/P0-003 商品报价、订单确认和在线可信回答改动已在当前代码中实现并单独验收。当前实现状态以本文件后续状态表、`docs/PROJECT_STATUS_AND_ROADMAP.md` 和最新实验记录为准。
 
 ### D-004 LangGraph Redis Checkpoint 主线
 
@@ -155,7 +155,7 @@ StandardItemVariant
 | P1-003 | P1 | 待处理 | 熔断器可能把业务校验错误当系统故障，half-open 竞争控制不足 | 需要只统计超时/连接/5xx 等可重试故障，并保证同一依赖只有一个 half-open probe。 |
 | P1-004 | P1 | 待处理 | 上下文压缩只做粗粒度截断，配置项未真正接线 | `tool_result_limit`、`reply_token_budget` 已配置但未形成统一 token budget；长工具结果和历史仍可能挤爆上下文。 |
 | P1-005 | P1 | 待处理 | 语义缓存 namespace 硬编码 `prompt-v1`，缺少数据/规则指纹 | prompt、模型、商品索引、汇率、税费规则改变后可能复用陈旧答案。 |
-| P1-006 | P1 | 证据契约已修复，确定性验收完成 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 旧批次原始 18 项 `fact_violations`（`3/0/3/1/4/2/2/3`）均为评测假阳性，根因分为审计深层截断、变体别名映射、范围/跨商品绑定、预算/非商品金额与重叠正则四类；新批次 8/8 Flow 正常且确定性 P0=0。LLM Judge 有界尝试因外部 endpoint HTTP 500 阻塞，未形成评分。 |
+| P1-006 | P1 | 证据契约与评分链已修复并验收 | Agent 评测样本和判分不足以支撑“系统可用”结论 | 旧批次原始 18 项 `fact_violations`（`3/0/3/1/4/2/2/3`）均为评测假阳性；新在线协议已完成 14/14 valid/supported、Final Judge 14/14 completed，13/14 quality PASS，mean 0.975。唯一失败 `legacy-flow-05` 为 P1 防水约束，score 0.65；因未达到 14/14 PASS，仍不升级为权威 14 Flow。 |
 | P1-007 | P1 | 待处理 | 商品检索外部 Top-K 契约不统一 | `SearchRequest` 最大 50，而 `ProductSearchSpec` 仅要求正数；需统一默认值、最大值和过滤后补位语义。 |
 | P1-008 | P1 | 待处理 | 跨平台/locale 检索路由未进入应用主链 | 已有 router、fusion、canonical 等基础设施，但 composition 的 `CatalogSearchUseCase` 只使用分区 Faiss 合并，没有按 platform/locale 约束查询。 |
 | P1-009 | P1 | 部分修复，仍待处理 | Docker/部署产物与本机运行条件不闭合 | compose 已切到固定 Redis 8.2.8 并补 checkpoint 配置；`.dockerignore` 排除 `output`、OpenSearch 初始化和模型/索引镜像闭合仍待处理。 |
@@ -342,9 +342,9 @@ Judge 外部重评尚未完成：请求在向配置的第三方 endpoint 发出�
 
 | 状态 | 问题 | 真实边界 |
 |---|---|---|
-| 未实现/下一阶段 | 在线 final-answer Fact Guard | 当前 `validate_final_response` 只由离线 eval parser 调用 |
-| 未实现/下一阶段 | grounded rewrite 与 deterministic fallback | 当前只有模型上游瞬时故障 fallback，没有事实失败后的回答修复 |
-| 评测规范 | P0=0 后运行 Judge | 当前是执行顺序约定，不是脚本不可绕过状态机 |
+| 已完成（2026-08-23） | 在线 final-answer Fact Guard | `application/evidence_verification.py` 强制执行结构/报价硬校验与整段 Evidence Judge |
+| 已完成（2026-08-23） | grounded rewrite 与 deterministic fallback | 最多三次生成；第 2/3 次冻结证据且禁工具，不可用或失败时固定保守回答 |
+| 评测规范 | 在线门禁后运行 Final Judge | 离线只读取真实在线最终回答、卡片、完整模型可见工具输出和在线状态；缺失即 inconclusive |
 | 设计风险 | CategoryInsight 调用顺序依赖 LLM prompt | 没有代码级“先品类、后商品”的强制编排 |
 | 设计风险 | semantic cache 可能绕过当轮证据刷新 | cache hit 可直接返回历史 final text |
 | 评测覆盖待核对 | CategoryInsight `components` 在线/审计存在，但 Judge parser 当前主要覆盖 category、tiers、attributes、bestsellers | 需要决定是否纳入稳定 catalog |
@@ -355,9 +355,30 @@ Judge 外部重评尚未完成：请求在向配置的第三方 endpoint 发出�
 ProductFactSnapshot / CategoryInsight
   → LLM draft answer
   → 在线 Fact Guard
-  → 通过返回；失败则 grounded rewrite
-  → 再次 Fact Guard
-  → 仍失败时 deterministic fallback
+  → 整段 Evidence Judge
+  → 通过后后端 hydrate 推荐卡
+  → 失败则 grounded rewrite（最多 3 次，后两次冻结证据且禁工具）
+  → 仍失败或不可用时 deterministic fallback + 空卡
 ```
 
-该流程目前未实现，不能与当前离线 P0/Judge 报告混为在线门禁。
+以上流程图保留为历史设计记录；2026-08-23 当前在线实现已落地，离线报告仍不把 Final Judge
+误写成在线授权，也不重新引入离线 Fact Guard、Claim Ledger 或逐 claim verifier。
+
+## 2026-08-23 最终在线协议收束记录
+
+最终可出站复跑使用 `output/eval/flow-online-20260823-semantic-0823budgetfix.json/.md` 和
+`output/eval/final-judge-online-20260823-semantic-0823budgetfix.json/.md`：14/14 REST HTTP 200、
+14/14 WS `final.result`、14/14 Flow valid/supported，平均耗时 33.151 秒；Final Judge
+14/14 completed、13/14 quality PASS、mean 0.975。`legacy-flow-05` 的 P0/P2 通过，P1
+因没有满足用户“防水”约束失败，score 0.65。该结果是候选/诊断记录，不替代旧 8 Flow 权威基线。
+
+当前协议的关键收束：最后一次成功且非空 ProductSearch 冻结权威 Top-K；Fact Guard 使用完整冻结
+商品事实、完整 variants 和报价；后端生成 SemanticEvidenceBundle，只向在线 Judge 发送
+answer_text 实际涉及的商品、选中 variant、可说出的报价事实和 CategoryInsight `source_boundary`；
+完整原始工具输出、快照、highlights、variants 和审计 provenance 继续本地保存。离线只运行独立
+Final LLM-as-Judge，按 P0 50%、P1 35%、P2 15%计算 score，所有适用 P0 supported 且 score
+>= 0.7 才能 quality PASS。
+
+本轮还完成了 WS terminal grace、整轮/重写/Judge 有界预算、错误类型记录和前端只显示验证后的卡片。
+完整 pytest 256 passed、最终增量定向测试 25 passed，目标 Ruff、前端 build、Docker config 和
+`git diff --check` 通过。FastAPI 与本轮模型 worker 已关闭，Redis/OpenSearch 保留运行。

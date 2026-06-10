@@ -45,6 +45,7 @@ _BASE_FREIGHT_CNY_MINOR: dict[str, int] = {
 @dataclass(frozen=True)
 class ShippingQuote:
     ship_to: str
+    quantity: int
     subtotal: Money
     freight: Money
     tariff: Money
@@ -57,6 +58,7 @@ class ShippingQuote:
     def to_dict(self) -> dict:
         return {
             "ship_to": self.ship_to,
+            "quantity": self.quantity,
             "subtotal_major": self.subtotal.to_major_units(),
             "freight_major": self.freight.to_major_units(),
             "tariff_major": self.tariff.to_major_units(),
@@ -83,6 +85,8 @@ class TariffSchedule:
         target_currency: str,
     ) -> ShippingQuote:
         """按目的国规则计算到手价三要素，全部折算为 target_currency。"""
+        ship_to = ship_to.strip().upper()
+        target_currency = target_currency.strip().upper()
         if ship_to not in _TARIFF_RATES:
             raise ValueError(f"暂不支持的目的国：{ship_to}（支持 {self.supported_destinations()}）")
         if quantity <= 0:
@@ -110,6 +114,7 @@ class TariffSchedule:
 
         return ShippingQuote(
             ship_to=ship_to,
+            quantity=quantity,
             subtotal=subtotal_target,
             freight=freight_target,
             tariff=tariff_target,

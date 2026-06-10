@@ -22,6 +22,7 @@ from globex_agent.domain.catalog.ports.item_repository import ItemRepository
 from globex_agent.domain.order.address import Address
 from globex_agent.domain.order.order import Order
 from globex_agent.domain.order.ports.order_repository import OrderRepository
+from globex_agent.domain.shipping.tariff_schedule import TariffSchedule
 
 
 class ConfirmationStatus(str, Enum):
@@ -165,6 +166,7 @@ class OrderConfirmationService:
         cancel_order,
         store: InMemoryConfirmationIntentStore | None = None,
         ttl_seconds: int = 300,
+        tariff_schedule: TariffSchedule | None = None,
     ) -> None:
         if ttl_seconds <= 0:
             raise ValueError("confirmation TTL must be positive")
@@ -174,6 +176,7 @@ class OrderConfirmationService:
         self._cancel_order = cancel_order
         self._store = store or InMemoryConfirmationIntentStore()
         self._ttl = timedelta(seconds=ttl_seconds)
+        self._tariff = tariff_schedule or place_order.tariff_schedule
 
     @property
     def store(self) -> InMemoryConfirmationIntentStore:
@@ -190,13 +193,14 @@ class OrderConfirmationService:
         include_token: bool = False,
     ) -> dict[str, Any]:
         lines, facts = await _build_order_lines(self._item_repo, items)
+        pricing = _build_pricing(self._tariff, lines, facts, shipping_address)
         payload = {
             "user_id": user_id,
             "session_id": session_id,
             "items": facts,
             "shipping_address": _address_payload(shipping_address),
+            "pricing": pricing,
         }
-        total_minor = sum(line.subtotal().amount_in_minor_units for line in lines)
         currency = lines[0].unit_price.currency
         expires_at = _now() + self._ttl
         confirmation_id = f"confirm-{uuid.uuid4().hex}"
@@ -220,8 +224,13 @@ class OrderConfirmationService:
                 for line in lines
             ],
             "shipping_summary": shipping_address.one_line(),
-            "total_amount_major": total_minor / 100,
+            "merchandise_subtotal_major": pricing["merchandise_subtotal_major"],
+            "freight_major": pricing["freight_major"],
+            "tariff_major": pricing["tariff_major"],
+            "landed_total_major": pricing["landed_total_major"],
+            "total_amount_major": pricing["landed_total_major"],
             "currency": currency,
+            "pricing": pricing,
         }
         intent = await self._store.create(
             ConfirmationIntent(
@@ -281,6 +290,7 @@ class OrderConfirmationService:
                 "session_id": intent.session_id,
                 "items": facts,
                 "shipping_address": _address_payload(address),
+                "pricing": _build_pricing(self._tariff, lines, facts, address),
             }
             if current_payload != intent.canonical_payload:
                 await self._store.invalidate(confirmation_id)
@@ -294,6 +304,11 @@ class OrderConfirmationService:
                 items=items,
                 shipping_address=address,
             )
+            snapshot["pricing"] = intent.preview["pricing"]
+            snapshot["merchandise_subtotal_major"] = intent.preview["merchandise_subtotal_major"]
+            snapshot["freight_major"] = intent.preview["freight_major"]
+            snapshot["tariff_major"] = intent.preview["tariff_major"]
+            snapshot["landed_total_major"] = intent.preview["landed_total_major"]
             await self._store.consumed(confirmation_id, snapshot)
             return snapshot
         except ConfirmationError:
@@ -414,6 +429,51 @@ def _address_payload(address: Address) -> dict[str, str]:
         "address_line": address.address_line,
         "postal_code": address.postal_code,
         "phone": address.phone,
+    }
+
+
+def _build_pricing(
+    tariff: TariffSchedule,
+    lines: list,
+    facts: list[dict[str, Any]],
+    address: Address,
+) -> dict[str, Any]:
+    """Recalculate each exact SKU line with the shared TariffSchedule."""
+
+    if not lines:
+        raise ValueError("OrderLine.items 不能为空")
+    line_quotes: list[dict[str, Any]] = []
+    merchandise = lines[0].unit_price.multiply(0)
+    freight = lines[0].unit_price.multiply(0)
+    tariff_total = lines[0].unit_price.multiply(0)
+    for line, fact in zip(lines, facts, strict=True):
+        quote = tariff.quote(
+            subtotal=line.subtotal(),
+            category=str(fact["category"]),
+            ship_to=address.country,
+            quantity=line.quantity,
+            target_currency=line.unit_price.currency,
+        )
+        line_quotes.append(
+            {
+                "item_id": line.item_id,
+                "variant_id": line.variant_id,
+                "quantity": line.quantity,
+                "quote": quote.to_dict(),
+            }
+        )
+        merchandise = merchandise.add(quote.subtotal)
+        freight = freight.add(quote.freight)
+        tariff_total = tariff_total.add(quote.tariff)
+    landed = merchandise.add(freight).add(tariff_total)
+    return {
+        "ship_to": address.country.strip().upper(),
+        "currency": landed.currency,
+        "merchandise_subtotal_major": merchandise.to_major_units(),
+        "freight_major": freight.to_major_units(),
+        "tariff_major": tariff_total.to_major_units(),
+        "landed_total_major": landed.to_major_units(),
+        "line_quotes": line_quotes,
     }
 
 

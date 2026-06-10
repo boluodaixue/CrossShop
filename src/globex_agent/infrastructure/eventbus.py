@@ -14,7 +14,9 @@ Presentation 层按 shopping_session_id 订阅后推送给前端 WebSocket。
     cache.hit           语义缓存命中，本轮未调模型（四期）
     task.queued         意图已入队，等待 worker 领取（四期）
     task.started        worker 已开始处理（四期）
-    final.result        最终回复
+    final.result        只包含在线验证后的文本、商品卡和状态
+    evidence.freeze     本轮权威 ProductSearch 冻结摘要（不含商品事实卡）
+    evidence.verify     在线 Fact Guard + Evidence Judge 结果
     error               异常
 """
 from __future__ import annotations
@@ -38,6 +40,8 @@ EVENT_TYPES = (
     "task.queued",
     "task.started",
     "final.result",
+    "evidence.freeze",
+    "evidence.verify",
     "error",
 )
 
