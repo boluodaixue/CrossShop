@@ -12,7 +12,7 @@
 | 数据与索引生命周期 | StandardItem/schema-v2、数据迁移、Faiss 四分区索引、CategoryInsight OpenSearch 构建脚本和 hash/manifest 契约已存在 | 生产级增量导入、原子切换、回滚、版本观测和索引重建后的服务切换没有形成完整运行流程 | scripts/data/、scripts/index/、src/globex_agent/infrastructure/recall/；docs/data/catalog_faiss_schema_v2_20260820.md |
 | 服务部署编排 | Dockerfile、docker/docker-compose.yaml、OpenSearch compose、本机启动脚本、Redis checkpoint 和本机模型 worker 已存在 | Compose 没有课程目标中的 vLLM、Embedding、GPU Reranker 独立服务；模型路径依赖宿主机挂载，ready/health 只覆盖基础服务；生产 profile、secret、服务切换和完整启动验收尚未闭环 | Dockerfile、docker/docker-compose.yaml、infra/opensearch/、scripts/start_dev.ps1；课程部署观测篇/16-1 Docker Compose 全栈编排与环境锁定.md、16-2 vLLM推理服务与GPU部署.md |
 | 可观测性与运维 | logging、audit/conversation、事件总线、/health、checkpoint、Redis Stream 可选队列、韧性组件已存在 | Langfuse/Trace、指标看板、工具 P99 告警、完整 token/cost 观测、灰度回滚和 K8s graceful shutdown 尚未交付；Langfuse 规划仅为后续可观测旁路，不替代 ConversationStore、ProductFactSnapshot、订单状态或本地权威证据 | src/globex_agent/infrastructure/resilience.py、application/agents/orchestrator.py、presentation/server.py；课程部署观测篇/16-3 至 16-6 |
-| 质量与安全 | pytest/Ruff、8 Flow 历史基线、完整 ProductFactSnapshot、PII/token sanitizer、在线 Fact Guard + SemanticEvidenceBundle + 整段 Evidence Judge、带 score/P0 门禁的独立 Final Judge 已完成 | 最终 14 Flow 在线链 14/14 valid/supported，Final Judge 14/14 completed、13/14 quality PASS、mean 0.975；`legacy-flow-05` 的 P1 防水约束失败，score 0.65，因此仍不能成为权威；CategoryInsight 调用状态机、semantic cache 证据刷新和生产 prompt-injection/output/security 清单仍需后续运维阶段落地 | src/globex_agent/application/evidence.py、application/evidence_verification.py、scripts/eval_flow_rubric.py、tests/；课程部署观测篇/16-6 安全护栏与K8s生产化.md |
+| 质量与安全 | pytest/Ruff、8 Flow 历史基线、完整 ProductFactSnapshot、PII/token sanitizer、在线 Fact Guard + SemanticEvidenceBundle + 整段 Evidence Judge、两阶段 Rubric Generator/Final Judge 协议已完成 | 新评分方案待外部评测复跑后确认；当前 `EVAL_RUBRIC_GENERATOR_MODEL` 与 `EVAL_FINAL_JUDGE_MODEL` 默认均为 `deepseek-v4-flash`，P0/P1/P2 归一化后按 0.30/0.30/0.40 聚合，阈值 0.85；旧 14 Flow 报告不覆盖；CategoryInsight 调用状态机、semantic cache 证据刷新和生产 prompt-injection/output/security 清单仍需后续运维阶段落地 | src/globex_agent/application/evidence.py、application/evidence_verification.py、scripts/eval_flow_rubric.py、tests/；课程部署观测篇/16-6 安全护栏与K8s生产化.md |
 
 结论：项目的 Agent 核心业务和离线可信评测已经形成，真正阻止它成为当前课程目标下“可交付完整项目”的最大一级缺口是课程级的端到端交付与运行化：前端/API 协议闭环、可复现的全栈模型服务编排，以及基本观测/运维验收尚未统一完成。它不是单个回答校验器缺失。
 
@@ -39,6 +39,25 @@
 最终 budgetfix 复跑：`output/eval/flow-online-20260823-semantic-0823budgetfix.json/.md` 为 14/14 REST HTTP 200、14/14 WS `final.result`、14/14 valid/supported，平均 33.151 秒；`output/eval/final-judge-online-20260823-semantic-0823budgetfix.json/.md` 为 14/14 completed、13/14 quality PASS、mean 0.975。唯一失败 `legacy-flow-05` 的 P0/P2 通过、P1 因未满足“防水”失败，score 0.65。该结果验证了在线协议和评分门禁，但因未达到 14/14 quality PASS，仍是 candidate/诊断记录，不替代旧 8 Flow。
 
 它们改善可信度和评测严谨性，但不阻止当前 Agent、前端基础交互、API、订单门禁和离线质量链继续运行。
+
+2026-08-23 新两阶段离线评测已在可出站环境完成：固定在线报告 SHA-256 为
+`f737d6f07a0a98413d8c5c2dbd310f52993781fb80a11aea2b6900dbcfda4995`；首条 Rubric
+输入 1167 bytes、schema 有效，耗时约 77.9 秒。14 条中 11 条 completed、3 条因
+Rubric Schema 不合格 inconclusive；completed 平均 `final_score=0.8411`，7 条
+quality PASS。该结果仅作为新协议候选/诊断记录，不替代旧 8 Flow 权威基线。报告：
+`output/eval/offline-llm-judge-20260823-222909.md/.json`。
+
+随后修正 Rubric 门禁语义：`require_verified_final` 仅表示需要在线门禁，成功值固定为
+`verification_status=supported`、`evidence_judge_status=supported`、
+`fact_guard_passed=true`，并增加逐条 flush 进度。新报告 225633 为 14 条中 11 条
+completed、3 条 inconclusive，completed 平均 `final_score=0.9257`，8 条 quality
+PASS；它 supersede 222909，但仍是候选/诊断记录，不替代旧 8 Flow 权威基线。报告：
+`output/eval/offline-llm-judge-20260823-225633.md/.json`。
+
+当前 14 Flow 两阶段离线现状已登记为 `baseline-v1`：该基线固定输入、协议、计分和
+11 completed/3 inconclusive/8 PASS/平均 0.9257，并记录 3 条真实 FAIL 与 3 条
+inconclusive。它是可复现现状，不等于质量全通过；`inconclusive` 不计为 FAIL，也不替代
+旧 8 Flow 历史基线。详见 `docs/experiments/offline_eval_baseline_v1_20260823.md`。
 
 ## 推荐唯一下一主阶段：课程级可交付运行闭环
 

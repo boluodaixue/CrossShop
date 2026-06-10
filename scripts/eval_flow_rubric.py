@@ -1,9 +1,9 @@
-"""Independent Final LLM-as-Judge for completed online agent flows.
+"""Two-stage offline Rubric Generator + Final LLM-as-Judge for online flows.
 
-This script is intentionally downstream of the online gate.  It does not run
-an offline Fact Guard, Claim Ledger, per-claim verifier, evidence catalog, or
-bounded-evidence transform.  Missing flow evidence, invalid final schema, or
-an unavailable judge is reported as inconclusive.
+The Rubric Generator sees only the query and pre-execution flow contract.  The
+Final Judge receives the generated rubric plus compact user-visible evidence
+and execution/gate summaries.  Complete online artifacts remain in the local
+report for audit, but are never sent to either offline model.
 """
 
 from __future__ import annotations
@@ -12,9 +12,10 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
+import time
 from datetime import datetime
-from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -25,23 +26,96 @@ from globex_agent.application.evidence_verification import sanitize_evidence_jud
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
-_VALID_VERDICTS = {"supported", "unsupported", "inconclusive"}
+_P2_DIMENSIONS = ("需求覆盖度", "场景洞察力", "决策建议价值")
+_ALLOWED_EVIDENCE_SOURCES = {
+    "query",
+    "final_text",
+    "final_cards",
+    "execution.flow_type",
+    "execution.tool_sequence",
+    "execution.tool_counts",
+    "execution.generation_attempts",
+    "execution.final_result_present",
+    "online_gate.verification_status",
+    "online_gate.fact_guard_passed",
+    "online_gate.evidence_judge_status",
+}
+_INVISIBLE_TOPICS = ("现实物流", "用户满意", "实际收货", "真实配送", "未来销量")
+_P1_USER_REQUIREMENT_TERMS = (
+    "预算",
+    "防水",
+    "性别",
+    "颜色",
+    "材质",
+    "尺寸",
+    "价格",
+    "需求",
+    "满足",
+    "推荐",
+    "商品",
+)
+_P1_INVALID_STATUS_TERMS = ("verified", "passed", "已验证", "通过")
+
+RUBRIC_GENERATOR_SYSTEM = (
+    "你是 Globex 离线评测 Rubric Generator。你在 Agent 执行前出题，因此输入绝不会包含"
+    "最终回答或实际执行结果。只依据 query、flow_type、flow_expectations 和 available_evidence"
+    "生成本 Query 的 rubric；只输出 JSON，不要评分。"
+    "P0 是业务红线：仅生成适用于本 Query、且可由最终用户可见证据判断的预算严重越界、"
+    "违禁/危险建议、泄露内部名称或协议、以及与用户明确性别要求冲突等硬失败项；"
+    "每项严格输出 {id,criterion,evidence_sources}。"
+    "P1 只检查执行规范：所需工具、工具顺序与次数上限、生成尝试、最终结果以及在线验证门禁；"
+    "每项严格输出 {id,criterion,evidence_sources}，每个违反项固定扣 2 分。"
+    "P1 的 evidence_sources 只能使用 execution.flow_type、execution.tool_sequence、"
+    "execution.tool_counts、execution.generation_attempts、execution.final_result_present、"
+    "online_gate.verification_status、online_gate.fact_guard_passed、"
+    "online_gate.evidence_judge_status；P1 绝不能使用 query、final_text 或 final_cards。"
+    "require_verified_final 只是要求在线验证门禁存在并通过的概念开关，不是字面状态值。"
+    "当 require_verified_final=true 时，online_gate.verification_status 和"
+    "online_gate.evidence_judge_status 的唯一成功值是 supported，"
+    "online_gate.fact_guard_passed 的成功值是 true；禁止生成 verified、passed 或其他状态值"
+    "作为期望。"
+    "用户需求是否满足、回答是否清晰有用一律属于 P2，绝不能放入 P1；例如未满足防水要求"
+    "只能影响 P2 的需求覆盖度。"
+    "P2 必须恰好包含需求覆盖度、场景洞察力、决策建议价值三个维度；每项严格输出"
+    "{id,dimension,requirements,expectation,evidence_sources}。requirements 是本 Query 对该维度"
+    "特有的简短字符串列表，expectation 是一句简短期望；不要输出通用 1~5 评分锚点。"
+    "P0/P1 可以为空。不得评判现实物流、用户满意、实际收货、真实配送或未来销量。"
+    "evidence_sources 只能从 available_evidence.paths 选择，不能自行发明别名。只输出"
+    "{\"p0\":[],\"p1\":[],\"p2\":[]}，不得增加其他字段。"
+)
 
 FINAL_JUDGE_SYSTEM = (
-    "你是独立的 Globex 最终 LLM-as-Judge。输入包含 query、在线最终 draft、后端最终卡片、"
-    "完整模型可见工具输出和在线验证状态。只依据这些输入评估 P0 硬事实/安全、P1 query 满足度、"
-    "P2 表达。在线 Evidence Judge/Fact Guard 的可用性由本地编排器先行判断，"
-    "不发送快照、provenance、确认信息或交易 token。"
-    "证据缺失、在线门禁不可用、输入结构无效或语义无法判断时必须 inconclusive，不能猜测。"
-    "按 P0/P1/P2 criterion 状态计算 score：P0 50%、P1 35%、P2 15%；"
-    "supported=1、unsupported=0；任一 criterion 为 inconclusive 时本条不可判定。"
-    "只输出 JSON：{\"p0\":[{\"status\":\"supported|unsupported|inconclusive\",\"reason\":\"...\"}],"
-    "\"p1\":[...],\"p2\":[...],\"score\":0到1之间的数字,\"reason\":\"...\"}。"
+    "你是独立的 Globex Final LLM-as-Judge。只依据输入中的 query、rubric、final、execution"
+    "和 online_gate 评分，不得补充外部事实，不得自行计算总分。后端已确定性保证 selection"
+    "属于 Top-K、variant 归属/可售、卡片同源、币种/目的国/数量、报价算术及零命中选择；"
+    "不要重判这些事实，只读取 online_gate。对 P0 每项输出 triggered 布尔值和 reason；"
+    "对 P1 每项输出 violated 布尔值和 reason；对 P2 每项输出 1 到 5 的整数 score 和 reason。"
+    "P2 通用锚点：5=完全满足且证据清楚；4=基本满足，仅有轻微遗漏；3=核心部分满足但有明显"
+    "缺口；2=仅少量满足或建议价值很弱；1=未满足、相互冲突或回答不可用。需求覆盖度只评"
+    "用户显式/隐含需求与最终可见事实；场景洞察力评场景化取舍；决策建议价值评可执行性、"
+    "比较与下一步。不要因同一问题跨 P1/P2 重复扣分。"
+    "必须覆盖 Rubric 的每一个 id，且只输出 JSON："
+    "{\"p0_results\":[{\"rubric_id\":\"...\",\"triggered\":false,\"reason\":\"...\"}],"
+    "\"p1_results\":[{\"rubric_id\":\"...\",\"violated\":false,\"reason\":\"...\"}],"
+    "\"p2_results\":[{\"rubric_id\":\"...\",\"score\":1,\"reason\":\"...\"}],"
+    "\"reason\":\"...\"}。"
 )
 
 
 def _model() -> str:
-    return os.environ.get("EVAL_FINAL_JUDGE_MODEL") or "qwen-plus"
+    return os.environ.get("EVAL_FINAL_JUDGE_MODEL") or "deepseek-v4-flash"
+
+
+def _rubric_model() -> str:
+    return os.environ.get("EVAL_RUBRIC_GENERATOR_MODEL") or _model()
+
+
+def _pass_threshold() -> float:
+    raw = os.environ.get("EVAL_PASS_THRESHOLD", "0.85")
+    value = float(raw)
+    if not 0 <= value <= 1:
+        raise ValueError("EVAL_PASS_THRESHOLD must be between 0 and 1")
+    return value
 
 
 def _base_url() -> str:
@@ -430,108 +504,636 @@ def _expected_observed(item: dict[str, Any], summary: dict[str, Any]) -> dict[st
             "tools": summary.get("tools", []),
         },
     }
-def build_final_judge_input(item: dict[str, Any]) -> dict[str, Any]:
-    summary = _flow_summary(item)
-    final_cards = summary["final"].get("recommended_cards", [])
-    online_verification = _latest_verification(item) or {
-        "verification_status": summary.get("verification_status", "unavailable")
+
+
+def _tool_timeline(item: dict[str, Any]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for event in _tool_events(item):
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        tool = payload.get("tool")
+        if event.get("type") not in {"tool.invoke", "tool.result"} or not tool:
+            continue
+        timeline.append(
+            {
+                "type": event.get("type"),
+                "tool": tool,
+                "tool_call_id": payload.get("tool_call_id"),
+                "has_model_output": "model_output" in payload,
+            }
+        )
+    return timeline
+
+
+def _flow_type(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "case_class": item.get("case_class"),
+        "query_type": item.get("query_type"),
     }
+
+
+def _default_tool_expectation(case_class: Any) -> dict[str, Any]:
+    if case_class in {"product_only", "no_evidence"}:
+        required = ["product_search_tool"]
+        optional = ["category_insight_tool"]
+    else:
+        required = ["category_insight_tool", "product_search_tool"]
+        optional = []
+    return {"required": required, "optional": optional}
+
+
+_REGRESSION_CONTRACTS: dict[str, dict[str, Any]] | None = None
+
+
+def _regression_contract(item: dict[str, Any]) -> dict[str, Any]:
+    """Load only the pre-execution contract when an online row omitted it."""
+
+    global _REGRESSION_CONTRACTS
+    if _REGRESSION_CONTRACTS is None:
+        contracts: dict[str, dict[str, Any]] = {}
+        path = PROJECT_ROOT / "data" / "eval" / "flow_regression_v2.jsonl"
+        try:
+            for row in _load_json_lines(path):
+                case_id = row.get("case_id")
+                if isinstance(case_id, str):
+                    contracts[case_id] = row
+        except (OSError, json.JSONDecodeError):
+            contracts = {}
+        _REGRESSION_CONTRACTS = contracts
+    value = _REGRESSION_CONTRACTS.get(str(item.get("case_id")))
+    return value if isinstance(value, dict) else {}
+
+
+def _flow_expectations(item: dict[str, Any]) -> dict[str, Any]:
+    tools = item.get("tool_expectation")
+    if not isinstance(tools, dict):
+        tools = _regression_contract(item).get("tool_expectation")
+    if not isinstance(tools, dict):
+        tools = _default_tool_expectation(item.get("case_class"))
+    required = [str(value) for value in tools.get("required", []) if value]
+    optional = [str(value) for value in tools.get("optional", []) if value]
+    allowed_tools = list(dict.fromkeys([*required, *optional]))
+    raw_limits = tools.get("tool_call_limits") or tools.get("call_limits") or {}
+    limits = {
+        tool: int(raw_limits[tool])
+        for tool in allowed_tools
+        if isinstance(raw_limits, dict)
+        and type(raw_limits.get(tool)) is int
+        and raw_limits[tool] >= 1
+    }
+    for tool in allowed_tools:
+        limits.setdefault(tool, 2 if tool == "product_search_tool" else 1)
+    max_total = tools.get("max_total_tool_calls", 3)
+    max_attempts = tools.get("max_generation_attempts", 2)
+    require_final = tools.get("require_final_result", True)
+    require_verified = tools.get("require_verified_final", True)
+    if type(max_total) is not int or max_total < 1:
+        max_total = 3
+    if type(max_attempts) is not int or max_attempts < 1:
+        max_attempts = 2
+    if type(require_final) is not bool:
+        require_final = True
+    if type(require_verified) is not bool:
+        require_verified = True
+    return {
+        "required_tools": required,
+        "optional_tools": optional,
+        "tool_call_limits": limits,
+        "max_total_tool_calls": max_total,
+        "max_generation_attempts": max_attempts,
+        "require_final_result": require_final,
+        "require_verified_final": require_verified,
+        "verified_final_success_status": "supported",
+        "evidence_judge_success_status": "supported",
+        "fact_guard_success_value": True,
+    }
+
+
+def _available_evidence() -> dict[str, Any]:
+    return {
+        "paths": sorted(_ALLOWED_EVIDENCE_SOURCES),
+        "capabilities": {
+            "query": "用户原始请求，可判断预算、违禁要求、性别和显式需求",
+            "final": "最终用户可见回答及去内部 ID 的紧凑推荐卡，可判断 P0/P2",
+            "execution": "Flow 类型、工具调用顺序/次数、生成尝试和 final 是否存在，只判断 P1",
+            "online_gate": (
+                "验证状态和 Evidence Judge 成功值固定为 supported，"
+                "Fact Guard 成功值固定为 true；只判断 P1"
+            ),
+        },
+    }
+
+
+def _compact_options(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    options: list[dict[str, Any]] = []
+    for option in value:
+        if not isinstance(option, dict):
+            continue
+        clean = {
+            key: option.get(key)
+            for key in ("name", "value")
+            if option.get(key) is not None
+        }
+        if clean:
+            options.append(clean)
+    return options
+
+
+def _compact_landed_price(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("unavailable_reason"):
+        return {"available": False, "reason": value.get("unavailable_reason")}
+    return {
+        key: value.get(source)
+        for key, source in (("total", "landed_total_major"), ("currency", "currency"))
+        if value.get(source) is not None
+    }
+
+
+def _compact_variant(variant: dict[str, Any]) -> dict[str, Any]:
+    options = _compact_options(variant.get("options"))
+    clean: dict[str, Any] = {
+        "options": options or variant.get("display_name"),
+        "price": variant.get("price_major"),
+        "currency": variant.get("currency"),
+        "available": str(variant.get("availability", "")).casefold()
+        in {"available", "in_stock", "可售"},
+    }
+    landed = _compact_landed_price(variant.get("landed_price"))
+    if landed is not None:
+        clean["landed_price"] = landed
+    return clean
+
+
+def _variant_is_mentioned(answer_text: str, variant: dict[str, Any]) -> bool:
+    candidates = [variant.get("display_name")]
+    candidates.extend(
+        option.get("value")
+        for option in variant.get("options", [])
+        if isinstance(option, dict)
+    )
+    return any(
+        isinstance(value, str) and len(value.strip()) >= 2 and value.strip() in answer_text
+        for value in candidates
+    )
+
+
+def _compact_card(card: Any, answer_text: str) -> dict[str, Any] | None:
+    if not isinstance(card, dict):
+        return None
+    clean = {
+        key: card.get(key)
+        for key in ("title", "category", "currency", "highlights")
+        if card.get(key) not in (None, "", [])
+    }
+    price = card.get("price_major")
+    if price is None and card.get("price_min_major") == card.get("price_max_major"):
+        price = card.get("price_min_major")
+    if price is not None:
+        clean["price"] = price
+    landed = _compact_landed_price(card.get("landed_price"))
+    if landed is not None:
+        clean["landed_price"] = landed
+
+    variants = [value for value in card.get("variants", []) if isinstance(value, dict)]
+    selected_id = card.get("selected_variant_id")
+    selected = next(
+        (variant for variant in variants if variant.get("variant_id") == selected_id),
+        None,
+    )
+    if selected is not None:
+        clean["selected_variant"] = _compact_variant(selected)
+    mentioned = [
+        _compact_variant(variant)
+        for variant in variants
+        if variant is not selected and _variant_is_mentioned(answer_text, variant)
+    ]
+    if mentioned:
+        clean["available_options"] = mentioned[:12]
+    return clean
+
+
+def _compact_recommended_cards(cards: Any, answer_text: str) -> list[dict[str, Any]]:
+    if not isinstance(cards, list):
+        return []
+    compact = [_compact_card(card, answer_text) for card in cards]
+    return [card for card in compact if card is not None]
+
+
+def _execution_summary(item: dict[str, Any]) -> dict[str, Any]:
+    sequence = [
+        str(event["payload"]["tool"])
+        for event in _tool_events(item)
+        if event.get("type") == "tool.invoke"
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("tool")
+    ]
+    counts = {tool: sequence.count(tool) for tool in dict.fromkeys(sequence)}
+    attempts = [
+        event["payload"].get("attempt")
+        for event in _tool_events(item)
+        if event.get("type") == "evidence.verify"
+        and isinstance(event.get("payload"), dict)
+        and type(event["payload"].get("attempt")) is int
+    ]
+    return {
+        "flow_type": _flow_type(item),
+        "tool_sequence": sequence,
+        "tool_counts": counts,
+        "generation_attempts": max(attempts, default=0),
+        "final_result_present": any(
+            event.get("type") == "final.result" for event in _tool_events(item)
+        ),
+    }
+
+
+def _online_gate(item: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    verification = _latest_verification(item) or {}
+    fact_guard_errors = verification.get("fact_guard_errors")
+    return {
+        "verification_status": summary.get("verification_status", "unavailable"),
+        "fact_guard_passed": isinstance(fact_guard_errors, list)
+        and not fact_guard_errors,
+        "evidence_judge_status": verification.get(
+            "verification_status", "unavailable"
+        ),
+    }
+
+
+def build_rubric_input(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "query": _sanitize_external(item.get("query", "")),
-        "draft": {
-            "answer_text": summary["final"].get("text", ""),
-            "selections": summary.get("final_selections", []),
-        },
-        "recommended_cards": _sanitize_external(final_cards),
-        "online_verification": _sanitize_external(online_verification),
-        "tool_outputs": summary["tool_outputs"],
+        "flow_type": _flow_type(item),
+        "flow_expectations": _flow_expectations(item),
+        "available_evidence": _available_evidence(),
     }
 
 
-def _computed_score(payload: dict[str, Any]) -> float | None:
-    """Apply the documented rubric locally after validating Judge statuses."""
-
-    ratios: list[float] = []
-    for level in ("p0", "p1", "p2"):
-        entries = payload.get(level, [])
-        if any(entry.get("status") == "inconclusive" for entry in entries):
-            return None
-        ratios.append(
-            sum(entry.get("status") == "supported" for entry in entries) / len(entries)
-            if entries
-            else 1.0
-        )
-    return round(0.50 * ratios[0] + 0.35 * ratios[1] + 0.15 * ratios[2], 3)
-
-
-def _p0_pass(payload: dict[str, Any]) -> bool:
-    return all(entry.get("status") == "supported" for entry in payload.get("p0", []))
-
-
-async def call_final_judge(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
+def build_final_judge_input(
+    item: dict[str, Any], rubric: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    if rubric is None:
+        raise ValueError("Final Judge requires a validated rubric")
     summary = _flow_summary(item)
-    if not summary["flow_valid"] or not summary["gate_trustworthy"]:
-        return {"status": "inconclusive", "reason": "flow evidence or online gate is unavailable"}
+    answer_text = str(summary["final"].get("text") or "")
+    return {
+        "query": _sanitize_external(item.get("query", "")),
+        "rubric": rubric,
+        "final": {
+            "answer_text": _sanitize_external(answer_text),
+            "compact_recommended_cards": _sanitize_external(
+                _compact_recommended_cards(
+                    summary["final"].get("recommended_cards", []), answer_text
+                )
+            ),
+        },
+        "execution": _execution_summary(item),
+        "online_gate": _online_gate(item, summary),
+    }
+
+
+def _text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def _evidence_sources(entry: dict[str, Any], field: str) -> list[str]:
+    sources = entry.get(field)
+    if not isinstance(sources, list) or not sources:
+        raise ValueError(f"{field} must be a non-empty list")
+    if any(source not in _ALLOWED_EVIDENCE_SOURCES for source in sources):
+        raise ValueError(f"{field} contains unavailable evidence source")
+    return [str(source) for source in sources]
+
+
+def _string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{field} must be a non-empty list")
+    return [_text(item, field) for item in value]
+
+
+def _validate_p1_status_criterion(criterion: str) -> None:
+    lowered = criterion.casefold()
+    compact = re.sub(r"[\s_\-]", "", lowered)
+    if "verificationstatus" in compact and "supported" not in lowered:
+        if any(term in lowered for term in _P1_INVALID_STATUS_TERMS):
+            raise ValueError("P1 status criteria must use supported/true, not verified/passed")
+        raise ValueError("verification_status success value must be supported")
+    if "evidencejudgestatus" in compact and "supported" not in lowered:
+        if any(term in lowered for term in _P1_INVALID_STATUS_TERMS):
+            raise ValueError("P1 status criteria must use supported/true, not verified/passed")
+        raise ValueError("evidence_judge_status success value must be supported")
+    if "factguardpassed" in compact and "true" not in lowered:
+        raise ValueError("fact_guard_passed success value must be true")
+
+
+def validate_rubric(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != {"p0", "p1", "p2"}:
+        raise ValueError("Rubric must contain only p0, p1 and p2 lists")
+    if any(not isinstance(payload[level], list) for level in ("p0", "p1", "p2")):
+        raise ValueError("Rubric levels must be lists")
+    ids: set[str] = set()
+    normalized_criteria: dict[str, str] = {}
+    result: dict[str, list[dict[str, Any]]] = {"p0": [], "p1": [], "p2": []}
+    for level in ("p0", "p1", "p2"):
+        for entry in payload[level]:
+            if not isinstance(entry, dict):
+                raise ValueError(f"{level} rubric entry must be an object")
+            rubric_id = _text(entry.get("id"), f"{level}.id")
+            if rubric_id in ids:
+                raise ValueError(f"duplicate rubric id: {rubric_id}")
+            ids.add(rubric_id)
+            sources = _evidence_sources(entry, "evidence_sources")
+            if level == "p0" and any(
+                source not in {"query", "final_text", "final_cards"}
+                for source in sources
+            ):
+                raise ValueError("P0 may use only query and final user-visible evidence")
+            if level == "p1" and any(
+                not source.startswith(("execution.", "online_gate."))
+                for source in sources
+            ):
+                raise ValueError("P1 may use only execution and online gate evidence")
+            if level == "p2" and any(
+                source not in {"query", "final_text", "final_cards"}
+                for source in sources
+            ):
+                raise ValueError("P2 may use only query and final user-visible evidence")
+            if level in {"p0", "p1"}:
+                if set(entry) != {"id", "criterion", "evidence_sources"}:
+                    raise ValueError(f"{level} rubric entry has unexpected fields")
+                criterion = _text(entry.get("criterion"), f"{level}.criterion")
+                lowered = criterion.casefold()
+                if any(topic.casefold() in lowered for topic in _INVISIBLE_TOPICS):
+                    raise ValueError(f"rubric uses unobservable topic: {criterion}")
+                if level == "p1" and any(term in lowered for term in _P1_USER_REQUIREMENT_TERMS):
+                    raise ValueError("P1 may not score user-requirement satisfaction")
+                if level == "p1":
+                    _validate_p1_status_criterion(criterion)
+                normalized = "".join(ch for ch in lowered if ch.isalnum())
+                if normalized in normalized_criteria:
+                    raise ValueError("duplicate rubric criterion across levels")
+                normalized_criteria[normalized] = level
+                clean = {
+                    "id": rubric_id,
+                    "criterion": criterion,
+                    "evidence_sources": sources,
+                }
+            else:
+                if set(entry) != {
+                    "id",
+                    "dimension",
+                    "requirements",
+                    "expectation",
+                    "evidence_sources",
+                }:
+                    raise ValueError("p2 rubric entry has unexpected fields")
+                dimension = _text(entry.get("dimension"), "p2.dimension")
+                if dimension not in _P2_DIMENSIONS:
+                    raise ValueError(f"invalid P2 dimension: {dimension}")
+                requirements = _string_list(entry.get("requirements"), "p2.requirements")
+                expectation = _text(entry.get("expectation"), "p2.expectation")
+                visible_text = " ".join([*requirements, expectation]).casefold()
+                if any(topic.casefold() in visible_text for topic in _INVISIBLE_TOPICS):
+                    raise ValueError(f"rubric uses unobservable topic: {expectation}")
+                clean = {
+                    "id": rubric_id,
+                    "dimension": dimension,
+                    "requirements": requirements,
+                    "expectation": expectation,
+                    "evidence_sources": sources,
+                }
+            result[level].append(clean)
+    p2_by_dimension = {entry["dimension"]: entry for entry in result["p2"]}
+    if len(p2_by_dimension) != len(result["p2"]):
+        raise ValueError("P2 dimensions must be unique")
+    if set(p2_by_dimension) != set(_P2_DIMENSIONS):
+        raise ValueError("P2 must contain the three fixed dimensions exactly once")
+    result["p2"] = [p2_by_dimension[dimension] for dimension in _P2_DIMENSIONS]
+    return result
+
+
+def validate_judge_result(payload: Any, rubric: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Final Judge returned non-object JSON")
+    if any(key in payload for key in ("score", "final_score", "p0_score", "p1_score", "p2_score")):
+        raise ValueError("Final Judge must not calculate aggregate scores")
+    expected = {
+        "p0_results": [(entry["id"], entry) for entry in rubric["p0"]],
+        "p1_results": [(entry["id"], entry) for entry in rubric["p1"]],
+        "p2_results": [(entry["id"], entry) for entry in rubric["p2"]],
+    }
+    result: dict[str, Any] = {}
+    for field, entries in expected.items():
+        actual = payload.get(field)
+        if not isinstance(actual, list):
+            raise ValueError(f"Final Judge missing {field}")
+        by_id: dict[str, dict[str, Any]] = {}
+        for item in actual:
+            if not isinstance(item, dict):
+                raise ValueError(f"{field} entry must be an object")
+            rubric_id = _text(item.get("rubric_id"), f"{field}.rubric_id")
+            if rubric_id in by_id:
+                raise ValueError(f"duplicate Final Judge result: {rubric_id}")
+            by_id[rubric_id] = item
+        if set(by_id) != {rubric_id for rubric_id, _ in entries}:
+            raise ValueError(f"Final Judge ids do not match {field}")
+        normalized: list[dict[str, Any]] = []
+        for rubric_id, _ in entries:
+            item = by_id[rubric_id]
+            reason = _text(item.get("reason"), f"{field}.reason")
+            clean: dict[str, Any] = {"rubric_id": rubric_id, "reason": reason}
+            if field == "p0_results":
+                if type(item.get("triggered")) is not bool:
+                    raise ValueError("P0 triggered must be boolean")
+                clean["triggered"] = item["triggered"]
+            elif field == "p1_results":
+                if type(item.get("violated")) is not bool:
+                    raise ValueError("P1 violated must be boolean")
+                clean["violated"] = item["violated"]
+            else:
+                score = item.get("score")
+                if type(score) is not int or not 1 <= score <= 5:
+                    raise ValueError("P2 score must be an integer from 1 to 5")
+                clean["score"] = score
+            normalized.append(clean)
+        result[field] = normalized
+    result["reason"] = str(payload.get("reason") or "逐项评分完成")
+    return result
+
+
+def aggregate_scores(
+    rubric: dict[str, Any],
+    judged: dict[str, Any],
+    *,
+    threshold: float | None = None,
+) -> dict[str, Any]:
+    p0_results = judged["p0_results"]
+    p1_results = judged["p1_results"]
+    p2_results = judged["p2_results"]
+    p0_score = round(
+        sum(not result["triggered"] for result in p0_results) / len(p0_results)
+        if p0_results
+        else 1.0,
+        3,
+    )
+    p1_score = round(
+        max(0.0, 10.0 - 2.0 * sum(result["violated"] for result in p1_results)) / 10.0,
+        3,
+    )
+    p2_score = round(sum(result["score"] for result in p2_results) / len(p2_results) / 5.0, 3)
+    final_score = round(0.30 * p0_score + 0.30 * p1_score + 0.40 * p2_score, 3)
+    pass_threshold = _pass_threshold() if threshold is None else threshold
+    if not 0 <= pass_threshold <= 1:
+        raise ValueError("pass threshold must be between 0 and 1")
+    quality_pass = (
+        not any(result["triggered"] for result in p0_results)
+        and final_score >= pass_threshold
+    )
+    return {
+        "p0_score": p0_score,
+        "p1_score": p1_score,
+        "p2_score": p2_score,
+        "final_score": final_score,
+        "pass_threshold": pass_threshold,
+        "quality_pass": quality_pass,
+    }
+
+
+async def _call_json_model(
+    client: httpx.AsyncClient,
+    *,
+    model: str,
+    system: str,
+    user_payload: dict[str, Any],
+    max_tokens: int,
+    timeout_seconds: float,
+) -> dict[str, Any]:
     api_key = _api_key()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    response = await client.post(
-        f"{_base_url().rstrip('/')}/chat/completions",
-        headers=headers,
-        json={
-            "model": _model(),
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": FINAL_JUDGE_SYSTEM},
-                {
-                    "role": "user",
-                    "content": json.dumps(build_final_judge_input(item), ensure_ascii=False),
-                },
-            ],
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
+    request = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    }
+    response: httpx.Response | None = None
+    for attempt in range(2):
+        try:
+            response = await client.post(
+                f"{_base_url().rstrip('/')}/chat/completions",
+                headers=headers,
+                json=request,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            break
+        except (httpx.TimeoutException, httpx.NetworkError):
+            if attempt == 1:
+                raise
+            await asyncio.sleep(0.25)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code not in {429, 500, 502, 503, 504} or attempt == 1:
+                raise
+            await asyncio.sleep(0.25)
+    if response is None:
+        raise httpx.NetworkError("model request produced no response")
     content = response.json()["choices"][0]["message"]["content"]
-    payload = _json_value(content)
-    if not isinstance(payload, dict):
-        raise ValueError("Final Judge returned non-object JSON")
-    for level in ("p0", "p1", "p2"):
-        if not isinstance(payload.get(level), list):
-            raise ValueError(f"Final Judge missing {level}")
-        for entry in payload[level]:
-            if not isinstance(entry, dict) or entry.get("status") not in _VALID_VERDICTS:
-                raise ValueError(f"Final Judge invalid {level} status")
-    score = payload.get("score")
-    if not isinstance(score, (int, float)) or isinstance(score, bool) or not isfinite(float(score)):
-        raise ValueError("Final Judge missing numeric score")
-    if not 0 <= float(score) <= 1:
-        raise ValueError("Final Judge score must be between 0 and 1")
-    computed = _computed_score(payload)
-    if computed is not None and abs(float(score) - computed) > 0.051:
-        raise ValueError(
-            f"Final Judge score disagrees with rubric: model={score}, computed={computed}"
+    if isinstance(content, str) and content.strip().startswith("```"):
+        content = content.strip().split("\n", 1)[-1].rsplit("```", 1)[0]
+    parsed = _json_value(content)
+    if not isinstance(parsed, dict):
+        raise ValueError("model returned non-object JSON")
+    return parsed
+
+
+async def call_rubric_generator(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
+    rubric = validate_rubric(
+        await _call_json_model(
+            client,
+            model=_rubric_model(),
+            system=RUBRIC_GENERATOR_SYSTEM,
+            user_payload=build_rubric_input(item),
+            max_tokens=1200,
+            timeout_seconds=150,
         )
-    result = {"status": "completed"}
-    result.update({key: value for key, value in payload.items() if key != "status"})
-    result["computed_score"] = computed
-    if computed is None:
-        result["status"] = "inconclusive"
-        result["reason"] = payload.get("reason") or "Final Judge criterion is inconclusive"
-    return result
+    )
+    return {"evaluation_status": "completed", "rubric": rubric}
+
+
+async def call_final_judge(
+    client: httpx.AsyncClient, item: dict[str, Any], rubric: dict[str, Any]
+) -> dict[str, Any]:
+    summary = _flow_summary(item)
+    if not summary["flow_valid"] or not summary["gate_trustworthy"]:
+        return {
+            "evaluation_status": "inconclusive",
+            "reason": "flow evidence or online gate is unavailable",
+        }
+    judged = validate_judge_result(
+        await _call_json_model(
+            client,
+            model=_model(),
+            system=FINAL_JUDGE_SYSTEM,
+            user_payload=build_final_judge_input(item, rubric),
+            max_tokens=1600,
+            timeout_seconds=240,
+        ),
+        rubric,
+    )
+    aggregate = aggregate_scores(rubric, judged)
+    return {"evaluation_status": "completed", "judge": judged, **aggregate}
+
+
+def _progress_line(index: int, total: int, row: dict[str, Any], elapsed_seconds: float) -> str:
+    status = row.get("evaluation_status", "inconclusive")
+    case_id = str(row.get("case_id") or row.get("query_id") or f"flow-{index}")
+    judge = row.get("final_judge") or {}
+    if status == "completed":
+        outcome = "PASS" if judge.get("quality_pass") is True else "FAIL"
+        detail = f"score={judge.get('final_score', 'N/A')} {outcome}"
+    else:
+        reason = str(judge.get("reason") or "unknown")
+        reason = " ".join(reason.split())[:120]
+        detail = f"reason={reason}"
+    return f"[{index}/{total}] {case_id} status={status} {detail} elapsed={elapsed_seconds:.1f}s"
 
 
 async def evaluate_items(
     items: list[dict[str, Any]], *, run_judge: bool = True
 ) -> list[dict[str, Any]]:
+    # The evaluator must not inherit a machine-wide proxy when it makes the
+    # explicitly opted-in outbound model calls.
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        os.environ.pop(key, None)
     results: list[dict[str, Any]] = []
-    async with httpx.AsyncClient() as client:
-        for item in items:
+    async with httpx.AsyncClient(trust_env=False) as client:
+        total = len(items)
+        for index, item in enumerate(items, 1):
+            item_started = time.perf_counter()
             row = {**item, "summary": _flow_summary(item)}
             if run_judge:
+                stage = "rubric_generator"
                 try:
-                    row["final_judge"] = await call_final_judge(client, row)
+                    rubric_result = await call_rubric_generator(client, row)
+                    row["rubric"] = rubric_result.get("rubric")
+                    if rubric_result.get("evaluation_status") != "completed":
+                        row["final_judge"] = rubric_result
+                    else:
+                        stage = "final_judge"
+                        row["final_judge"] = await call_final_judge(
+                            client, row, rubric_result["rubric"]
+                        )
                 except (
                     httpx.HTTPError,
                     KeyError,
@@ -541,40 +1143,52 @@ async def evaluate_items(
                     json.JSONDecodeError,
                 ) as err:
                     row["final_judge"] = {
-                        "status": "inconclusive",
+                        "evaluation_status": "inconclusive",
+                        "failure_stage": stage,
                         "reason": f"{type(err).__name__}: {err}".strip(),
                     }
             else:
-                row["final_judge"] = {"status": "inconclusive", "reason": "judge not run"}
+                row["rubric"] = None
+                row["final_judge"] = {
+                    "evaluation_status": "inconclusive",
+                    "reason": "judge not run",
+                }
+            row["evaluation_status"] = row["final_judge"].get(
+                "evaluation_status", "inconclusive"
+            )
             results.append(row)
+            print(
+                _progress_line(index, total, row, time.perf_counter() - item_started),
+                flush=True,
+            )
     return results
 
 
 def _judge_passes(judge: dict[str, Any]) -> bool:
     return (
-        judge.get("status") == "completed"
-        and _p0_pass(judge)
-        and isinstance(judge.get("score"), (int, float))
-        and float(judge["score"]) >= 0.7
+        judge.get("evaluation_status") == "completed"
+        and judge.get("quality_pass") is True
     )
 
 
 def render_report(results: list[dict[str, Any]]) -> str:
     valid = sum(1 for row in results if row.get("summary", {}).get("flow_valid"))
     trustworthy = sum(1 for row in results if row.get("summary", {}).get("gate_trustworthy"))
-    judged = sum(1 for row in results if row.get("final_judge", {}).get("status") == "completed")
+    judged = sum(
+        1
+        for row in results
+        if row.get("final_judge", {}).get("evaluation_status") == "completed"
+    )
     pass_count = sum(
         1
         for row in results
-        if row.get("final_judge", {}).get("status") == "completed"
-        and _p0_pass(row["final_judge"])
-        and float(row["final_judge"].get("score", -1)) >= 0.7
+        if _judge_passes(row.get("final_judge", {}))
     )
     scores = [
-        float(row["final_judge"]["score"])
+        float(row["final_judge"]["final_score"])
         for row in results
-        if row.get("final_judge", {}).get("status") == "completed"
-        and isinstance(row.get("final_judge", {}).get("score"), (int, float))
+        if row.get("final_judge", {}).get("evaluation_status") == "completed"
+        and isinstance(row.get("final_judge", {}).get("final_score"), (int, float))
     ]
     avg_score = round(sum(scores) / len(scores), 3) if scores else None
     authority = (
@@ -585,7 +1199,10 @@ def render_report(results: list[dict[str, Any]]) -> str:
         and pass_count == 14
     )
     lines = [
-        f"# 14 Flow 在线流程与 Final LLM-as-Judge（{datetime.now().strftime('%Y-%m-%d %H:%M')}）",
+        (
+            "# 14 Flow 在线流程与 Rubric/Final LLM-as-Judge（"
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}）"
+        ),
         "",
         (
             f"有效流程：{valid}/{len(results)}；在线门禁可信：{trustworthy}/{len(results)}；"
@@ -624,9 +1241,12 @@ def render_report(results: list[dict[str, Any]]) -> str:
                 ),
                 (
                     f"- Flow：{'valid' if summary.get('flow_valid') else 'inconclusive'}；"
-                    f"Final Judge：{judge.get('status')}；score：{judge.get('score', 'N/A')}；"
+                    f"评测：{judge.get('evaluation_status')}；P0/P1/P2："
+                    f"{judge.get('p0_score', 'N/A')}/{judge.get('p1_score', 'N/A')}/"
+                    f"{judge.get('p2_score', 'N/A')}；final_score："
+                    f"{judge.get('final_score', 'N/A')}；"
                     f"PASS：{('是' if _judge_passes(judge) else '否')}；"
-                    f"原因：{judge.get('reason', '')}"
+                    f"原因：{judge.get('reason') or judge.get('judge', {}).get('reason', '')}"
                 ),
                 "",
             ]

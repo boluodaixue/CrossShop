@@ -57,7 +57,7 @@
 - 在线报告：`output/eval/flow-online-20260823-semantic-0823budgetfix.json/.md`。
 - Final Judge 报告：`output/eval/final-judge-online-20260823-semantic-0823budgetfix.json/.md`。
 - 14/14 REST HTTP 200，14/14 捕获 `final.result`，14/14 Flow valid，14/14 `verification_status=supported`，平均耗时 33.151 秒。
-- Final Judge 14/14 completed，13/14 quality PASS，mean score 0.975。评分为 P0 50%、P1 35%、P2 15%；PASS 要求所有适用 P0 supported 且 score >= 0.7。
+- 本历史报告使用旧的一阶段 Final Judge 协议，评分为 P0 50%、P1 35%、P2 15%，不得与新两阶段 Rubric/Final Judge 报告直接比较；新协议改为 P0/P1/P2 归一化后 0.30/0.30/0.40，P0 触发一票否决，阈值 0.85。
 - 唯一失败是 `legacy-flow-05`：P0/P2 通过，P1 因用户要求“防水”而实际推荐未满足防水约束，score 0.65。该失败属于用户需求满足度，不是在线 Evidence Judge、WS 或外部连接失败。
 
 ## 本次实现和验收边界
@@ -73,3 +73,18 @@
 关键代码：`src/globex_agent/application/agents/orchestrator.py`、`src/globex_agent/application/evidence_verification.py`、`scripts/eval_flow_queries.py`、`scripts/eval_flow_rubric.py`、`frontend/src/components/ProductCards.tsx`。
 
 最终验收记录：完整 pytest 256 passed、最终增量定向测试 25 passed；目标文件 Ruff、`git diff --check`、Docker Compose 配置检查和 frontend production build 通过。FastAPI 与本轮模型 worker 已关闭，Redis/OpenSearch 保留运行。由于只有 13/14 quality PASS，本报告仍为候选/诊断结果，不替代旧 8 Flow 权威基线。
+
+## 两阶段离线 Rubric/Final Judge 复跑（2026-08-23 22:29）
+
+- 输入沿用 `output/eval/flow-online-20260823-semantic-0823budgetfix.json`，SHA-256：`f737d6f07a0a98413d8c5c2dbd310f52993781fb80a11aea2b6900dbcfda4995`；未重跑在线 Flow。
+- 首条 Rubric 真实请求：输入 1167 bytes，模型 `deepseek-v4-flash`，`trust_env=False`，schema 有效，耗时约 77.9 秒；随后才启动 14 条离线两阶段评测。
+- 结果：14 条中 `completed=11`、`inconclusive=3`（Rubric Schema 不合格），`quality_pass=true` 为 7 条；completed 平均 `final_score=0.8411`。
+- 逐条结果、P0/P1/P2、final_score 与失败原因保存在 `output/eval/offline-llm-judge-20260823-222909.md` 和 `.json`。3 条 Schema 失败按规则计为 inconclusive，不计 PASS/FAIL。
+- 该结果为新协议候选/诊断记录，不替代旧 8 Flow 权威基线；完整原始在线 JSON 与事件证据继续保留在本地。
+
+## Rubric 门禁语义修正与重跑（2026-08-23 22:56）
+
+- 修正 `require_verified_final` 的含义：它是执行前门禁要求，不是字面状态值；成功契约固定为 `verification_status=supported`、`evidence_judge_status=supported`、`fact_guard_passed=true`。增加确定性校验，明确拒绝字段要求 `verified`/`passed` 等不存在成功值。
+- 重新使用同一固定输入（SHA-256 `f737d6f07a0a98413d8c5c2dbd310f52993781fb80a11aea2b6900dbcfda4995`），单条预检输入 1332 bytes、schema 有效、耗时约 36.3 秒；随后运行 14 条两阶段评测。每条完成立即 flush 脱敏进度行。
+- 新结果：`completed=11/14`、`inconclusive=3/14`、`quality_pass=8/14`；completed 平均 `final_score=0.9257`。inconclusive 为 Rubric Schema/网络失败，按规则不计 PASS/FAIL。
+- 报告：`output/eval/offline-llm-judge-20260823-225633.md/.json`。它 supersede `offline-llm-judge-20260823-222909.*`，但仍是候选/诊断记录，不替代旧 8 Flow 权威基线。

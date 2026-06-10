@@ -19,6 +19,14 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return raw.strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _env_unit_interval(name: str, *, default: float) -> float:
+    raw = os.getenv(name)
+    value = default if raw is None else float(raw)
+    if not 0 <= value <= 1:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return value
+
+
 def _local_model_dir(name: str, fallback: str) -> str:
     path = Path(name)
     return str(path) if path.is_dir() else fallback
@@ -32,7 +40,9 @@ class Settings:
     llm_fallback_model: str
     llm_judge: str
     online_evidence_judge_model: str
+    eval_rubric_generator_model: str
     eval_final_judge_model: str
+    eval_pass_threshold: float
     port: int
     log_level: str
     data_dir: Path
@@ -137,12 +147,17 @@ def load_settings() -> Settings:
         llm_judge=os.getenv("LLM_JUDGE", ""),
         online_evidence_judge_model=os.getenv(
             "ONLINE_EVIDENCE_JUDGE_MODEL",
-            "qwen-plus",
+            "deepseek-v4-flash",
+        ),
+        eval_rubric_generator_model=os.getenv(
+            "EVAL_RUBRIC_GENERATOR_MODEL",
+            os.getenv("EVAL_FINAL_JUDGE_MODEL", "deepseek-v4-flash"),
         ),
         eval_final_judge_model=os.getenv(
             "EVAL_FINAL_JUDGE_MODEL",
-            "qwen-plus",
+            "deepseek-v4-flash",
         ),
+        eval_pass_threshold=_env_unit_interval("EVAL_PASS_THRESHOLD", default=0.85),
         port=int(os.getenv("PORT", "8000")),
         log_level=os.getenv("LOG_LEVEL", "info"),
         data_dir=data_dir,

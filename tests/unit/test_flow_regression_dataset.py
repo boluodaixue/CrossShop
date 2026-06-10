@@ -6,9 +6,14 @@ from pathlib import Path
 from scripts.eval_flow_queries import _load_queries
 from scripts.eval_flow_rubric import (
     _flow_summary,
+    _progress_line,
     _tool_outputs,
+    aggregate_scores,
     build_final_judge_input,
+    build_rubric_input,
     render_report,
+    validate_judge_result,
+    validate_rubric,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -111,10 +116,76 @@ def test_query_loader_preserves_flow_regression_contract_fields() -> None:
         assert key in row
 
 
-def test_final_judge_payload_uses_only_model_output_and_keeps_full_variants() -> None:
+def test_rubric_contract_falls_back_to_same_case_pre_execution_rules() -> None:
+    rubric_input = build_rubric_input(
+        {
+            "case_id": "product-only-floodlight",
+            "query": "户外防水投光灯",
+            "case_class": "product_only",
+            "query_type": "buying_intent",
+        }
+    )
+    assert rubric_input["flow_expectations"]["required_tools"] == [
+        "product_search_tool"
+    ]
+    assert rubric_input["flow_expectations"]["optional_tools"] == [
+        "category_insight_tool"
+    ]
+    assert rubric_input["flow_expectations"]["verified_final_success_status"] == "supported"
+    assert rubric_input["flow_expectations"]["evidence_judge_success_status"] == "supported"
+    assert rubric_input["flow_expectations"]["fact_guard_success_value"] is True
+
+
+def test_p1_status_criterion_rejects_nonexistent_success_values() -> None:
+    rubric = _rubric()
+    rubric["p1"][0]["criterion"] = "verification_status 应为 verified"
+    try:
+        validate_rubric(rubric)
+    except ValueError as error:
+        assert "supported/true" in str(error)
+    else:
+        raise AssertionError("verified status criterion was accepted")
+
+    rubric = _rubric()
+    rubric["p1"][0]["criterion"] = "evidence_judge_status 应为 passed"
+    try:
+        validate_rubric(rubric)
+    except ValueError as error:
+        assert "supported/true" in str(error)
+    else:
+        raise AssertionError("passed status criterion was accepted")
+
+
+def test_progress_line_is_compact_and_redacts_multiline_reason() -> None:
+    completed = _progress_line(
+        1,
+        2,
+        {
+            "case_id": "case-a",
+            "evaluation_status": "completed",
+            "final_judge": {"final_score": 0.9, "quality_pass": True},
+        },
+        1.25,
+    )
+    assert completed == "[1/2] case-a status=completed score=0.9 PASS elapsed=1.2s"
+    inconclusive = _progress_line(
+        2,
+        2,
+        {
+            "case_id": "case-b",
+            "evaluation_status": "inconclusive",
+            "final_judge": {"reason": "Schema\ninvalid"},
+        },
+        2.0,
+    )
+    assert inconclusive == "[2/2] case-b status=inconclusive reason=Schema invalid elapsed=2.0s"
+
+
+def test_two_stage_inputs_hide_post_execution_data_and_compact_final_evidence() -> None:
     card = {
         "item_id": "item-1",
         "title": "完整商品",
+        "selected_variant_id": "sku-1",
         "variants": [
             {"variant_id": "sku-1", "price_major": 1, "availability": "available"},
             {"variant_id": "sku-2", "price_major": 2, "availability": "available"},
@@ -152,8 +223,13 @@ def test_final_judge_payload_uses_only_model_output_and_keeps_full_variants() ->
             },
             {
                 "type": "evidence.verify",
-                "payload": {"verification_status": "supported"},
+                "payload": {
+                    "attempt": 1,
+                    "verification_status": "supported",
+                    "fact_guard_errors": [],
+                },
             },
+            {"type": "final.result", "payload": {"text": "推荐"}},
         ],
     }
     outputs = _tool_outputs(item)
@@ -161,19 +237,67 @@ def test_final_judge_payload_uses_only_model_output_and_keeps_full_variants() ->
     assert "evidence_snapshots" not in outputs[0]
     assert "provenance" not in outputs[0]
     assert len(outputs[0]["model_output"]["hits"][0]["variants"]) == 2
-    external = build_final_judge_input(item)
+    rubric_input = build_rubric_input(item)
+    assert set(rubric_input) == {
+        "query",
+        "flow_type",
+        "flow_expectations",
+        "available_evidence",
+    }
+    rubric_text = json.dumps(rubric_input, ensure_ascii=False)
+    for forbidden in (
+        "answer_text",
+        "recommended_cards",
+        "tool_outputs",
+        "tool_timeline",
+        "online_verification",
+        "item-1",
+        "sku-1",
+    ):
+        assert forbidden not in rubric_text
+    assert len(rubric_text.encode("utf-8")) < 4096
+
+    external = build_final_judge_input(item, _rubric())
     assert set(external) == {
         "query",
-        "draft",
-        "recommended_cards",
-        "online_verification",
-        "tool_outputs",
+        "rubric",
+        "final",
+        "execution",
+        "online_gate",
     }
-    assert external["recommended_cards"][0]["item_id"] == "item-1"
-    assert external["online_verification"]["verification_status"] == "supported"
+    compact_card = external["final"]["compact_recommended_cards"][0]
+    assert compact_card == {
+        "title": "完整商品",
+        "selected_variant": {
+            "options": None,
+            "price": 1,
+            "currency": None,
+            "available": True,
+        },
+    }
+    assert external["execution"] == {
+        "flow_type": {"case_class": None, "query_type": None},
+        "tool_sequence": ["product_search_tool"],
+        "tool_counts": {"product_search_tool": 1},
+        "generation_attempts": 1,
+        "final_result_present": True,
+    }
+    assert external["online_gate"] == {
+        "verification_status": "supported",
+        "fact_guard_passed": True,
+        "evidence_judge_status": "supported",
+    }
     external_text = json.dumps(external, ensure_ascii=False)
-    assert "evidence_snapshots" not in external_text
-    assert '"hidden"' not in external_text
+    for forbidden in (
+        "item-1",
+        "sku-1",
+        "sku-2",
+        "evidence_snapshots",
+        '"hidden"',
+        "model_output",
+        "provenance",
+    ):
+        assert forbidden not in external_text
 
 
 def test_final_judge_payload_redacts_free_text_pii_and_structured_shipping_fields() -> None:
@@ -218,7 +342,7 @@ def test_final_judge_payload_redacts_free_text_pii_and_structured_shipping_field
             },
         ],
     }
-    external_text = json.dumps(build_final_judge_input(item), ensure_ascii=False)
+    external_text = json.dumps(build_final_judge_input(item, _rubric()), ensure_ascii=False)
     for secret in (
         "buyer@example.com",
         "13800138000",
@@ -228,26 +352,170 @@ def test_final_judge_payload_redacts_free_text_pii_and_structured_shipping_field
         "provenance",
     ):
         assert secret not in external_text
-    assert "sku-full-001" in external_text
-    assert "sku-full-002" in external_text
+    assert "sku-full-001" not in external_text
+    assert "sku-full-002" not in external_text
 
 
-def test_final_judge_score_and_pass_are_separate_from_completed() -> None:
-    from scripts.eval_flow_rubric import _computed_score, _p0_pass
+def _rubric() -> dict:
+    return validate_rubric(
+        {
+            "p0": [
+                {
+                    "id": "P0-1",
+                    "criterion": "不得推荐超过预算1.5倍的商品",
+                    "evidence_sources": ["query", "final_cards"],
+                }
+            ],
+            "p1": [
+                {
+                    "id": "P1-1",
+                    "criterion": (
+                        "最终结果必须存在，verification_status 和 evidence_judge_status "
+                        "为 supported，Fact Guard 为 true"
+                    ),
+                    "evidence_sources": [
+                        "execution.final_result_present",
+                        "online_gate.verification_status",
+                    ],
+                }
+            ],
+            "p2": [
+                {
+                    "id": f"P2-{index}",
+                    "dimension": dimension,
+                    "requirements": [f"{dimension}相关要求"],
+                    "expectation": f"回答应体现{dimension}。",
+                    "evidence_sources": ["query", "final_text", "final_cards"],
+                }
+                for index, dimension in enumerate(
+                    ("需求覆盖度", "场景洞察力", "决策建议价值"), 1
+                )
+            ],
+        }
+    )
 
-    payload = {
-        "p0": [{"status": "supported"}],
-        "p1": [{"status": "unsupported"}],
-        "p2": [{"status": "supported"}],
-        "score": 0.65,
+
+def _judge(*, p0_triggered: bool = False, p1_violated: bool = False) -> dict:
+    return validate_judge_result(
+        {
+            "p0_results": [
+                {"rubric_id": "P0-1", "triggered": p0_triggered, "reason": "证据判断"}
+            ],
+            "p1_results": [
+                {"rubric_id": "P1-1", "violated": p1_violated, "reason": "证据判断"}
+            ],
+            "p2_results": [
+                {"rubric_id": f"P2-{index}", "score": score, "reason": "证据判断"}
+                for index, score in enumerate((5, 5, 5), 1)
+            ],
+            "reason": "完成",
+        },
+        _rubric(),
+    )
+
+
+def test_new_score_is_normalized_to_one_and_uses_documented_weights() -> None:
+    result = aggregate_scores(_rubric(), _judge())
+    assert result["p0_score"] == 1.0
+    assert result["p1_score"] == 1.0
+    assert result["p2_score"] == 1.0
+    assert result["final_score"] == 1.0
+    assert result["pass_threshold"] == 0.85
+    assert result["quality_pass"] is True
+
+
+def test_p0_trigger_is_fail_even_when_numeric_score_is_high() -> None:
+    result = aggregate_scores(_rubric(), _judge(p0_triggered=True))
+    assert result["final_score"] == 0.7
+    assert result["quality_pass"] is False
+
+
+def test_p1_one_violation_deducts_0_2_within_p1_score() -> None:
+    result = aggregate_scores(_rubric(), _judge(p1_violated=True))
+    assert result["p1_score"] == 0.8
+    assert result["final_score"] == 0.94
+
+
+def test_p2_one_to_five_scores_are_normalized() -> None:
+    rubric = _rubric()
+    judged = validate_judge_result(
+        {
+            "p0_results": [{"rubric_id": "P0-1", "triggered": False, "reason": "无"}],
+            "p1_results": [{"rubric_id": "P1-1", "violated": False, "reason": "无"}],
+            "p2_results": [
+                {"rubric_id": f"P2-{index}", "score": score, "reason": "部分满足"}
+                for index, score in enumerate((1, 3, 5), 1)
+            ],
+        },
+        rubric,
+    )
+    result = aggregate_scores(rubric, judged)
+    assert result["p2_score"] == 0.6
+    assert result["final_score"] == 0.84
+    assert result["quality_pass"] is False
+
+
+def test_rubric_accepts_p2_in_any_order_and_normalizes_output() -> None:
+    rubric = _rubric()
+    rubric["p2"] = list(reversed(rubric["p2"]))
+    normalized = validate_rubric(rubric)
+    assert [entry["dimension"] for entry in normalized["p2"]] == [
+        "需求覆盖度",
+        "场景洞察力",
+        "决策建议价值",
+    ]
+
+
+def test_rubric_rejects_duplicate_or_missing_p2_dimension() -> None:
+    duplicate = _rubric()
+    duplicate["p2"][1]["dimension"] = duplicate["p2"][0]["dimension"]
+    try:
+        validate_rubric(duplicate)
+    except ValueError as error:
+        assert "unique" in str(error)
+    else:
+        raise AssertionError("duplicate P2 dimension was accepted")
+
+    missing = _rubric()
+    missing["p2"] = missing["p2"][:2]
+    try:
+        validate_rubric(missing)
+    except ValueError as error:
+        assert "exactly once" in str(error)
+    else:
+        raise AssertionError("missing P2 dimension was accepted")
+
+
+def test_rubric_rejects_unobservable_and_cross_level_mixing() -> None:
+    rubric = _rubric()
+    rubric["p1"][0]["criterion"] = "用户满意度必须很高"
+    try:
+        validate_rubric(rubric)
+    except ValueError as error:
+        assert "unobservable" in str(error)
+    else:
+        raise AssertionError("unobservable rubric was accepted")
+
+    duplicate = _rubric()
+    duplicate["p1"][0]["evidence_sources"] = ["query"]
+    try:
+        validate_rubric(duplicate)
+    except ValueError as error:
+        assert "P1 may use only execution" in str(error)
+    else:
+        raise AssertionError("cross-level duplicate rubric was accepted")
+
+
+def test_old_report_shape_remains_readable_without_becoming_new_score() -> None:
+    item = {
+        "query": "旧报告",
+        "final_result": {
+            "text": "推荐",
+            "recommended_cards": [],
+            "verification_status": "supported",
+        },
+        "events": [],
+        "final_judge": {"status": "completed", "score": 0.65},
     }
-    assert _computed_score(payload) == 0.65
-    assert _p0_pass(payload)
-
-    inconclusive = {
-        "p0": [{"status": "inconclusive"}],
-        "p1": [],
-        "p2": [],
-        "score": 0.0,
-    }
-    assert _computed_score(inconclusive) is None
+    assert _flow_summary(item)["flow_valid"] is False
+    assert _flow_summary(item)["final"]["text"] == "推荐"

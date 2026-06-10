@@ -118,7 +118,12 @@ scripts/start_dev.ps1 会等待 FastAPI /health；退出脚本会清理本轮启
 
 代码变更至少运行相关 pytest、完整 pytest、Ruff 和 git diff --check。Windows pytest 临时目录清理若出现 WinError 5，必须将测试主体通过与清理权限问题分开报告。
 
-离线评测只消费真实在线最终回答、最终卡片、完整工具输出和在线验证状态；只保留独立 Final LLM-as-Judge，并按 P0 50%、P1 35%、P2 15%恢复 score。PASS 要求在线状态 supported、所有适用 P0 supported 且 score >= 0.7；缺证据、门禁不可用、Judge 异常或 Schema 无效为 inconclusive。8 Flow 历史基线保留；新 14 Flow 只有 14/14 有效、在线门禁可信且 14/14 质量 PASS 时才可成为权威。
+离线评测先只向 `EVAL_RUBRIC_GENERATOR_MODEL` 发送 query 与执行前契约生成 P0/P1/P2 Rubric；Final Judge 只接收 query、Rubric、用户可见回答/紧凑卡片、执行摘要和在线门禁，不接收完整工具输出。P0/P1/P2 归一化后按 0.30/0.30/0.40 聚合为 0～1 的 `final_score`；P0 触发一票否决，`EVAL_PASS_THRESHOLD` 默认 0.85。缺证据、门禁不可用、Rubric/Final Judge 异常或 Schema 无效为 `inconclusive`，不计通过或失败；`supported/unsupported` 只属于在线 Evidence Judge。8 Flow 历史基线保留；新 14 Flow 只有 14/14 有效、在线门禁可信且 14/14 质量 PASS 时才可成为权威。
+
+2026-08-23 两阶段离线复跑使用 `output/eval/flow-online-20260823-semantic-0823budgetfix.json`（SHA-256 为 `f737d6f07a0a98413d8c5c2dbd310f52993781fb80a11aea2b6900dbcfda4995`）：14 条中 11 条 completed、3 条因 Rubric Schema 不合格 inconclusive；completed 平均 `final_score=0.8411`，7 条 quality PASS。该结果是新协议的候选/诊断记录，不替代旧 8 Flow 权威基线。报告见 `output/eval/offline-llm-judge-20260823-222909.md/.json`。
+随后修正了 Rubric 的在线门禁语义：`require_verified_final` 仅表示门禁要求，成功状态固定为 `supported`，Fact Guard 固定为 `true`；225633 重跑中 14 条为 11 条 completed、3 条 inconclusive，completed 平均 `final_score=0.9257`，8 条 quality PASS。该报告 supersede 222909，但仍是候选/诊断记录，不替代旧 8 Flow 权威基线。报告见 `output/eval/offline-llm-judge-20260823-225633.md/.json`。
+
+当前 14 Flow 两阶段离线现状基线标识为 `baseline-v1`，固定记录、失败项与后续改进见 `docs/experiments/offline_eval_baseline_v1_20260823.md`。该基线是可复现现状，不等于质量全通过；`inconclusive` 永不计为 FAIL。
 
 ## 文档导航与项目主线
 
