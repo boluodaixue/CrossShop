@@ -194,6 +194,12 @@ def _compact_product_fact(fact: dict) -> dict:
         if isinstance(raw_variants, list)
         else None
     )
+    raw_highlights = fact.get("highlights")
+    highlights = (
+        [_bounded_text(highlight) for highlight in raw_highlights[:8]]
+        if isinstance(raw_highlights, list)
+        else None
+    )
     completeness = "complete"
     if raw_variants is None:
         completeness = "unknown"
@@ -215,6 +221,7 @@ def _compact_product_fact(fact: dict) -> dict:
             fact.get("store", fact.get("shop", fact.get("store_name", _UNKNOWN)))
         ),
         "availability": _bounded_json_value(fact.get("availability", _UNKNOWN)),
+        "highlights": highlights,
         "variants": variants,
         "completeness": {"variants": completeness},
     }
@@ -490,6 +497,19 @@ def build_evidence_catalog(evidence: dict) -> list[dict]:
                     value=product.get(key, _UNKNOWN),
                     item_id=item_id,
                     snapshot_evidence_id=snapshot_id,
+                )
+            )
+        for highlight in product.get("highlights") or []:
+            highlight_token = _stable_token(highlight, prefix="h")
+            entries.append(
+                _catalog_entry(
+                    f"{base}:highlight:{highlight_token}",
+                    source_scope="product",
+                    fact_type="highlight",
+                    value=highlight,
+                    item_id=item_id,
+                    snapshot_evidence_id=snapshot_id,
+                    summary=highlight,
                 )
             )
         for variant in product.get("variants") or []:

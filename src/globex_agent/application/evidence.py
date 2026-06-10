@@ -160,6 +160,7 @@ def build_product_fact_snapshot(item: StandardItem) -> ProductFactSnapshot:
         "price_source": item.price_source.value,
         "currency": item.currency_raw.value if item.currency_raw else None,
         "availability": item.availability.value,
+        "highlights": list(highlights),
         "variants": [
             {
                 "variant_id": variant.variant_id,

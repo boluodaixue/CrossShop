@@ -582,6 +582,38 @@ def test_evidence_catalog_ids_are_stable_unique_and_cover_system_facts() -> None
     assert "145" in json.dumps(first["evidence_catalog"], ensure_ascii=False)
 
 
+def test_evidence_catalog_contains_stable_ids_for_exposed_product_highlights() -> None:
+    item = {
+        "facts": [
+            {
+                "item_id": "item-highlights",
+                "evidence_id": "snapshot-highlights",
+                "title": "商品",
+                "highlights": ["材质: 乳胶", "尺寸: 90cm"],
+            }
+        ],
+        "category_results": [],
+    }
+
+    first = build_judge_evidence(item)
+    second = build_judge_evidence(item)
+    first_highlights = [
+        entry for entry in first["evidence_catalog"] if entry["fact_type"] == "highlight"
+    ]
+    second_highlights = [
+        entry for entry in second["evidence_catalog"] if entry["fact_type"] == "highlight"
+    ]
+
+    assert [entry["evidence_id"] for entry in first_highlights] == [
+        entry["evidence_id"] for entry in second_highlights
+    ]
+    assert {entry["value"] for entry in first_highlights} == {"材质: 乳胶", "尺寸: 90cm"}
+    assert all(
+        entry["evidence_id"].startswith("product:item-highlights:highlight:")
+        for entry in first_highlights
+    )
+
+
 def test_judge_criterion_and_result_id_sets_must_match_exactly() -> None:
     evidence = build_judge_evidence({"facts": [{"item_id": "item-1"}]})
     valid_id = "product:item-1:title"

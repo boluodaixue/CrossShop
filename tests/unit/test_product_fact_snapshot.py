@@ -5,12 +5,14 @@ from pathlib import Path
 
 from globex_agent.application.evidence import (
     build_product_fact_snapshot,
+    product_card_from_snapshot,
     sanitize_snapshot_payload,
 )
 from globex_agent.catalog import LocalCatalog
 from globex_agent.domain.catalog.models import (
     AvailabilityStatus,
     PriceSource,
+    ProductAttribute,
     StandardItemVariant,
     VariantOption,
 )
@@ -57,6 +59,38 @@ def test_snapshot_contains_exposed_variant_facts_and_bounded_audit_payload() -> 
     assert snapshot.exposed_facts["variants"]
     assert "[omitted" not in encoded
     assert "raw_evidence" not in encoded
+
+
+def test_exposed_highlights_match_card_and_exclude_unexposed_attributes() -> None:
+    item = _items()[0].model_copy(
+        update={
+            "attributes": [
+                ProductAttribute(code=f"attr-{index}", name=f"属性{index}", value=f"值{index}")
+                for index in range(10)
+            ]
+        }
+    )
+    snapshot = build_product_fact_snapshot(item)
+    card = product_card_from_snapshot(
+        snapshot,
+        score=0.5,
+        landed_price=None,
+        price_min_major=None,
+        price_max_major=None,
+        requires_variant_selection=False,
+        matching_variant_ids=[],
+        warnings=[],
+    )
+    persisted = sanitize_snapshot_payload(snapshot)
+
+    assert "highlights" in snapshot.exposed_fields
+    assert snapshot.exposed_facts["highlights"] == list(snapshot.highlights)
+    assert snapshot.exposed_facts["highlights"] == card.highlights
+    assert persisted["highlights"] == snapshot.highlights
+    assert persisted["exposed_facts"]["highlights"] == snapshot.highlights
+    assert "[omitted" not in json.dumps(persisted, ensure_ascii=False)
+    assert "属性8: 值8" not in json.dumps(snapshot.exposed_facts, ensure_ascii=False)
+    assert "属性9: 值9" not in json.dumps(snapshot.exposed_facts, ensure_ascii=False)
 
 
 def test_variant_price_requires_matching_exposed_option() -> None:

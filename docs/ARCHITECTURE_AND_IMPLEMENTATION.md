@@ -87,6 +87,7 @@ StandardItem → ProductFactSnapshot → ProductCard → LLM 最终回答
 - 最终回答只能使用 Snapshot 明确暴露给 Card 的 facts；Fact Guard 不因 Snapshot 内部存在某字段就放行未暴露事实。
 
 商品工具在同一次构造中生成 Card 与 Snapshot。模型只收到 Card 和 evidence ref；审计/评测事件保存 schema-aware Snapshot 白名单，避免通用审计深度限制把 `variants`/`highlights` 截成 `[omitted]`。
+其中 `exposed_facts.highlights` 与 Snapshot/Card 使用同一份最多 8 条的 bounded 商品属性摘要；完整 `StandardItem.attributes` 不进入暴露事实。
 
 ### 2.2.1 在线生产链与离线质量链
 

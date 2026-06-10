@@ -309,6 +309,7 @@ exposed evidence 同时驱动 rubric 与 Judge，保留 Snapshot 变体价格及
 实际暴露字段；加入 evidence-field 校验、`not_evaluable` 状态、旧结果格式兼容和单 Flow
 隔离入口。该修复针对旧批次 18 项 `fact_violations` 的四类评测假阳性：CategoryInsight
 审计深层截断、变体别名/选项映射、范围/跨商品绑定，以及预算/非商品金额和重叠正则解析。
+当前字段映射补充：`exposed_facts.highlights` 与 Snapshot/Card 的 bounded highlights 同源，完整 `StandardItem.attributes` 仍不暴露。
 这 18 项仍不能据此认定为真实 Agent 幻觉。
 
 实际验证：
