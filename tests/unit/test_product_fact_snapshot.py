@@ -55,6 +55,48 @@ def test_snapshot_and_card_keep_all_variants_and_highlights() -> None:
     assert "evidence_catalog" not in json.dumps(persisted, ensure_ascii=False)
 
 
+def test_snapshot_and_card_hide_internal_trace_attributes_but_keep_source_item() -> None:
+    item = _items()[0].model_copy(
+        update={
+            "attributes": [
+                ProductAttribute(code="shop_name", name="店铺", value="好店"),
+                ProductAttribute(
+                    code="source_attributes", name="来源属性", value="内部原始属性"
+                ),
+                ProductAttribute(code="material", name="材质", value="铝合金"),
+                ProductAttribute(code="source_tag", name="来源标签", value="train"),
+            ]
+        }
+    )
+    snapshot = build_product_fact_snapshot(item)
+    card = product_card_from_snapshot(
+        snapshot,
+        score=0.5,
+        landed_price=None,
+        variant_landed_prices=None,
+        price_min_major=None,
+        price_max_major=None,
+        requires_variant_selection=False,
+        matching_variant_ids=[],
+        warnings=[],
+    )
+
+    assert [attribute.code for attribute in item.attributes] == [
+        "shop_name",
+        "source_attributes",
+        "material",
+        "source_tag",
+    ]
+    assert snapshot.highlights == ["店铺: 好店", "材质: 铝合金"]
+    assert card.highlights == snapshot.highlights
+    assert card.to_dict()["highlights"] == snapshot.highlights
+    persisted = sanitize_snapshot_payload(snapshot)
+    assert persisted["highlights"] == snapshot.highlights
+    payload_text = json.dumps(card.to_dict(), ensure_ascii=False)
+    assert "source_attributes" not in payload_text
+    assert "source_tag" not in payload_text
+
+
 def test_product_card_has_no_field_level_evidence_catalog() -> None:
     snapshot = build_product_fact_snapshot(_items()[0])
     card = product_card_from_snapshot(

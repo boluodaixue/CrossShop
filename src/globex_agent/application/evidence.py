@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from globex_agent.domain.catalog.models import (
     AvailabilityStatus,
     Currency,
+    ProductAttribute,
     StandardItem,
     StandardItemVariant,
 )
@@ -35,6 +36,7 @@ _FULL_EVIDENCE_LIST_KEYS = {
     "ships_to",
     "exposed_fields",
 }
+_INTERNAL_TRACE_ATTRIBUTE_CODES = frozenset({"source_attributes", "source_tag"})
 
 
 class EvidenceModel(BaseModel):
@@ -103,6 +105,13 @@ class ProductFactSnapshot(EvidenceModel):
             "schema_version": self.schema_version,
         }
 
+
+def _is_internal_trace_attribute(attribute: ProductAttribute) -> bool:
+    """Return whether an attribute is source tracing metadata, not a user fact."""
+
+    return attribute.code.casefold() in _INTERNAL_TRACE_ATTRIBUTE_CODES
+
+
 def build_product_fact_snapshot(item: StandardItem) -> ProductFactSnapshot:
     """Build one deterministic snapshot from one ``StandardItem``."""
 
@@ -124,6 +133,7 @@ def build_product_fact_snapshot(item: StandardItem) -> ProductFactSnapshot:
     highlights = [
         f"{attribute.name}: {attribute.value}{(' ' + attribute.unit) if attribute.unit else ''}"
         for attribute in item.attributes
+        if not _is_internal_trace_attribute(attribute)
     ]
     exposed_fields = [
         "item_id",

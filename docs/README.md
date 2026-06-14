@@ -28,12 +28,14 @@
 | --- | --- | --- |
 | AGENT_SYNC.md | current | 需要与主 Agent/课程进度同步时 |
 | architecture_migration_handoff.md | design | 复核 LangGraph + DDD 迁移决策和交接约束时 |
+| CONTEXT_MANAGEMENT_IMPLEMENTATION_PLAN.md | design | 实现四层上下文、L0-L4、Cache Breakpoint 与长会话治理时 |
 | globex对比分析与合并方案.md | historical/design | 了解合并取舍和未采纳方案时；不作为当前实现入口 |
 
 ## 实验和历史资料
 
 | 文档 | 状态 | 用途 |
 | --- | --- | --- |
+| experiments/context_management_phase_f_20260824.md | deterministic + diagnostic | 四层上下文 20 轮、L2/L3、Redis 恢复及供应商缓存能力边界 |
 | data/category_card_data_contract.md | current | 当前 CategoryInsight 数据事实边界 |
 | data/shopsimulator_retrieval_v1.md | historical | ShopSimulator 检索实验数据来源 |
 | data/shopsimulator_variant_identity_audit_20260820.md | historical | 变体身份排查证据 |

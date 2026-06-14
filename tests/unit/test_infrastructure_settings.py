@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from globex_agent.infrastructure.resilience import DEFAULT_TIMEOUTS
 from globex_agent.infrastructure.settings import load_settings
 
@@ -14,6 +16,26 @@ def test_defaults_use_json_file_storage_and_no_queue(monkeypatch) -> None:
     assert settings.database_url == "file"
     assert settings.queue_enabled is False
     assert settings.semantic_cache_enabled is True
+    assert settings.context_budget_mode == "observe_only"
+    assert settings.context_soft_limit_tokens == 0
+    assert settings.context_safety_margin_tokens == 0
+    assert settings.l3_keep_recent_frozen_segments == 1
+
+
+def test_context_budget_mode_rejects_unknown_value(monkeypatch) -> None:
+    monkeypatch.setenv("CONTEXT_BUDGET_MODE", "guess")
+    try:
+        load_settings()
+    except ValueError as error:
+        assert "observe_only or enforce" in str(error)
+    else:
+        raise AssertionError("unknown CONTEXT_BUDGET_MODE was accepted")
+
+
+def test_l3_recent_frozen_window_rejects_negative_value(monkeypatch) -> None:
+    monkeypatch.setenv("L3_KEEP_RECENT_FROZEN_SEGMENTS", "-1")
+    with pytest.raises(ValueError, match="cannot be negative"):
+        load_settings()
 
 
 def test_product_search_timeout_covers_persistent_reranker_budget() -> None:

@@ -63,6 +63,10 @@ class Settings:
     context_size: int
     tool_result_limit: int
     reply_token_budget: int
+    context_safety_margin_tokens: int
+    context_soft_limit_tokens: int
+    context_budget_mode: str
+    l3_keep_recent_frozen_segments: int
     tool_failure_threshold: int
     tool_circuit_reset_seconds: float
     cors_origins: list[str]
@@ -139,6 +143,29 @@ def load_settings() -> Settings:
     )
     if checkpoint_environment.casefold() not in {"local", "test"}:
         checkpoint_require_encryption = True
+    context_size = int(os.getenv("CONTEXT_SIZE", "128000"))
+    tool_result_limit = int(os.getenv("TOOL_RESULT_LIMIT", "20000"))
+    reply_token_budget = int(os.getenv("REPLY_TOKEN_BUDGET", "0"))
+    context_safety_margin_tokens = int(os.getenv("CONTEXT_SAFETY_MARGIN_TOKENS", "0"))
+    context_soft_limit_tokens = int(os.getenv("CONTEXT_SOFT_LIMIT_TOKENS", "0"))
+    context_budget_mode = os.getenv("CONTEXT_BUDGET_MODE", "observe_only").strip().casefold()
+    l3_keep_recent_frozen_segments = int(
+        os.getenv("L3_KEEP_RECENT_FROZEN_SEGMENTS", "1")
+    )
+    if context_size <= 0:
+        raise ValueError("CONTEXT_SIZE must be greater than zero")
+    if tool_result_limit <= 0:
+        raise ValueError("TOOL_RESULT_LIMIT must be greater than zero")
+    if min(
+        reply_token_budget,
+        context_safety_margin_tokens,
+        context_soft_limit_tokens,
+    ) < 0:
+        raise ValueError("context token budgets cannot be negative")
+    if l3_keep_recent_frozen_segments < 0:
+        raise ValueError("L3_KEEP_RECENT_FROZEN_SEGMENTS cannot be negative")
+    if context_budget_mode not in {"observe_only", "enforce"}:
+        raise ValueError("CONTEXT_BUDGET_MODE must be observe_only or enforce")
     return Settings(
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
@@ -178,9 +205,13 @@ def load_settings() -> Settings:
         worker_concurrency=int(os.getenv("WORKER_CONCURRENCY", "2")),
         semantic_cache_enabled=_env_flag("SEMANTIC_CACHE_ENABLED", default=True),
         semantic_cache_threshold=float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.95")),
-        context_size=int(os.getenv("CONTEXT_SIZE", "128000")),
-        tool_result_limit=int(os.getenv("TOOL_RESULT_LIMIT", "20000")),
-        reply_token_budget=int(os.getenv("REPLY_TOKEN_BUDGET", "0")),
+        context_size=context_size,
+        tool_result_limit=tool_result_limit,
+        reply_token_budget=reply_token_budget,
+        context_safety_margin_tokens=context_safety_margin_tokens,
+        context_soft_limit_tokens=context_soft_limit_tokens,
+        context_budget_mode=context_budget_mode,
+        l3_keep_recent_frozen_segments=l3_keep_recent_frozen_segments,
         tool_failure_threshold=int(os.getenv("TOOL_FAILURE_THRESHOLD", "3")),
         tool_circuit_reset_seconds=float(os.getenv("TOOL_CIRCUIT_RESET_SECONDS", "60")),
         cors_origins=[

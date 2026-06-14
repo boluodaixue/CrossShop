@@ -42,6 +42,7 @@ data/traces/
 data/preferences/
 data/sessions/
 data/conversations/
+data/runtime/
 *.faiss
 *.index
 *.log

@@ -286,7 +286,6 @@ async def build_container() -> Container:
             preference_store,
             conversation_store,
             semantic_cache,
-            context_size=settings.context_size,
             evidence_verifier=EvidenceVerificationService(
                 evidence_judge,
                 judge_timeout_seconds=settings.evidence_judge_timeout_seconds,

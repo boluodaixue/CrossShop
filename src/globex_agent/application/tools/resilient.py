@@ -19,7 +19,11 @@ def wrap_tool(
 
     async def _resilient_call(**kwargs: Any) -> Any:
         async def operation() -> Any:
-            return await tool.ainvoke(kwargs)
+            if tool.coroutine is None:
+                raise TypeError(f"resilience wrapper requires an async tool: {tool.name}")
+            # ToolNode already validated the outer call and injected hidden
+            # arguments. Preserve them when composing wrappers.
+            return await tool.coroutine(**kwargs)
 
         return await ToolResilienceMiddleware(registry, bus).run(
             tool.name,

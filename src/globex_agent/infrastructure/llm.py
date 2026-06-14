@@ -15,6 +15,24 @@ from globex_agent.infrastructure.throttle import GatewayThrottle
 from globex_agent.infrastructure.transient import is_transient_error
 
 
+def provider_cache_usage_capability(model_name: str) -> dict[str, Any]:
+    """Describe verified provider prompt-cache observability conservatively.
+
+    LangChain can normalize OpenAI ``prompt_tokens_details.cached_tokens`` when
+    a provider returns it, but the configured Qwen-compatible gateway has no
+    checked-in or locally observable response proving that field is emitted.
+    Until runtime evidence exists, no cache-hit parser or hit-rate statistic is
+    enabled and the logical breakpoint remains the only cache-related feature.
+    """
+
+    return {
+        "model": model_name,
+        "status": "not_verified",
+        "provider_response_evidence": False,
+        "cache_usage_statistics_enabled": False,
+    }
+
+
 class _ThrottledRunnable(Runnable[Any, Any]):
     """Enforce gateway concurrency and start-interval limits on async calls."""
 
@@ -173,6 +191,23 @@ class FallbackChatModel:
         self._fallback = fallback
         self._bus = bus
         self._throttle = throttle
+        self.token_count_is_estimated = not str(primary.model).casefold().startswith("gpt-")
+
+    @property
+    def cache_usage_capability(self) -> dict[str, Any]:
+        """Return the non-claiming cache capability for the primary provider."""
+
+        return provider_cache_usage_capability(str(self._primary.model))
+
+    def get_num_tokens(self, text: str) -> int:
+        """Expose the primary adapter counter to L1 (possibly estimated)."""
+
+        return self._primary.get_num_tokens(text)
+
+    def get_num_tokens_from_messages(self, messages) -> int:
+        """Expose native message counting when the primary adapter supports it."""
+
+        return self._primary.get_num_tokens_from_messages(messages)
 
     def bind_tools(self, tools, **kwargs: Any) -> Runnable[Any, Any]:
         primary = _ThrottledRunnable(

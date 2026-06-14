@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langgraph.checkpoint.memory import InMemorySaver
@@ -17,8 +24,10 @@ from globex_agent.application.agents.base import LangGraphAgent
 from globex_agent.application.agents.identity import ThreadIdentity
 from globex_agent.application.agents.main_agent import (
     MainAgentFactory,
+    MainAgentState,
     SessionRegistry,
 )
+from globex_agent.application.agents.orchestrator import SubmitIntentInput
 from globex_agent.application.agents.search_agent import SearchAgentFactory
 from globex_agent.application.agents.trade_agent import TradeAgentFactory
 from globex_agent.application.usecases.catalog_search import CatalogSearchUseCase
@@ -41,6 +50,16 @@ from globex_agent.infrastructure.settings import load_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTS_PATH = PROJECT_ROOT / "data" / "demo" / "products.jsonl"
+
+
+def _frozen_payload(message: BaseMessage) -> dict | None:
+    text = str(getattr(message, "content", ""))
+    if "<frozen-interaction" not in text:
+        return None
+    try:
+        return json.loads(text.split(">", 1)[1].rsplit("</frozen-interaction>", 1)[0])
+    except (IndexError, json.JSONDecodeError):
+        return None
 
 
 class ScriptedMigrationModel(BaseChatModel):
@@ -172,6 +191,16 @@ class RecallChatModel(BaseChatModel):
     ) -> ChatResult:
         del stop, run_manager, kwargs
         for message in reversed(messages):
+            frozen = _frozen_payload(message)
+            if frozen and frozen.get("assistant"):
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(content=f"recalled:{frozen['assistant']}")
+                        )
+                    ]
+                )
+        for message in reversed(messages):
             if isinstance(message, AIMessage) and message.content:
                 return ChatResult(
                     generations=[
@@ -212,6 +241,16 @@ class FirstHumanRecallModel(BaseChatModel):
         **kwargs,
     ) -> ChatResult:
         del stop, run_manager, kwargs
+        for message in messages:
+            frozen = _frozen_payload(message)
+            if frozen and frozen.get("user"):
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(content=f"recalled:{frozen['user']}")
+                        )
+                    ]
+                )
         humans = [
             message.content
             for message in messages
@@ -227,6 +266,41 @@ class FirstHumanRecallModel(BaseChatModel):
             )
         return ChatResult(
             generations=[ChatGeneration(message=AIMessage(content="first"))]
+        )
+
+
+class ContextViewModel(BaseChatModel):
+    """Record the exact messages received after the Phase-C pre-model hook."""
+
+    _calls: list[list[BaseMessage]] = PrivateAttr(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "globex-context-view-model"
+
+    def bind_tools(
+        self,
+        tools,
+        *,
+        tool_choice: str | None = None,
+        **kwargs,
+    ) -> Runnable:
+        del tools, tool_choice, kwargs
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager=None,
+        **kwargs,
+    ) -> ChatResult:
+        del stop, run_manager, kwargs
+        self._calls.append(list(messages))
+        return ChatResult(
+            generations=[
+                ChatGeneration(message=AIMessage(content=f"answer-{len(self._calls)}"))
+            ]
         )
 
 
@@ -347,10 +421,20 @@ class TestMainAgentPaths:
 
     def test_main_search_trade_share_the_injected_checkpointer(self, monkeypatch) -> None:
         seen: list[object] = []
+        state_schemas: list[object] = []
 
-        def _capture_graph(_model, *, tools, prompt, checkpointer):
+        def _capture_graph(
+            _model,
+            *,
+            tools,
+            prompt,
+            checkpointer,
+            state_schema=None,
+            pre_model_hook=None,
+        ):
             del tools, prompt
             seen.append(checkpointer)
+            state_schemas.append(state_schema)
             return object()
 
         monkeypatch.setattr(
@@ -383,6 +467,7 @@ class TestMainAgentPaths:
         main_agent = factory.build(model=object(), thread_id="main-thread")
 
         assert seen == [checkpointer, checkpointer, checkpointer]
+        assert state_schemas == [None, None, MainAgentState]
         assert search_agent._thread_id == "search-thread"
         assert trade_agent._thread_id == "trade-thread"
         assert main_agent._thread_id == "main-thread"
@@ -449,29 +534,193 @@ class TestMainAgentPaths:
         await agent.reply("帮我找降噪耳机", thread_id="s1", event_sink=sink)
         assert any(event_type == "token.delta" for event_type, _ in events)
 
-    async def test_compress_context_trims_old_messages(self) -> None:
-        agent = _build_main_factory(RecallChatModel()).build(
-            model=RecallChatModel()
+class TestSessionRegistryPersistence:
+    async def test_phase_c_model_view_order_raw_retention_and_rebuild(self) -> None:
+        checkpointer = InMemorySaver()
+        identity = ThreadIdentity(environment="test", hmac_key="phase-c-key")
+        model = ContextViewModel()
+        factory = _build_main_factory(
+            model,
+            checkpointer=checkpointer,
+            identity=identity,
         )
-        for index in range(6):
-            await agent.reply(f"turn-{index}", thread_id="compress-thread")
+        agent = factory.build(model=model, thread_id=identity.main_thread_id("phase-c"))
+        first_intent = SubmitIntentInput(
+            shopping_session_id="phase-c",
+            buyer_id="buyer-c",
+            locale="zh-CN",
+            currency="CNY",
+            raw_query="旧原话",
+        )
+        first_context = await agent.prepare_session_context(first_intent)
+        assert await agent.reply("旧原话", session_context=first_context) == "answer-1"
 
-        result = await agent.compress_context("compress-thread", max_messages=4)
-        assert result is not None
-        assert result["removed"] > 0
+        second_intent = SubmitIntentInput(
+            shopping_session_id="phase-c",
+            buyer_id="buyer-c",
+            locale="zh-CN",
+            currency="CNY",
+            raw_query="当前问题",
+        )
+        second_context = await agent.prepare_session_context(second_intent)
 
-        state = await agent._graph.aget_state(
+        async def sink(_event_type: str, _payload: dict) -> None:
+            return None
+
+        assert (
+            await agent.reply(
+                "当前问题",
+                session_context=second_context,
+                event_sink=sink,
+            )
+            == "answer-2"
+        )
+        received = model._calls[-1]
+        frozen_index = next(
+            index
+            for index, message in enumerate(received)
+            if isinstance(message, SystemMessage)
+            and "<frozen-interaction" in str(message.content)
+        )
+        breakpoint_index = next(
+            index
+            for index, message in enumerate(received)
+            if "<globex-cache-breakpoint" in str(message.content)
+        )
+        context_index = next(
+            index
+            for index, message in enumerate(received)
+            if "<session-context>" in str(message.content)
+        )
+        current_index = next(
+            index
+            for index, message in enumerate(received)
+            if isinstance(message, HumanMessage)
+        )
+        assert frozen_index < breakpoint_index < context_index < current_index
+        assert received[current_index].content == "当前问题"
+        assert "旧原话" in str(received[frozen_index].content)
+        assert [
+            message.content for message in received if isinstance(message, HumanMessage)
+        ] == ["当前问题"]
+
+        config = {
+            "configurable": {
+                "thread_id": identity.main_thread_id("phase-c"),
+                "checkpoint_ns": "",
+            }
+        }
+        state = await agent._graph.aget_state(config)
+        assert [
+            message.content
+            for message in state.values["messages"]
+            if isinstance(message, HumanMessage)
+        ] == ["旧原话", "当前问题"]
+        assert state.values["freeze_cursor"] == 2
+        assert len(state.values["frozen_segments"]) == 1
+
+        rebuilt_model = ContextViewModel()
+        rebuilt_factory = _build_main_factory(
+            rebuilt_model,
+            checkpointer=checkpointer,
+            identity=identity,
+        )
+        rebuilt = rebuilt_factory.build(
+            model=rebuilt_model,
+            thread_id=identity.main_thread_id("phase-c"),
+        )
+        restored = await rebuilt._graph.aget_state(config)
+        assert restored.values["freeze_cursor"] == state.values["freeze_cursor"]
+        assert restored.values["frozen_segments"] == state.values["frozen_segments"]
+
+    async def test_l4_checkpoint_roundtrip_and_factory_rebuild(self) -> None:
+        checkpointer = InMemorySaver()
+        identity = ThreadIdentity(environment="test", hmac_key="l4-test-key")
+
+        def _registry() -> SessionRegistry:
+            factory = _build_main_factory(
+                RecallChatModel(),
+                checkpointer=checkpointer,
+                identity=identity,
+            )
+            original_build = factory.build
+            factory.build = lambda model=None, *, thread_id=None: original_build(
+                model or RecallChatModel(), thread_id=thread_id
+            )
+            return SessionRegistry(factory, identity)
+
+        intent = SubmitIntentInput(
+            shopping_session_id="l4-session",
+            buyer_id="buyer-1",
+            locale="zh-CN",
+            currency="CNY",
+            raw_query="预算 500 元",
+        )
+        first_registry = _registry()
+        first_agent = await first_registry.get_or_create("l4-session")
+        prepared = await first_agent.prepare_session_context(intent)
+        await first_agent.reply(intent.raw_query, session_context=prepared)
+        started = await first_agent.get_session_context()
+        replayed_start = await first_agent.prepare_session_context(intent)
+        assert started.revision == 1
+        assert replayed_start == started
+
+        events = [
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-a",
+                    "args": {"normalized_query": "bag", "ship_to": "US"},
+                },
+            },
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-b",
+                    "args": {"normalized_query": "backpack", "ship_to": "CA"},
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-b",
+                    "model_output": {"hits": [{"item_id": "item-b"}]},
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-a",
+                    "model_output": {"hits": [{"item_id": "item-a"}]},
+                },
+            },
+        ]
+        completed = await first_agent.reduce_session_context(intent, events)
+        replayed_end = await first_agent.reduce_session_context(intent, events)
+        assert completed.revision == 2
+        assert replayed_end == completed
+        assert completed.last_search["tool_call_id"] == "search-a"
+        assert completed.last_search["args"]["ship_to"] == "US"
+
+        snapshot = await first_agent._graph.aget_state(
             {
                 "configurable": {
-                    "thread_id": "compress-thread",
+                    "thread_id": first_registry.thread_id("l4-session"),
                     "checkpoint_ns": "",
                 }
             }
         )
-        assert len(state.values["messages"]) <= 4
+        assert snapshot.values["session_context"]["revision"] == 2
 
+        second_registry = _registry()
+        restored_agent = await second_registry.get_or_create("l4-session")
+        restored = await restored_agent.get_session_context()
+        assert restored == completed
 
-class TestSessionRegistryPersistence:
     async def test_restart_restores_session_context(self) -> None:
         factory = _build_main_factory(RecallChatModel(), checkpointer=InMemorySaver())
         original_build = factory.build

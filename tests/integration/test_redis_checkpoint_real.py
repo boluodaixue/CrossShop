@@ -20,6 +20,12 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from globex_agent.application.agents.base import LangGraphAgent
 from globex_agent.application.agents.identity import ThreadIdentity
+from globex_agent.application.agents.main_agent import MainAgentState
+from globex_agent.application.agents.orchestrator import SubmitIntentInput
+from globex_agent.application.context.assembler import context_pre_model_hook
+from globex_agent.application.context.compactor import summarize_frozen_segments
+from globex_agent.application.context.lifecycle import group_interaction_units
+from globex_agent.application.context.models import FrozenSegment
 from globex_agent.application.tools.task_dispatch_tool import build_task_dispatch_tool
 from globex_agent.infrastructure.checkpoint import (
     CheckpointConfigurationError,
@@ -28,6 +34,10 @@ from globex_agent.infrastructure.checkpoint import (
 from globex_agent.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from globex_agent.infrastructure.eventbus import TradeEventBus
 from globex_agent.infrastructure.settings import load_settings
+from scripts.eval_context_management_phase_f import (
+    _digest_messages,
+    run_evaluation,
+)
 
 # RediSearch indexes are only supported in Redis DB 0; isolate cases with
 # unique thread IDs instead of selecting a numbered database.
@@ -70,6 +80,32 @@ def _child_graph(saver: AsyncRedisSaver):
     builder.add_node("step", step)
     builder.add_edge(START, "step")
     builder.add_edge("step", END)
+    return builder.compile(checkpointer=saver)
+
+
+def _context_graph(saver: AsyncRedisSaver):
+    def finish(state: MainAgentState):
+        del state
+        return {"messages": [AIMessage(content="done")]}
+
+    builder = StateGraph(MainAgentState)
+    builder.add_node("pre_model_hook", context_pre_model_hook)
+    builder.add_node("agent", finish)
+    builder.add_edge(START, "pre_model_hook")
+    builder.add_edge("pre_model_hook", "agent")
+    builder.add_edge("agent", END)
+    return builder.compile(checkpointer=saver)
+
+
+def _phase_f_snapshot_graph(saver: AsyncRedisSaver):
+    def persist(state: MainAgentState):
+        del state
+        return {}
+
+    builder = StateGraph(MainAgentState)
+    builder.add_node("persist", persist)
+    builder.add_edge(START, "persist")
+    builder.add_edge("persist", END)
     return builder.compile(checkpointer=saver)
 
 
@@ -177,6 +213,113 @@ async def test_real_redis_checkpoint_history_and_rebuild(real_redis) -> None:
         assert restored["count"] == 3
         history = [item async for item in rebuilt.alist(config)]
         assert len(history) > 2
+    finally:
+        await rebuilt.adelete_thread(thread_id)
+        await rebuilt.__aexit__(None, None, None)
+
+
+async def test_real_redis_l4_roundtrip_and_rebuild(real_redis) -> None:
+    del real_redis
+    thread_id = f"globex-real-test:l4:{os.getpid()}:{time.time_ns()}"
+    intent = SubmitIntentInput(
+        shopping_session_id="real-l4-session",
+        buyer_id="real-buyer",
+        locale="zh-CN",
+        currency="CNY",
+        raw_query="预算 500 元",
+    )
+    saver = await _open_saver(ttl_minutes=1)
+    try:
+        first = LangGraphAgent("main", _context_graph(saver), thread_id=thread_id)
+        request_context = await first.prepare_session_context(intent)
+        assert await first.reply(intent.raw_query, session_context=request_context) == "done"
+        completed = await first.reduce_session_context(
+            intent,
+            [
+                {
+                    "type": "tool.invoke",
+                    "payload": {
+                        "tool": "product_search_tool",
+                        "tool_call_id": "real-search",
+                        "args": {"normalized_query": "bag", "ship_to": "US"},
+                    },
+                },
+                {
+                    "type": "tool.result",
+                    "payload": {
+                        "tool": "product_search_tool",
+                        "tool_call_id": "real-search",
+                        "model_output": {"hits": [{"item_id": "real-item"}]},
+                    },
+                },
+            ],
+        )
+        assert completed.revision == 2
+        replayed_request = await first.prepare_session_context(intent)
+        assert await first.reply(intent.raw_query, session_context=replayed_request) == "done"
+        frozen_state = await first._graph.aget_state(_config(thread_id))
+        assert frozen_state.values["freeze_cursor"] == 2
+        assert len(frozen_state.values["frozen_segments"]) == 1
+        summary = summarize_frozen_segments(
+            [FrozenSegment.from_dict(item) for item in frozen_state.values["frozen_segments"]]
+        )
+        await first._graph.aupdate_state(
+            _config(thread_id),
+            {"stage_summary": summary.to_dict()},
+            as_node="agent",
+        )
+        frozen_state = await first._graph.aget_state(_config(thread_id))
+    finally:
+        await saver.__aexit__(None, None, None)
+
+    rebuilt = await _open_saver(ttl_minutes=1)
+    try:
+        second = LangGraphAgent("main", _context_graph(rebuilt), thread_id=thread_id)
+        restored = await second.get_session_context()
+        assert restored == completed
+        assert restored.last_search["tool_call_id"] == "real-search"
+        restored_state = await second._graph.aget_state(_config(thread_id))
+        assert restored_state.values["freeze_cursor"] == 2
+        assert restored_state.values["frozen_segments"] == frozen_state.values["frozen_segments"]
+        assert restored_state.values["stage_summary"] == summary.to_dict()
+    finally:
+        await rebuilt.adelete_thread(thread_id)
+        await rebuilt.__aexit__(None, None, None)
+
+
+async def test_real_redis_phase_f_long_session_rebuild(real_redis) -> None:
+    del real_redis
+    report = run_evaluation()
+    expected = report["checkpoint_state"]
+    thread_id = f"globex-real-test:phase-f:{os.getpid()}:{time.time_ns()}"
+    config = _config(thread_id)
+    saver = await _open_saver(ttl_minutes=1)
+    try:
+        await _phase_f_snapshot_graph(saver).ainvoke(expected, config=config)
+        persisted = await _phase_f_snapshot_graph(saver).aget_state(config)
+        assert persisted.values["session_context"]["revision"] == 40
+    finally:
+        await saver.__aexit__(None, None, None)
+
+    rebuilt = await _open_saver(ttl_minutes=1)
+    try:
+        snapshot = await _phase_f_snapshot_graph(rebuilt).aget_state(config)
+        values = snapshot.values
+        assert values["session_context"] == expected["session_context"]
+        assert values["freeze_cursor"] == expected["freeze_cursor"]
+        assert values["frozen_segments"] == expected["frozen_segments"]
+        assert values["stage_summary"] == expected["stage_summary"]
+        assert values["budget_report"] == expected["budget_report"]
+        assert values["budget_decision"] == expected["budget_decision"]
+        assert values["context_compression"] == expected["context_compression"]
+        assert len(values["messages"]) == len(expected["messages"])
+        cursor = int(values["freeze_cursor"])
+        assert _digest_messages(values["messages"][cursor:]) == report["active_digest"]
+        assert len(values["frozen_segments"]) == 19
+        assert len(values["stage_summary"]["source_segment_ids"]) == 18
+        units = group_interaction_units(values["messages"])
+        assert len(units) == 20
+        assert all(unit.complete for unit in units)
     finally:
         await rebuilt.adelete_thread(thread_id)
         await rebuilt.__aexit__(None, None, None)

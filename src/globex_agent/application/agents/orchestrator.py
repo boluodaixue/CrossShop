@@ -64,7 +64,6 @@ class MainAgentOrchestrator:
         preference_store: PreferenceStore,
         conversation_store: ConversationStore | None = None,
         semantic_cache: SemanticCache | None = None,
-        context_size: int = 128000,
         evidence_verifier: EvidenceVerificationService | None = None,
         answer_finalizer: Any | None = None,
         max_generation_attempts: int = _MAX_GENERATION_ATTEMPTS,
@@ -77,7 +76,6 @@ class MainAgentOrchestrator:
         self._preference_store = preference_store
         self._conversation_store = conversation_store
         self._semantic_cache = semantic_cache
-        self._context_size = context_size
         self._evidence_verifier = evidence_verifier or EvidenceVerificationService(None)
         self._answer_finalizer = answer_finalizer
         self._max_generation_attempts = max(1, min(3, max_generation_attempts))
@@ -110,15 +108,8 @@ class MainAgentOrchestrator:
         recommended_cards: list[dict[str, Any]] = []
         verification_status = "unavailable"
         try:
-            has_history = await self._has_history(session_id)
             agent = await self._sessions.get_or_create(session_id)
-            if has_history:
-                compressed = await agent.compress_context(
-                    self._sessions.thread_id(session_id),
-                    max_messages=max(4, self._context_size // 1000),
-                )
-                if compressed:
-                    self._bus.publish(session_id, "context.compressed", compressed)
+            request_context = await agent.prepare_session_context(intent)
             query = await self._build_query(intent)
             captured_events.extend(_drain_trace(trace))
             result = await self._reply_with_retry(
@@ -127,6 +118,7 @@ class MainAgentOrchestrator:
                 query=query,
                 trace=trace,
                 captured_events=captured_events,
+                session_context=request_context,
             )
             final_text, recommended_cards, verification_status = result
             self._bus.publish(
@@ -138,6 +130,8 @@ class MainAgentOrchestrator:
                     "verification_status": verification_status,
                 },
             )
+            captured_events.extend(_drain_trace(trace))
+            await agent.reduce_session_context(intent, captured_events)
             return SubmitIntentOutput(
                 session_id,
                 final_text,
@@ -169,16 +163,6 @@ class MainAgentOrchestrator:
                 captured_events,
             )
 
-    async def _has_history(self, session_id: str) -> bool:
-        if self._conversation_store is None:
-            return False
-        try:
-            turns = await self._conversation_store.list_turns(session_id, limit=1)
-        except Exception as err:  # noqa: BLE001 - memory read must not block a turn
-            logger.warning("读取会话历史失败，按无历史处理：%s", err)
-            return False
-        return bool(turns)
-
     async def _build_query(self, intent: SubmitIntentInput) -> str:
         try:
             preferences = await self._preference_store.list_by_buyer(intent.buyer_id)
@@ -198,6 +182,7 @@ class MainAgentOrchestrator:
         query: str,
         trace: asyncio.Queue,
         captured_events: list[dict[str, Any]],
+        session_context: Any | None = None,
     ) -> tuple[str, list[dict[str, Any]], str]:
         frozen_events: list[dict[str, Any]] | None = None
         frozen_tool_outputs: list[dict[str, Any]] = []
@@ -218,6 +203,7 @@ class MainAgentOrchestrator:
                             agent,
                             query,
                             allow_tools=True,
+                            session_context=session_context,
                         ),
                         deadline,
                         self._generation_timeout_seconds,
@@ -351,6 +337,7 @@ class MainAgentOrchestrator:
         query: str,
         *,
         allow_tools: bool,
+        session_context: Any | None = None,
     ) -> Any:
         del allow_tools  # the first graph call has tools; retry calls use the same graph turn
 
@@ -363,11 +350,13 @@ class MainAgentOrchestrator:
         last_error: Exception | None = None
         for attempt in range(_MAX_TURN_RETRIES + 1):
             try:
-                return await agent.reply(
-                    query,
-                    thread_id=self._sessions.thread_id(session_id),
-                    event_sink=sink,
-                )
+                reply_kwargs = {
+                    "thread_id": self._sessions.thread_id(session_id),
+                    "event_sink": sink,
+                }
+                if session_context is not None:
+                    reply_kwargs["session_context"] = session_context
+                return await agent.reply(query, **reply_kwargs)
             except Exception as err:  # noqa: BLE001 - transient model boundary
                 if not is_transient_error(err) or attempt >= _MAX_TURN_RETRIES:
                     raise

@@ -57,48 +57,55 @@ _P1_USER_REQUIREMENT_TERMS = (
 _P1_INVALID_STATUS_TERMS = ("verified", "passed", "已验证", "通过")
 
 RUBRIC_GENERATOR_SYSTEM = (
-    "你是 Globex 离线评测 Rubric Generator。你在 Agent 执行前出题，因此输入绝不会包含"
-    "最终回答或实际执行结果。只依据 query、flow_type、flow_expectations 和 available_evidence"
-    "生成本 Query 的 rubric；只输出 JSON，不要评分。"
-    "P0 是业务红线：仅生成适用于本 Query、且可由最终用户可见证据判断的预算严重越界、"
-    "违禁/危险建议、泄露内部名称或协议、以及与用户明确性别要求冲突等硬失败项；"
-    "每项严格输出 {id,criterion,evidence_sources}。"
-    "P1 只检查执行规范：所需工具、工具顺序与次数上限、生成尝试、最终结果以及在线验证门禁；"
-    "每项严格输出 {id,criterion,evidence_sources}，每个违反项固定扣 2 分。"
-    "P1 的 evidence_sources 只能使用 execution.flow_type、execution.tool_sequence、"
-    "execution.tool_counts、execution.generation_attempts、execution.final_result_present、"
-    "online_gate.verification_status、online_gate.fact_guard_passed、"
-    "online_gate.evidence_judge_status；P1 绝不能使用 query、final_text 或 final_cards。"
-    "require_verified_final 只是要求在线验证门禁存在并通过的概念开关，不是字面状态值。"
-    "当 require_verified_final=true 时，online_gate.verification_status 和"
-    "online_gate.evidence_judge_status 的唯一成功值是 supported，"
-    "online_gate.fact_guard_passed 的成功值是 true；禁止生成 verified、passed 或其他状态值"
-    "作为期望。"
-    "用户需求是否满足、回答是否清晰有用一律属于 P2，绝不能放入 P1；例如未满足防水要求"
-    "只能影响 P2 的需求覆盖度。"
-    "P2 必须恰好包含需求覆盖度、场景洞察力、决策建议价值三个维度；每项严格输出"
-    "{id,dimension,requirements,expectation,evidence_sources}。requirements 是本 Query 对该维度"
-    "特有的简短字符串列表，expectation 是一句简短期望；不要输出通用 1~5 评分锚点。"
-    "P0/P1 可以为空。不得评判现实物流、用户满意、实际收货、真实配送或未来销量。"
-    "evidence_sources 只能从 available_evidence.paths 选择，不能自行发明别名。只输出"
-    "{\"p0\":[],\"p1\":[],\"p2\":[]}，不得增加其他字段。"
+    "你负责在执行前生成评分规则，只生成规则，不评分，不读取最终回答或实际工具结果。\n"
+    "输出契约：只输出 JSON {\"p0\":[],\"p1\":[],\"p2\":[]}，不得增加字段；"
+    "P0/P1 每项为 {id,criterion,evidence_sources}，P2 每项为 "
+    "{id,dimension,requirements,expectation,evidence_sources}。\n\n"
+    "P0 业务红线：只写能由 query、final_text、final_cards 直接判断的严重越界、危险/违禁建议、"
+    "内部协议或字段泄露等硬失败；没有明确红线时可为空。\n\n"
+    "P1 只写 flow_expectations 可机械核验的执行规则：required tools、声明顺序、单工具/总调用上限、"
+    "生成尝试次数、final 是否存在，以及 online gate。允许示例：必须调用 product_search_tool；"
+    "工具调用次数不超过 2；verification_status 为 supported；fact_guard_passed 为 true。"
+    "P1 的 evidence_sources 只能是 execution.* 或 online_gate.*，不得使用 query、final_text、"
+    "final_cards。禁止示例：预算、防水、颜色、材质、尺寸、需求是否满足、商品是否合适、推荐质量；"
+    "这些全部属于 P2。online gate 成功值只允许 supported/true，不得写 verified/passed。\n\n"
+    "P2 必须恰好有三个 dimension：需求覆盖度、场景洞察力、决策建议价值；每项 requirements 必须是"
+    "非空字符串列表。P2 必须 evidence-bounded：requirements/expectation 只能要求 query、"
+    "final_text、final_cards 实际提供且可验证的内容，不得预设最终证据包含任何外部品类知识。"
+    "每条 expectation 必须是条件式：若 final_text/final_cards 提供相关事实，则评价是否正确使用；"
+    "若证据缺失，requirements 应"
+    "改写为可评价行为，例如说明证据限制、明确无合格结果、避免以不合格商品替代、给出必要澄清；不得留空。"
+    "决策建议价值不等于必须提供下一步、产品对比或额外建议：只有 query 明确需要且证据支持时才"
+    "评价这些。"
+    "没有合格商品证据时，诚实零命中且不推荐不合格替代品可以是高价值决策，不因没有规格、对比、价格或"
+    "下一步而扣分。场景洞察力同理，不得无条件要求防水等级、照射范围或市场常识；只评价限制说明和避免臆测。"
+    "不得因缺失未提供的知识本身扣分。"
+    "不得评判现实物流、用户满意、实际收货、真实配送或未来销量。"
+    "证据源只能从 available_evidence.paths 选择。"
 )
 
 FINAL_JUDGE_SYSTEM = (
-    "你是独立的 Globex Final LLM-as-Judge。只依据输入中的 query、rubric、final、execution"
-    "和 online_gate 评分，不得补充外部事实，不得自行计算总分。后端已确定性保证 selection"
-    "属于 Top-K、variant 归属/可售、卡片同源、币种/目的国/数量、报价算术及零命中选择；"
-    "不要重判这些事实，只读取 online_gate。对 P0 每项输出 triggered 布尔值和 reason；"
-    "对 P1 每项输出 violated 布尔值和 reason；对 P2 每项输出 1 到 5 的整数 score 和 reason。"
-    "P2 通用锚点：5=完全满足且证据清楚；4=基本满足，仅有轻微遗漏；3=核心部分满足但有明显"
-    "缺口；2=仅少量满足或建议价值很弱；1=未满足、相互冲突或回答不可用。需求覆盖度只评"
-    "用户显式/隐含需求与最终可见事实；场景洞察力评场景化取舍；决策建议价值评可执行性、"
-    "比较与下一步。不要因同一问题跨 P1/P2 重复扣分。"
-    "必须覆盖 Rubric 的每一个 id，且只输出 JSON："
+    "你是最终评分器。只依据输入中的 query、rubric、final、execution、online_gate 评分，"
+    "不补充外部事实，不自行计算总分，不扩展 rubric 的评分项。"
+    "selection、variant、卡片同源、币种/目的国/数量、报价算术和"
+    "零命中选择等后端门禁只读取 online_gate，不重复判断。\n"
+    "P0 每项输出 triggered 布尔值和 reason；P1 每项输出 violated 布尔值和 reason；"
+    "P2 每项输出 1-5 整数 score 和 reason。"
+    "P2 锚点：5=完全满足且证据清楚；4=基本满足仅轻微遗漏；3=核心满足但有明显缺口；"
+    "2=少量满足或建议价值弱；1=未满足、冲突或不可用。需求覆盖度只评显式/隐含需求与最终可见事实；"
+    "场景洞察力评证据支持的场景取舍；决策建议价值评 rubric 条件要求的可执行性。不要把它解释成必须有"
+    "下一步、产品对比或额外建议；只有 query 明确需要且证据支持时才评价这些。zero-hit 的真实无结果、"
+    "明确限制且不推荐不合格替代品，可以获得高分。"
+    "不要因同一问题跨 P1/P2 重复扣分。\n"
+    "评分必须 evidence-bounded：输入没有提供品类知识、常见类型、市场价、规格或物流时，"
+    "不得因回答没有"
+    "补充或编造这些知识而扣分；只评价回答是否说明限制并避免臆测，只有 rubric 条件要求时才评价"
+    "澄清/下一步。\n"
+    "必须覆盖 rubric 每一个 id，只输出 JSON："
     "{\"p0_results\":[{\"rubric_id\":\"...\",\"triggered\":false,\"reason\":\"...\"}],"
     "\"p1_results\":[{\"rubric_id\":\"...\",\"violated\":false,\"reason\":\"...\"}],"
     "\"p2_results\":[{\"rubric_id\":\"...\",\"score\":1,\"reason\":\"...\"}],"
-    "\"reason\":\"...\"}。"
+    "\"reason\":\"...\"}"
 )
 
 
@@ -669,6 +676,22 @@ def _compact_variant(variant: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _compact_highlights(value: Any) -> list[Any]:
+    """Keep user-visible highlights while removing internal provenance labels."""
+
+    if not isinstance(value, list):
+        return []
+    internal_prefixes = ("source_attributes:", "source_tag:")
+    return [
+        entry
+        for entry in value
+        if not (
+            isinstance(entry, str)
+            and entry.strip().casefold().startswith(internal_prefixes)
+        )
+    ]
+
+
 def _variant_is_mentioned(answer_text: str, variant: dict[str, Any]) -> bool:
     candidates = [variant.get("display_name")]
     candidates.extend(
@@ -687,9 +710,12 @@ def _compact_card(card: Any, answer_text: str) -> dict[str, Any] | None:
         return None
     clean = {
         key: card.get(key)
-        for key in ("title", "category", "currency", "highlights")
+        for key in ("title", "category", "currency")
         if card.get(key) not in (None, "", [])
     }
+    highlights = _compact_highlights(card.get("highlights"))
+    if highlights:
+        clean["highlights"] = highlights
     price = card.get("price_major")
     if price is None and card.get("price_min_major") == card.get("price_max_major"):
         price = card.get("price_min_major")
@@ -1058,16 +1084,17 @@ async def _call_json_model(
 
 
 async def call_rubric_generator(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
-    rubric = validate_rubric(
-        await _call_json_model(
-            client,
-            model=_rubric_model(),
-            system=RUBRIC_GENERATOR_SYSTEM,
-            user_payload=build_rubric_input(item),
-            max_tokens=1200,
-            timeout_seconds=150,
-        )
+    model_payload = await _call_json_model(
+        client,
+        model=_rubric_model(),
+        system=RUBRIC_GENERATOR_SYSTEM,
+        user_payload=build_rubric_input(item),
+        max_tokens=1200,
+        timeout_seconds=150,
     )
+    if not isinstance(model_payload, dict):
+        raise ValueError("Rubric Generator returned non-object JSON")
+    rubric = validate_rubric(model_payload)
     return {"evaluation_status": "completed", "rubric": rubric}
 
 
@@ -1110,58 +1137,68 @@ def _progress_line(index: int, total: int, row: dict[str, Any], elapsed_seconds:
 
 
 async def evaluate_items(
-    items: list[dict[str, Any]], *, run_judge: bool = True
+    items: list[dict[str, Any]], *, run_judge: bool = True, concurrency: int = 2
 ) -> list[dict[str, Any]]:
+    if concurrency < 1:
+        raise ValueError("concurrency must be a positive integer")
     # The evaluator must not inherit a machine-wide proxy when it makes the
     # explicitly opted-in outbound model calls.
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         os.environ.pop(key, None)
-    results: list[dict[str, Any]] = []
     async with httpx.AsyncClient(trust_env=False) as client:
         total = len(items)
-        for index, item in enumerate(items, 1):
-            item_started = time.perf_counter()
-            row = {**item, "summary": _flow_summary(item)}
-            if run_judge:
-                stage = "rubric_generator"
-                try:
-                    rubric_result = await call_rubric_generator(client, row)
-                    row["rubric"] = rubric_result.get("rubric")
-                    if rubric_result.get("evaluation_status") != "completed":
-                        row["final_judge"] = rubric_result
-                    else:
-                        stage = "final_judge"
-                        row["final_judge"] = await call_final_judge(
-                            client, row, rubric_result["rubric"]
-                        )
-                except (
-                    httpx.HTTPError,
-                    KeyError,
-                    IndexError,
-                    TypeError,
-                    ValueError,
-                    json.JSONDecodeError,
-                ) as err:
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def evaluate_one(index: int, item: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+            async with semaphore:
+                item_started = time.perf_counter()
+                row = {**item, "summary": _flow_summary(item)}
+                if run_judge:
+                    stage = "rubric_generator"
+                    try:
+                        rubric_result = await call_rubric_generator(client, row)
+                        row["rubric"] = rubric_result.get("rubric")
+                        if rubric_result.get("evaluation_status") != "completed":
+                            row["final_judge"] = rubric_result
+                        else:
+                            stage = "final_judge"
+                            row["final_judge"] = await call_final_judge(
+                                client, row, rubric_result["rubric"]
+                            )
+                    except (
+                        httpx.HTTPError,
+                        KeyError,
+                        IndexError,
+                        TypeError,
+                        ValueError,
+                        json.JSONDecodeError,
+                    ) as err:
+                        row["final_judge"] = {
+                            "evaluation_status": "inconclusive",
+                            "failure_stage": stage,
+                            "reason": f"{type(err).__name__}: {err}".strip(),
+                        }
+                else:
+                    row["rubric"] = None
                     row["final_judge"] = {
                         "evaluation_status": "inconclusive",
-                        "failure_stage": stage,
-                        "reason": f"{type(err).__name__}: {err}".strip(),
+                        "reason": "judge not run",
                     }
-            else:
-                row["rubric"] = None
-                row["final_judge"] = {
-                    "evaluation_status": "inconclusive",
-                    "reason": "judge not run",
-                }
-            row["evaluation_status"] = row["final_judge"].get(
-                "evaluation_status", "inconclusive"
-            )
-            results.append(row)
-            print(
-                _progress_line(index, total, row, time.perf_counter() - item_started),
-                flush=True,
-            )
-    return results
+                row["evaluation_status"] = row["final_judge"].get(
+                    "evaluation_status", "inconclusive"
+                )
+                print(
+                    _progress_line(index, total, row, time.perf_counter() - item_started),
+                    flush=True,
+                )
+                return index, row
+
+        tasks = [
+            asyncio.create_task(evaluate_one(index, item))
+            for index, item in enumerate(items, 1)
+        ]
+        completed = await asyncio.gather(*tasks)
+    return [row for _, row in sorted(completed)]
 
 
 def _judge_passes(judge: dict[str, Any]) -> bool:
@@ -1169,6 +1206,16 @@ def _judge_passes(judge: dict[str, Any]) -> bool:
         judge.get("evaluation_status") == "completed"
         and judge.get("quality_pass") is True
     )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def render_report(results: list[dict[str, Any]]) -> str:
@@ -1266,7 +1313,9 @@ async def main_async(args: argparse.Namespace) -> Path:
     items = parse_conversation(input_path)
     if args.limit:
         items = items[: args.limit]
-    results = await evaluate_items(items, run_judge=not args.no_judge)
+    results = await evaluate_items(
+        items, run_judge=not args.no_judge, concurrency=args.concurrency
+    )
     output = Path(args.out) if args.out else PROJECT_ROOT / "output" / "eval" / (
         f"final-judge-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
     )
@@ -1285,6 +1334,12 @@ def main() -> None:
     parser.add_argument("--out", default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--no-judge", action="store_true")
+    parser.add_argument(
+        "--concurrency",
+        type=_positive_int,
+        default=2,
+        help="maximum number of cases evaluated concurrently (default: 2)",
+    )
     args = parser.parse_args()
     asyncio.run(main_async(args))
 
