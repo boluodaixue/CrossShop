@@ -1,1 +1,0 @@
-"""Agent-facing tool factories."""

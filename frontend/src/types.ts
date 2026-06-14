@@ -8,12 +8,7 @@ export type TradeEventType =
   | "plan.update"
   | "context.compressed"
   | "model.fallback"
-  | "cache.hit"
-  | "task.queued"
-  | "task.started"
   | "final.result"
-  | "evidence.freeze"
-  | "evidence.verify"
   | "error";
 
 export interface TradeEvent {
@@ -31,29 +26,19 @@ export interface LandedPrice {
   de_minimis_applied: boolean;
   landed_total_major: number;
   currency: string;
-  quantity: number;
   unavailable_reason?: string;
 }
 
 export interface ProductCard {
-  item_id: string;
+  product_id: string;
   title: string;
   brand: string;
   category: string;
   origin_country: string;
-  price_major: number | null;
+  price_major: number;
   currency: string;
   highlights: string[];
-  variants: {
-    variant_id: string;
-    display_name: string;
-    options: { code?: string; name: string; value: string }[];
-    price_major: number | null;
-    currency: string;
-    availability: string;
-    landed_price?: LandedPrice;
-  }[];
-  selected_variant_id?: string;
+  skus: { sku_id: string; spec: string; price_major: number; currency: string; stock: number }[];
   score: number;
   landed_price?: LandedPrice;
 }

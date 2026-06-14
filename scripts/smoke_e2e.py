@@ -1,11 +1,17 @@
-"""End-to-end smoke script for the running FastAPI service."""
+# -*- coding: utf-8 -*-
+"""端到端冒烟脚本
 
+用法（先启动服务）：
+    uv run uvicorn app.presentation.server:app --port 8000
+    uv run python scripts/smoke_e2e.py [--query "..."]
+
+流程：WS 订阅会话事件 → POST /commerce/intents → 实时打印事件 → 打印最终回复。
+"""
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import sys
 import uuid
 
 import httpx
@@ -13,9 +19,6 @@ import websockets
 
 BASE_URL = "http://127.0.0.1:8000"
 WS_URL = "ws://127.0.0.1:8000/commerce/events"
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 async def listen_events(session_id: str, stop: asyncio.Event) -> list[dict]:
@@ -32,9 +35,7 @@ async def listen_events(session_id: str, stop: asyncio.Event) -> list[dict]:
             if event["type"] == "token.delta":
                 print(event["payload"]["token"], end="", flush=True)
             else:
-                print(
-                    f"\n[{event['type']}] {json.dumps(event['payload'], ensure_ascii=False)[:300]}"
-                )
+                print(f"\n[{event['type']}] {json.dumps(event['payload'], ensure_ascii=False)[:300]}")
     return events
 
 
@@ -42,9 +43,9 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--query",
-        default="我想买一款 500 元以内的头戴式降噪耳机，预算 500 块。",
+        default="我想买一套便宜又抗造的旅行三件套，预算 300 块，最好不要塑料的，喜欢小众一点。",
     )
-    parser.add_argument("--session", default=None)
+    parser.add_argument("--session", default=None, help="复用已有会话 ID 做多轮对话")
     args = parser.parse_args()
 
     session_id = args.session or f"smoke-{uuid.uuid4().hex[:8]}"
@@ -52,7 +53,7 @@ async def main() -> None:
 
     stop = asyncio.Event()
     listener = asyncio.create_task(listen_events(session_id, stop))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5)  # 等 WS 订阅建立
 
     async with httpx.AsyncClient(timeout=600) as client:
         response = await client.post(
@@ -68,7 +69,7 @@ async def main() -> None:
         response.raise_for_status()
         body = response.json()
 
-    await asyncio.sleep(1)
+    await asyncio.sleep(1)  # 等尾部事件送达
     stop.set()
     events = await listener
 

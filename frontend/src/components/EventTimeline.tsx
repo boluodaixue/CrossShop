@@ -7,11 +7,7 @@ const LABELS: Record<string, string> = {
   "plan.update": "任务清单",
   "context.compressed": "上下文压缩",
   "model.fallback": "模型回退",
-  "cache.hit": "缓存命中",
-  "task.queued": "任务入队",
-  "task.started": "任务开始",
   "final.result": "最终回复",
-  "evidence.verify": "在线证据验证",
   error: "异常",
 };
 
@@ -42,15 +38,8 @@ function summarize(event: TradeEvent): string {
       return `摘要 ${p.summary_length} 字，压缩后上下文 ${p.context_messages} 条`;
     case "model.fallback":
       return `${p.from} 限流，已改用 ${p.to}（${String(p.reason ?? "").slice(0, 40)}）`;
-    case "cache.hit":
-      return `语义缓存命中（${p.similarity}），匹配问句：${String(p.matched_query ?? "")}`;
-    case "task.queued":
-    case "task.started":
-      return `任务 ${p.task_id ?? ""} ${event.type === "task.started" ? "开始" : "已入队"}`;
     case "final.result":
       return String(p.text ?? "").slice(0, 60);
-    case "evidence.verify":
-      return `${p.verification_status ?? ""}：${String(p.reason ?? "").slice(0, 80)}`;
     case "error":
       return String(p.message ?? "");
     default:

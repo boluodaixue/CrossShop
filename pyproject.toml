@@ -1,55 +1,35 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "globex-agent-learning"
+name = "globex-agent"
 version = "0.1.0"
-description = "Course-driven learning implementation of the Globex ecommerce search agent"
+description = "Globex 跨境电商 Agent（AgentScope 版 MVP）：DDD 洋葱架构 + MainAgent/SearchAgent/TradeAgent"
 readme = "README.md"
-requires-python = ">=3.10,<3.11"
+# AgentScope 2.x 要求 Python >= 3.11
+requires-python = ">=3.11,<3.14"
 dependencies = [
+    "agentscope>=2,<3",
     "aiosqlite>=0.22.1",
-    "faiss-cpu>=1.8,<2",
-    "fastapi>=0.141.1",
+    "fastapi>=0.115",
     "httpx>=0.28.1",
-    "langchain>=1,<2",
-    "langchain-openai>=1,<2",
-    "langgraph>=1,<2",
-    "langgraph-checkpoint-redis>=0.5,<0.6",
-    "numpy>=1.26,<3",
-    "pyarrow>=17,<24",
-    "pydantic>=2.8,<3",
-    "python-dotenv>=1,<2",
-    "pyyaml>=6,<7",
-    "redis>=5.2.1,<8",
-    "sentence-transformers>=3,<6",
-    "sqlalchemy[asyncio]>=2.0.52",
-    "uvicorn[standard]>=0.52.3",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.19.0",
+    "redis>=8.1.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.30",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=8,<10",
-    "pytest-asyncio>=1.4.0",
-    "ruff>=0.12,<1",
-]
-
-[tool.setuptools.packages.find]
-where = ["src"]
+# 声明为独立 workspace root，避免 uv 向上探测课程仓库根部的 pyproject
+[tool.uv.workspace]
+members = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
 asyncio_mode = "auto"
-addopts = ["-p", "no:cacheprovider"]
-filterwarnings = [
-    "ignore:create_react_agent has been moved.*:langgraph.warnings.LangGraphDeprecatedSinceV10",
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "websockets>=16.1.1",
 ]
-
-[tool.ruff]
-target-version = "py310"
-line-length = 100
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]

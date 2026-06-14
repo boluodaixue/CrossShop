@@ -1,1 +1,0 @@
-"""Vector index infrastructure adapters."""

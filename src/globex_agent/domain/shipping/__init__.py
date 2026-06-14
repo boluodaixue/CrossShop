@@ -1,1 +1,0 @@
-"""Shipping domain rules."""

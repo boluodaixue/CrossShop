@@ -1,12 +1,11 @@
 import type { ProductCard, TradeEvent } from "../types";
 
-/** 只从在线验证通过的 final.result 读取后端 hydrate 的卡片。 */
+/** 从最近一次 product_search 相关的工具事件里取商品卡（工具结果 JSON 由 Agent 侧透传）。 */
 function latestCards(events: TradeEvent[]): ProductCard[] {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (event.type !== "final.result") continue;
-    if (event.payload?.verification_status !== "supported") return [];
-    const cards = event.payload?.recommended_cards as ProductCard[] | undefined;
+    if (event.type !== "tool.result") continue;
+    const cards = event.payload?.hits as ProductCard[] | undefined;
     if (cards && cards.length) return cards;
   }
   return [];
@@ -19,7 +18,7 @@ export default function ProductCards({ events }: { events: TradeEvent[] }) {
   return (
     <div className="cards">
       {cards.map((card) => (
-        <article key={card.item_id} className="card">
+        <article key={card.product_id} className="card">
           <header>
             <strong>{card.title}</strong>
             <span className="brand">
@@ -47,12 +46,9 @@ export default function ProductCards({ events }: { events: TradeEvent[] }) {
             ))}
           </ul>
           <div className="skus">
-            {card.variants.map((variant) => (
-              <span key={variant.variant_id} className="sku">
-                {variant.display_name} · {variant.price_major ?? "暂无"} {variant.currency}
-                {variant.landed_price && !variant.landed_price.unavailable_reason
-                  ? ` · 到手 ${variant.landed_price.landed_total_major} ${variant.landed_price.currency}`
-                  : ""}
+            {card.skus.map((sku) => (
+              <span key={sku.sku_id} className="sku">
+                {sku.spec} · {sku.price_major} {sku.currency} · 库存 {sku.stock}
               </span>
             ))}
           </div>

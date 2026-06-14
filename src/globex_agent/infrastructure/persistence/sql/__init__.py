@@ -1,1 +1,0 @@
-"""SQL persistence infrastructure."""

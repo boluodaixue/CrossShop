@@ -1,7 +1,0 @@
-# Install into the existing blog_04 environment after CUDA PyTorch is available.
-# PyTorch is intentionally not listed: keep the environment's torch 2.0.1+cu118.
-huggingface-hub==0.36.2
-safetensors==0.7.0
-sentencepiece==0.2.0
-tokenizers==0.19.1
-transformers==4.44.2
