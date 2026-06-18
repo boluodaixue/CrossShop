@@ -114,6 +114,17 @@ def test_document_conversion_only_adds_frozen_index_fields() -> None:
     assert document["embedding_version"] == EMBEDDING_VERSION
 
 
+def test_reference_locale_is_null_because_source_has_no_locale_fact() -> None:
+    document = index_document(_product(), None, _vector())
+    assert document["locale"] is None
+    reference = next(
+        partition
+        for partition in PARTITIONS
+        if partition.partition_id == "globex_reference"
+    )
+    assert reference.locale is None
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

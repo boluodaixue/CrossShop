@@ -35,7 +35,7 @@ class Partition:
     partition_id: str
     relative_path: str
     index_name: str
-    locale: str
+    locale: str | None
 
 
 PARTITIONS = (
@@ -43,7 +43,7 @@ PARTITIONS = (
         "globex_reference",
         "globex_reference/products.jsonl",
         INDEX_NAMES["globex_reference"],
-        "global",
+        None,
     ),
     Partition("taobao", "taobao/products.jsonl", INDEX_NAMES["taobao"], "cn"),
     Partition("amazon_us", "amazon/us/products.jsonl", INDEX_NAMES["amazon"], "us"),

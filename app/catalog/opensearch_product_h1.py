@@ -164,11 +164,11 @@ def product_searchable_text(product: dict[str, Any]) -> str:
 
 
 def index_document(
-    product: dict[str, Any], locale: str, vector: list[float]
+    product: dict[str, Any], locale: str | None, vector: list[float]
 ) -> dict[str, Any]:
     validate_product(product)
-    if not locale:
-        raise ValueError("locale required")
+    if locale == "":
+        raise ValueError("locale must be a non-empty string or None")
     if len(vector) != VECTOR_DIMENSION:
         raise ValueError(f"content_vector must have {VECTOR_DIMENSION} dimensions")
     if not all(math.isfinite(value) for value in vector):

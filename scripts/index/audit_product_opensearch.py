@@ -30,14 +30,14 @@ from scripts.index.product_opensearch_common import OpenSearchClient
 AUDIT_FIELDS = tuple(sorted(INDEX_FIELDS - {"content_vector"}))
 
 
-def expected_document(product: dict[str, Any], locale: str) -> dict[str, Any]:
+def expected_document(product: dict[str, Any], locale: str | None) -> dict[str, Any]:
     return {**product, "locale": locale, "embedding_version": EMBEDDING_VERSION}
 
 
 def audit_batch(
     client: OpenSearchClient,
     index_name: str,
-    locale: str,
+    locale: str | None,
     rows: list[dict[str, Any]],
 ) -> tuple[int, dict[str, Any]]:
     ids = [row["product_id"] for row in rows]
