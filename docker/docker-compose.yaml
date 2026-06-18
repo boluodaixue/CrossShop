@@ -102,6 +102,29 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
+  # H1 离线商品检索基础设施；尚未接入 app/worker（在线接入属于 H2）。
+  opensearch:
+    build:
+      context: ..
+      dockerfile: infra/opensearch/Dockerfile
+      args:
+        OPENSEARCH_VERSION: "2.19.1"
+    image: globex/opensearch:2.19.1
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+
   frontend:
     image: node:22-alpine
     working_dir: /app
@@ -123,3 +146,4 @@ volumes:
   qdrant-data:
   redis-data:
   frontend-modules:
+  opensearch-data:
