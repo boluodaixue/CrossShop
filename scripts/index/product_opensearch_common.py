@@ -42,7 +42,9 @@ class OpenSearchClient:
                 payload = response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise OpenSearchError(f"{method} {path} failed ({exc.code}): {detail}") from exc
+            raise OpenSearchError(
+                f"{method} {path} failed ({exc.code}): {detail}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise OpenSearchError(f"{method} {path} failed: {exc.reason}") from exc
         return json.loads(payload) if payload else None
@@ -60,8 +62,12 @@ class OpenSearchClient:
     def bulk(self, index_name: str, actions: list[tuple[str, dict[str, Any]]]) -> None:
         lines: list[str] = []
         for document_id, document in actions:
-            lines.append(json.dumps({"index": {"_id": document_id}}, separators=(",", ":")))
-            lines.append(json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+            lines.append(
+                json.dumps({"index": {"_id": document_id}}, separators=(",", ":"))
+            )
+            lines.append(
+                json.dumps(document, ensure_ascii=False, separators=(",", ":"))
+            )
         payload = ("\n".join(lines) + "\n").encode("utf-8")
         result = self.request(
             "POST",
@@ -70,7 +76,9 @@ class OpenSearchClient:
             raw_body=payload,
         )
         if result.get("errors"):
-            errors = [item for item in result.get("items", []) if item["index"].get("error")]
+            errors = [
+                item for item in result.get("items", []) if item["index"].get("error")
+            ]
             raise OpenSearchError(f"bulk indexing failed: {errors[:3]}")
 
 
@@ -104,7 +112,9 @@ class BgeM3Encoder:
         self._model.eval()
         hidden_size = int(self._model.config.hidden_size)
         if hidden_size != 1024:
-            raise RuntimeError(f"BGE-M3 hidden dimension must be 1024, got {hidden_size}")
+            raise RuntimeError(
+                f"BGE-M3 hidden dimension must be 1024, got {hidden_size}"
+            )
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         torch = self._torch
@@ -118,7 +128,9 @@ class BgeM3Encoder:
         encoded = {key: value.to(self._device) for key, value in encoded.items()}
         with torch.inference_mode():
             cls_embeddings = self._model(**encoded).last_hidden_state[:, 0]
-            normalized = torch.nn.functional.normalize(cls_embeddings.float(), p=2, dim=1)
+            normalized = torch.nn.functional.normalize(
+                cls_embeddings.float(), p=2, dim=1
+            )
         vectors = normalized.cpu().tolist()
         for vector in vectors:
             if len(vector) != 1024 or not all(math.isfinite(value) for value in vector):

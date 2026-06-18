@@ -1,4 +1,4 @@
-"""Encode existing H0 SearchUnits and build three indexes with resumable checkpoints."""
+"""Encode existing H0 Products and build three indexes with resumable checkpoints."""
 
 from __future__ import annotations
 
@@ -24,12 +24,10 @@ from app.catalog.opensearch_product_h1 import (
     RRF_PIPELINE_NAME,
     index_document,
     product_index_body,
+    product_searchable_text,
     rrf_pipeline_body,
 )
-from scripts.index.product_opensearch_common import (
-    BgeM3Encoder,
-    OpenSearchClient,
-)
+from scripts.index.product_opensearch_common import BgeM3Encoder, OpenSearchClient
 
 
 @dataclass(frozen=True)
@@ -37,15 +35,20 @@ class Partition:
     partition_id: str
     relative_path: str
     index_name: str
-    expected_platform: str
+    locale: str
 
 
 PARTITIONS = (
-    Partition("globex_reference", "globex_reference/search_units.jsonl", INDEX_NAMES["globex_reference"], "globex_reference"),
-    Partition("taobao", "taobao/search_units.jsonl", INDEX_NAMES["taobao"], "taobao"),
-    Partition("amazon_us", "amazon/us/search_units.jsonl", INDEX_NAMES["amazon"], "amazon"),
-    Partition("amazon_es", "amazon/es/search_units.jsonl", INDEX_NAMES["amazon"], "amazon"),
-    Partition("amazon_jp", "amazon/jp/search_units.jsonl", INDEX_NAMES["amazon"], "amazon"),
+    Partition(
+        "globex_reference",
+        "globex_reference/products.jsonl",
+        INDEX_NAMES["globex_reference"],
+        "global",
+    ),
+    Partition("taobao", "taobao/products.jsonl", INDEX_NAMES["taobao"], "cn"),
+    Partition("amazon_us", "amazon/us/products.jsonl", INDEX_NAMES["amazon"], "us"),
+    Partition("amazon_es", "amazon/es/products.jsonl", INDEX_NAMES["amazon"], "es"),
+    Partition("amazon_jp", "amazon/jp/products.jsonl", INDEX_NAMES["amazon"], "jp"),
 )
 
 
@@ -73,6 +76,7 @@ def checkpoint_contract(
         "source_path": partition.relative_path,
         "source_sha256": sha256(source_path),
         "index_name": partition.index_name,
+        "locale": partition.locale,
         "embedding_version": EMBEDDING_VERSION,
         "embedding_dimension": 1024,
         "model": model_name,
@@ -82,7 +86,13 @@ def checkpoint_contract(
 
 def load_checkpoint(path: Path, contract: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
-        return {**contract, "next_line": 0, "docs_written": 0, "last_search_unit_id": None, "completed": False}
+        return {
+            **contract,
+            "next_line": 0,
+            "docs_written": 0,
+            "last_product_id": None,
+            "completed": False,
+        }
     state = json.loads(path.read_text(encoding="utf-8"))
     mismatches = {
         key: (state.get(key), expected)
@@ -132,51 +142,51 @@ def build_partition(
     checkpoint_path = state_root / "checkpoints" / f"{partition.partition_id}.json"
     state = load_checkpoint(checkpoint_path, contract)
     if state["completed"]:
-        print(f"{partition.partition_id}: already completed ({state['docs_written']:,})", flush=True)
+        print(
+            f"{partition.partition_id}: already completed ({state['docs_written']:,})",
+            flush=True,
+        )
         return state
 
     pending: list[tuple[str, dict[str, Any], int]] = []
     batch_rows: list[tuple[int, dict[str, Any]]] = []
     started = time.monotonic()
 
-    def flush_encoded() -> None:
-        nonlocal pending, batch_rows, state
-        if not batch_rows:
-            return
-        texts = [row["searchable_text"] for _, row in batch_rows]
-        vectors = encoder.encode(texts)
-        for (line_number, row), vector in zip(batch_rows, vectors):
-            if row["platform"] != partition.expected_platform:
-                raise RuntimeError(
-                    f"{partition.partition_id}:{line_number} platform={row['platform']!r}"
-                )
-            pending.append((row["search_unit_id"], index_document(row, vector), line_number))
-        batch_rows = []
-        if len(pending) >= bulk_size:
-            flush_bulk()
-
     def flush_bulk() -> None:
         nonlocal pending, state
         if not pending:
             return
-        client.bulk(
-            partition.index_name,
-            [(document_id, document) for document_id, document, _ in pending],
-        )
+        client.bulk(partition.index_name, [(doc_id, doc) for doc_id, doc, _ in pending])
         last_id, _, last_line = pending[-1]
         state.update(
             next_line=last_line,
             docs_written=state["docs_written"] + len(pending),
-            last_search_unit_id=last_id,
+            last_product_id=last_id,
         )
         write_checkpoint(checkpoint_path, state)
         pending = []
         if state["docs_written"] % 1000 < bulk_size:
             elapsed = time.monotonic() - started
             print(
-                f"{partition.partition_id}: {state['docs_written']:,} documents, {elapsed:.1f}s this run",
+                f"{partition.partition_id}: {state['docs_written']:,} products, {elapsed:.1f}s",
                 flush=True,
             )
+
+    def flush_encoded() -> None:
+        nonlocal pending, batch_rows
+        if not batch_rows:
+            return
+        vectors = encoder.encode(
+            [product_searchable_text(row) for _, row in batch_rows]
+        )
+        for (line_number, row), vector in zip(batch_rows, vectors):
+            product_id = row["product_id"]
+            pending.append(
+                (product_id, index_document(row, partition.locale, vector), line_number)
+            )
+        batch_rows = []
+        if len(pending) >= bulk_size:
+            flush_bulk()
 
     for line_number, row in iter_rows(source_path, int(state["next_line"])):
         batch_rows.append((line_number, row))
@@ -186,31 +196,87 @@ def build_partition(
     flush_bulk()
     state["completed"] = True
     write_checkpoint(checkpoint_path, state)
-    print(f"{partition.partition_id}: completed ({state['docs_written']:,})", flush=True)
+    print(
+        f"{partition.partition_id}: completed ({state['docs_written']:,})", flush=True
+    )
     return state
+
+
+def runtime_stats(client: OpenSearchClient) -> dict[str, Any]:
+    nodes = client.request(
+        "GET",
+        "/_nodes/stats/jvm,fs?filter_path=nodes.*.jvm.mem.heap_used_in_bytes,nodes.*.jvm.mem.heap_max_in_bytes,nodes.*.fs.total.available_in_bytes,nodes.*.fs.total.total_in_bytes",
+    )["nodes"]
+    raw_indexes = client.request(
+        "GET",
+        "/_cat/indices/globex-products-*-v1?format=json&bytes=b&h=index,docs.count,store.size",
+    )
+    indexes = [
+        {
+            "index": row["index"],
+            "lucene_docs_including_nested": int(row["docs.count"]),
+            "primary_store_bytes": int(row["store.size"]),
+        }
+        for row in raw_indexes
+    ]
+    host_disk = shutil.disk_usage(PROJECT_ROOT)
+    return {
+        "nodes": nodes,
+        "indexes": indexes,
+        "host_project_drive": {
+            "total_bytes": host_disk.total,
+            "used_bytes": host_disk.used,
+            "free_bytes": host_disk.free,
+        },
+    }
 
 
 def finalize(client: OpenSearchClient) -> dict[str, int]:
     counts: dict[str, int] = {}
     for index_name in INDEX_NAMES.values():
-        client.request("PUT", f"/{index_name}/_settings", {"index": {"refresh_interval": "1s"}})
+        client.request(
+            "PUT", f"/{index_name}/_settings", {"index": {"refresh_interval": "1s"}}
+        )
         client.request("POST", f"/{index_name}/_refresh")
-        counts[index_name] = int(client.request("GET", f"/{index_name}/_count")["count"])
+        counts[index_name] = int(
+            client.request("GET", f"/{index_name}/_count")["count"]
+        )
     return counts
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--catalog-root", type=Path, default=PROJECT_ROOT / "data" / "processed" / "catalogs-v2")
-    parser.add_argument("--state-root", type=Path, default=PROJECT_ROOT / "data" / "processed" / "opensearch-products-v1")
-    parser.add_argument("--endpoint", default=os.getenv("GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"))
-    parser.add_argument("--model", default=os.getenv("BGE_M3_MODEL", "D:/models/bge-m3"))
+    parser.add_argument(
+        "--catalog-root",
+        type=Path,
+        default=PROJECT_ROOT / "data" / "processed" / "catalogs-v2",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=PROJECT_ROOT / "data" / "processed" / "opensearch-products-v1",
+    )
+    parser.add_argument(
+        "--endpoint",
+        default=os.getenv("GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
+    )
+    parser.add_argument(
+        "--model", default=os.getenv("BGE_M3_MODEL", "D:/models/bge-m3")
+    )
     parser.add_argument("--device", default=os.getenv("BGE_M3_DEVICE", "cuda"))
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--bulk-size", type=int, default=64)
     parser.add_argument("--max-seq-length", type=int, default=512)
-    parser.add_argument("--partition", action="append", choices=tuple(p.partition_id for p in PARTITIONS))
-    parser.add_argument("--reset", action="store_true", help="Delete only the three frozen H1 indexes before building.")
+    parser.add_argument(
+        "--partition",
+        action="append",
+        choices=tuple(p.partition_id for p in PARTITIONS),
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Delete only the three frozen H1 indexes and old H1 checkpoints.",
+    )
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--finalize-only", action="store_true")
     parser.add_argument("--local-files-only", action="store_true")
@@ -224,8 +290,7 @@ def main() -> None:
         return
     if args.reset:
         checkpoint_root = (args.state_root / "checkpoints").resolve()
-        expected_parent = args.state_root.resolve()
-        if expected_parent not in checkpoint_root.parents:
+        if args.state_root.resolve() not in checkpoint_root.parents:
             raise RuntimeError(f"unsafe checkpoint path: {checkpoint_root}")
         if checkpoint_root.exists():
             shutil.rmtree(checkpoint_root)
@@ -233,8 +298,12 @@ def main() -> None:
     if args.prepare_only:
         return
 
-    selected = set(args.partition or (partition.partition_id for partition in PARTITIONS))
-    encoder = BgeM3Encoder(args.model, args.device, args.max_seq_length, args.local_files_only)
+    selected = set(
+        args.partition or (partition.partition_id for partition in PARTITIONS)
+    )
+    encoder = BgeM3Encoder(
+        args.model, args.device, args.max_seq_length, args.local_files_only
+    )
     states = []
     for partition in PARTITIONS:
         if partition.partition_id in selected:
@@ -253,7 +322,12 @@ def main() -> None:
             )
     if all(state["completed"] for state in states):
         counts = finalize(client)
-        report = {"completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "counts": counts, "partitions": states}
+        report = {
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "counts": counts,
+            "partitions": states,
+            "runtime": runtime_stats(client),
+        }
         args.state_root.mkdir(parents=True, exist_ok=True)
         (args.state_root / "build-report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

@@ -1,4 +1,4 @@
-"""Build strict V2 Product/Sku and per-platform SearchUnit JSONL catalogs.
+"""Build strict V2 Product/Sku JSONL catalogs.
 
 The source staging tree is read-only.  All provider-specific filling happens
 once in this offline conversion and is persisted in the published JSONL.  A
@@ -28,8 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 V2_ROOT = ROOT
 PARTITIONS = (("amazon", "us"), ("amazon", "es"), ("amazon", "jp"), ("taobao", "cn"))
 CONTRACT_VERSION = "product-sku-contract-v2"
-CONVERTER_VERSION = "catalog-product-sku-builder-v2"
-INDEX_SCHEMA_VERSION = "product-search-unit-v2"
+CONVERTER_VERSION = "catalog-product-sku-builder-v3-product-only"
 PRODUCT_FIELDS = frozenset(
     {
         "product_id",
@@ -44,35 +43,6 @@ PRODUCT_FIELDS = frozenset(
     }
 )
 SKU_FIELDS = frozenset({"sku_id", "spec", "price", "stock"})
-SEARCH_UNIT_FIELDS = frozenset(
-    {
-        "attributes_text",
-        "brand",
-        "category",
-        "currency",
-        "description",
-        "highlights_text",
-        "index_schema_version",
-        "ingested_at",
-        "language",
-        "locale",
-        "origin_country",
-        "platform",
-        "price_minor",
-        "product_id",
-        "rating",
-        "review_count",
-        "same_group_id",
-        "search_unit_id",
-        "searchable_text",
-        "ships_to",
-        "sku_id",
-        "sku_spec",
-        "source_updated_at",
-        "stock",
-        "title",
-    }
-)
 SOURCE_ITEM_FIELDS = frozenset(
     {
         "attributes",
@@ -101,61 +71,11 @@ SOURCE_ITEM_FIELDS = frozenset(
         "variants",
     }
 )
-_EXCLUDED_ATTRIBUTE_KEYS = frozenset(
-    {
-        "availability",
-        "available",
-        "currency",
-        "currency_raw",
-        "delivery",
-        "delivery_info",
-        "generated_at",
-        "image_url",
-        "ingested_at",
-        "inventory",
-        "is_available",
-        "item_id",
-        "list_price",
-        "max_price",
-        "min_price",
-        "original_price",
-        "original_price_cny",
-        "price",
-        "price_cny",
-        "price_major",
-        "product_id",
-        "provenance",
-        "sale_price",
-        "shipping",
-        "shipping_cost",
-        "shipping_info",
-        "ship_to",
-        "ships_to",
-        "sku",
-        "sku_id",
-        "source_updated_at",
-        "source_url",
-        "stock",
-        "timestamp",
-        "updated_at",
-        "url",
-        "variant_id",
-    }
-)
 
 
 @dataclass(frozen=True)
 class ProductSource:
     product: Product
-    same_group_id: str
-    platform: str
-    locale: str | None
-    language: str | None
-    rating: float | None
-    review_count: int
-    source_updated_at: str | None
-    ingested_at: str
-    attributes_text: str
 
 
 def main() -> None:
@@ -178,7 +98,9 @@ def run(source_root: Path, output_root: Path) -> dict:
     output_root = output_root.resolve()
     sources = _partition_paths(source_root)
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    temporary_root = output_root.parent / f".{output_root.name}.tmp-{uuid.uuid4().hex[:12]}"
+    temporary_root = (
+        output_root.parent / f".{output_root.name}.tmp-{uuid.uuid4().hex[:12]}"
+    )
     temporary_root.mkdir(parents=True, exist_ok=False)
     try:
         manifest = _build_into(sources, temporary_root)
@@ -224,7 +146,9 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
         ("amazon", "es"),
         ("amazon", "jp"),
     ):
-        rows = list(_validated_partition_rows(sources[(platform, locale)], platform, locale))
+        rows = list(
+            _validated_partition_rows(sources[(platform, locale)], platform, locale)
+        )
         converted = (
             [_convert_taobao(row) for row in rows]
             if platform == "taobao"
@@ -253,14 +177,16 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
     rejection_path = root / "rejections.jsonl"
     _write_jsonl(
         rejection_path,
-        sorted(rejections, key=lambda item: (item["platform"], item["locale"], item["product_id"])),
+        sorted(
+            rejections,
+            key=lambda item: (item["platform"], item["locale"], item["product_id"]),
+        ),
     )
     counts["rejected_records"] = len(rejections)
     manifest = {
         "contract_version": CONTRACT_VERSION,
         "converter_version": CONVERTER_VERSION,
         "counts": dict(sorted(counts.items())),
-        "index_schema_version": INDEX_SCHEMA_VERSION,
         "partitions": partitions,
         "rejections": _file_metadata(rejection_path, len(rejections)),
         "rules": {
@@ -283,9 +209,7 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
                     "jp": {"origin_country": "JP", "ships_to": ["JP", "CN"]},
                 },
             },
-            "reference": (
-                "V2 seed Product/Sku values preserved; SearchUnit adds platform=globex_reference"
-            ),
+            "reference": "V2 seed Product/Sku values preserved",
         },
         "source_partitions": {
             f"{platform}:{locale}": _file_metadata(
@@ -312,12 +236,8 @@ def _write_partition(
 ) -> None:
     partition_root.mkdir(parents=True, exist_ok=True)
     products = [
-        source.product.to_dict() for source in sorted(sources, key=lambda s: s.product.product_id)
-    ]
-    units = [
-        unit
+        source.product.to_dict()
         for source in sorted(sources, key=lambda s: s.product.product_id)
-        for unit in _search_units(source)
     ]
     for product in products:
         _validate_product_row(product)
@@ -328,27 +248,17 @@ def _write_partition(
             if sku["sku_id"] in sku_ids:
                 raise ValueError(f"duplicate global sku_id: {sku['sku_id']}")
             sku_ids.add(sku["sku_id"])
-    for unit in units:
-        if set(unit) != SEARCH_UNIT_FIELDS:
-            raise ValueError(
-                "SearchUnit field mismatch in "
-                f"{partition_root}: {sorted(set(unit) ^ SEARCH_UNIT_FIELDS)}"
-            )
     product_path = partition_root / "products.jsonl"
-    unit_path = partition_root / "search_units.jsonl"
     _write_jsonl(product_path, products)
-    _write_jsonl(unit_path, units)
     coverage_path = partition_root / "coverage.json"
-    _write_json(
-        coverage_path,
-        {"products": _field_coverage(products), "search_units": _field_coverage(units)},
-    )
+    _write_json(coverage_path, {"products": _field_coverage(products)})
     partitions[partition_name] = {
-        "products": _file_metadata(product_path, len(products), f"{partition_name}/products.jsonl"),
-        "search_units": _file_metadata(
-            unit_path, len(units), f"{partition_name}/search_units.jsonl"
+        "products": _file_metadata(
+            product_path, len(products), f"{partition_name}/products.jsonl"
         ),
-        "coverage": _file_metadata(coverage_path, relative_path=f"{partition_name}/coverage.json"),
+        "coverage": _file_metadata(
+            coverage_path, relative_path=f"{partition_name}/coverage.json"
+        ),
     }
 
 
@@ -356,7 +266,6 @@ def _partition_counts(key: str, sources: list[ProductSource]) -> dict[str, int]:
     return {
         f"{key}_products": len(sources),
         f"{key}_skus": sum(len(s.product.skus) for s in sources),
-        f"{key}_search_units": sum(len(s.product.skus) for s in sources),
     }
 
 
@@ -392,16 +301,7 @@ def _reference_products() -> list[ProductSource]:
                         )
                         for s in product.skus
                     ],
-                ),
-                product.product_id,
-                "globex_reference",
-                None,
-                None,
-                None,
-                0,
-                None,
-                "",
-                "",
+                )
             )
         )
     return result
@@ -417,10 +317,18 @@ def _convert_taobao(row: dict) -> ProductSource | None:
     ):
         sku_id = str(variant.get("variant_id") or "")
         price = _price(variant.get("price_cny"))
-        if not sku_id or price is None or str(variant.get("price_source") or "") != "observed":
+        if (
+            not sku_id
+            or price is None
+            or str(variant.get("price_source") or "") != "observed"
+        ):
             continue
         availability = str(variant.get("availability") or "unknown")
-        stock = 0 if availability == "unavailable" else 1 + _hash_int(sku_id + ":stock", 100)
+        stock = (
+            0
+            if availability == "unavailable"
+            else 1 + _hash_int(sku_id + ":stock", 100)
+        )
         skus.append(Sku(sku_id, _spec(variant.get("options")), price, stock))
     if not skus:
         return None
@@ -435,7 +343,7 @@ def _convert_taobao(row: dict) -> ProductSource | None:
         _taobao_ships_to(product_id),
         skus,
     )
-    return _source(product, row, "taobao", "cn")
+    return ProductSource(product)
 
 
 def _convert_amazon(row: dict) -> ProductSource:
@@ -460,70 +368,7 @@ def _convert_amazon(row: dict) -> ProductSource:
         ships_to,
         [Sku(sku_id, "默认规格", price, stock)],
     )
-    return _source(product, row, "amazon", locale)
-
-
-def _source(product: Product, row: dict, platform: str, locale: str) -> ProductSource:
-    return ProductSource(
-        product,
-        str(row.get("same_group_id") or product.product_id),
-        platform,
-        locale,
-        _optional_text(row.get("language")),
-        _rating(row.get("rating")),
-        _nonnegative_int(row.get("review_count")),
-        _optional_text(row.get("source_updated_at")),
-        str(row.get("ingested_at") or ""),
-        _attributes_text(row),
-    )
-
-
-def _search_units(source: ProductSource) -> Iterable[dict]:
-    product = source.product
-    highlights_text = " ".join(
-        " ".join(part for part in (h.label, h.detail) if part) for h in product.highlights
-    )
-    for sku in sorted(product.skus, key=lambda value: value.sku_id):
-        searchable = " ".join(
-            part
-            for part in (
-                product.title,
-                product.brand,
-                product.category,
-                product.origin_country,
-                product.description,
-                highlights_text,
-                sku.spec,
-            )
-            if part
-        )
-        yield {
-            "attributes_text": source.attributes_text,
-            "brand": product.brand,
-            "category": product.category,
-            "currency": sku.price.currency,
-            "description": product.description,
-            "highlights_text": highlights_text,
-            "index_schema_version": INDEX_SCHEMA_VERSION,
-            "ingested_at": source.ingested_at,
-            "language": source.language,
-            "locale": source.locale,
-            "origin_country": product.origin_country,
-            "platform": source.platform,
-            "price_minor": sku.price.amount_in_minor_units,
-            "product_id": product.product_id,
-            "rating": source.rating,
-            "review_count": source.review_count,
-            "same_group_id": source.same_group_id,
-            "search_unit_id": f"{product.product_id}::{sku.sku_id}",
-            "searchable_text": searchable,
-            "ships_to": product.ships_to,
-            "sku_id": sku.sku_id,
-            "sku_spec": sku.spec,
-            "source_updated_at": source.source_updated_at,
-            "stock": sku.stock,
-            "title": product.title,
-        }
+    return ProductSource(product)
 
 
 def _validated_partition_rows(path: Path, platform: str, locale: str) -> Iterable[dict]:
@@ -562,7 +407,8 @@ def _shop_name(row: dict) -> str | None:
     for attr in row.get("attributes") or []:
         if (
             isinstance(attr, dict)
-            and str(attr.get("code") or attr.get("name") or "").casefold() == "shop_name"
+            and str(attr.get("code") or attr.get("name") or "").casefold()
+            == "shop_name"
         ):
             return _optional_text(attr.get("value"))
     return None
@@ -604,43 +450,20 @@ def _spec(options: object) -> str:
     for option in options if isinstance(options, list) else []:
         if not isinstance(option, dict):
             continue
-        name, value = _optional_text(option.get("name")), _optional_text(option.get("value"))
+        name, value = (
+            _optional_text(option.get("name")),
+            _optional_text(option.get("value")),
+        )
         if name or value:
             display = "：".join(part for part in (name, value) if part)
             values.append(
-                (_normalized_option_text(name or ""), _normalized_option_text(value or ""), display)
-            )
-    return " / ".join(item[2] for item in sorted(values))
-
-
-def _attributes_text(row: dict) -> str:
-    values = []
-    for attr in row.get("attributes") or []:
-        if not isinstance(attr, dict):
-            continue
-        name, code, value = (
-            _optional_text(attr.get("name")),
-            _optional_text(attr.get("code")),
-            attr.get("value"),
-        )
-        if (
-            name
-            and (code or name).casefold() not in _EXCLUDED_ATTRIBUTE_KEYS
-            and (code or name).casefold() not in {"shop_name", "source_tag"}
-            and value not in (None, "")
-        ):
-            values.append(
                 (
-                    _normalized_option_text(code or ""),
-                    _normalized_option_text(name),
-                    f"{name}：{value}",
+                    _normalized_option_text(name or ""),
+                    _normalized_option_text(value or ""),
+                    display,
                 )
             )
-    for material in row.get("materials") or []:
-        if isinstance(material, dict) and _optional_text(material.get("name")):
-            name = _optional_text(material.get("name"))
-            values.append(("material", _normalized_option_text(name or ""), f"材质：{name}"))
-    return " ".join(item[2] for item in sorted(values))
+    return " / ".join(item[2] for item in sorted(values))
 
 
 def _normalized_option_text(value: str) -> str:
@@ -650,21 +473,6 @@ def _normalized_option_text(value: str) -> str:
 def _optional_text(value: object) -> str | None:
     text = str(value).strip() if value not in (None, "") else ""
     return text or None
-
-
-def _rating(value: object) -> float | None:
-    try:
-        result = float(value)
-        return result if 0 <= result <= 5 else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _nonnegative_int(value: object) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _field_coverage(rows: list[dict]) -> dict:
@@ -681,13 +489,17 @@ def _write_jsonl(path: Path, rows: Iterable[dict]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
             handle.write(
-                json.dumps(row, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+                json.dumps(
+                    row, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                )
+                + "\n"
             )
 
 
 def _write_json(path: Path, value: dict) -> None:
     path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
 

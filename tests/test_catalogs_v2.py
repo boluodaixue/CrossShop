@@ -16,6 +16,29 @@ def _load_builder():
 
 BUILDER = _load_builder()
 
+EXPECTED_PRODUCTS = {
+    "globex_reference": (
+        60,
+        "0d9cf6b39e2d0ef7a9ac182175118b5a8af1ce336311a816808042817744d2ca",
+    ),
+    "taobao": (
+        23409,
+        "775b35edeeafaba9d9745b9538683b06c9a0ab769191b7b41d053f396f843294",
+    ),
+    "amazon/us": (
+        5638,
+        "a930711136343c9a5d648e21408eb4d418515f6b2a28699bbe4ffac4459804d9",
+    ),
+    "amazon/es": (
+        7856,
+        "2efef0a4565ef8637273dd497b0eb981384f31b0ca17bd02c9de5bd5414cebf7",
+    ),
+    "amazon/jp": (
+        8323,
+        "b0ac282cd53d6d22e34236462ad2ec6d5f8cbc7ed9b89bed5cd5b0be7d611d10",
+    ),
+}
+
 
 def _row(platform: str, locale: str, item_id: str, **overrides) -> dict:
     value = {
@@ -93,11 +116,50 @@ def test_published_catalog_has_only_strict_fields():
         "amazon/es",
         "amazon/jp",
     }
-    for partition in manifest["partitions"].values():
-        assert Path(root, partition["products"]["path"]).is_file()
-        assert Path(root, partition["search_units"]["path"]).is_file()
-        assert partition["products"]["records"] > 0
-        assert partition["search_units"]["records"] > 0
+    assert (
+        manifest["converter_version"] == "catalog-product-sku-builder-v3-product-only"
+    )
+    assert "index_schema_version" not in manifest
+    assert manifest["counts"]["rejected_records"] == 12
+    assert (
+        sum(
+            value
+            for key, value in manifest["counts"].items()
+            if key.endswith("_products")
+        )
+        == 45286
+    )
+    assert (
+        sum(value for key, value in manifest["counts"].items() if key.endswith("_skus"))
+        == 261369
+    )
+    assert not any("search_unit" in key for key in manifest["counts"])
+    product_ids: set[str] = set()
+    sku_ids: set[str] = set()
+    for name, partition in manifest["partitions"].items():
+        product_path = Path(root, partition["products"]["path"])
+        assert product_path.is_file()
+        assert "search_units" not in partition
+        expected_records, expected_sha256 = EXPECTED_PRODUCTS[name]
+        assert partition["products"]["records"] == expected_records
+        assert partition["products"]["sha256"] == expected_sha256
+        assert BUILDER._sha256(product_path) == expected_sha256
+        products = list(BUILDER._read_jsonl(product_path))
+        assert len(products) == expected_records
+        for product in products:
+            BUILDER._validate_product_row(product)
+            assert product["product_id"] not in product_ids
+            product_ids.add(product["product_id"])
+            for sku in product["skus"]:
+                assert sku["sku_id"] not in sku_ids
+                sku_ids.add(sku["sku_id"])
+        coverage = json.loads(
+            Path(root, partition["coverage"]["path"]).read_text(encoding="utf-8")
+        )
+        assert set(coverage) == {"products"}
+    assert len(product_ids) == 45286
+    assert len(sku_ids) == 261369
+    assert not list(root.glob("**/search_units.jsonl"))
     for path in root.glob("**/*.jsonl"):
         for line in path.open(encoding="utf-8"):
             value = json.loads(line)
