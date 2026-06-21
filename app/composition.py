@@ -9,11 +9,12 @@ API 进程与 worker 进程共用同一份接线，避免两处各自 new 一套
     REDIS_URL    未配 → 无缓存、无队列、无跨进程事件背板
     QUEUE_ENABLED=0  → 不入队，请求在 API 进程内直接跑（三期行为）
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,6 +32,7 @@ from app.application.usecases.order_usecases import (
     PlaceOrderUseCase,
     QueryOrderUseCase,
 )
+from app.catalog.opensearch_product_h1 import INDEX_NAMES, VECTOR_DIMENSION
 from app.domain.queue.ports.task_queue import TaskQueue
 from app.infrastructure.cache.cached_embedding_client import CachedEmbeddingClient
 from app.infrastructure.cache.redis_cache import RedisCache
@@ -39,12 +41,14 @@ from app.infrastructure.embedding.openai_embedding_client import OpenAIEmbedding
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.persistence.in_memory_repositories import (
     InMemoryOrderRepository,
-    InMemoryProductRepository,
 )
 from app.infrastructure.persistence.json_file_stores import (
     JsonFileConversationStore,
     JsonFilePreferenceStore,
     JsonFileSessionStore,
+)
+from app.infrastructure.persistence.jsonl_product_repository import (
+    JsonlProductRepository,
 )
 from app.infrastructure.persistence.sql.repositories import (
     SqlConversationStore,
@@ -68,8 +72,7 @@ from app.infrastructure.settings import Settings, load_settings
 from app.infrastructure.shared_breaker import SharedCircuitBreakerRegistry
 from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.tracing import setup_tracing
-from app.infrastructure.vector.index_bootstrap import bootstrap_product_index
-from app.infrastructure.vector.qdrant_product_index import QdrantProductIndex
+from app.infrastructure.vector.opensearch_product_index import OpenSearchProductIndex
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +101,16 @@ class Container:
     backplane: Optional[RedisEventBackplane]
     query_order: QueryOrderUseCase
     cancel_order: CancelOrderUseCase
-    product_repo: InMemoryProductRepository
+    product_repo: JsonlProductRepository
     embedder: Any
-    vector_index: QdrantProductIndex
+    product_embedder: Any
+    product_indexes: dict[str, OpenSearchProductIndex]
+    catalog_searches: dict[str, CatalogSearchUseCase]
     knowledge_base: Any
     db_engine: Any
 
     async def startup(self) -> None:
-        """建表 / 建向量库 / 建知识库。任一失败只告警，对应能力降级但服务可用。"""
+        """建表、校验只读商品索引并初始化品类知识库。"""
         if self.db_engine is not None:
             try:
                 await bootstrap_schema(self.db_engine)
@@ -116,11 +121,14 @@ class Container:
                 await self.task_queue.ensure_group()
             except Exception as err:  # noqa: BLE001
                 logger.warning("队列消费者组创建失败：%s", err)
-        await bootstrap_product_index(self.product_repo, self.embedder, self.vector_index)
+        # H1 商品索引由离线构建流程维护；在线进程只验证冻结 mapping，绝不 upsert。
+        for platform in INDEX_NAMES:
+            await self.product_indexes[platform].ensure_ready(VECTOR_DIMENSION)
         await bootstrap_category_knowledge(self.knowledge_base)
 
     async def shutdown(self) -> None:
-        await self.vector_index.close()
+        for index in self.product_indexes.values():
+            await index.close()
         await self.cache.close()
         if self.db_engine is not None:
             await self.db_engine.dispose()
@@ -128,12 +136,35 @@ class Container:
 
 async def build_container() -> Container:
     settings = load_settings()
+    if settings.product_embedding_dim != VECTOR_DIMENSION:
+        raise ValueError(
+            "Product BGE-M3 embedding dimension must be "
+            f"{VECTOR_DIMENSION}, got {settings.product_embedding_dim}",
+        )
     setup_tracing(settings)
 
     # ---- Infrastructure ----
-    product_repo = InMemoryProductRepository()
+    product_repo = JsonlProductRepository(settings.product_catalog_root)
     bus = TradeEventBus()
-    vector_index = QdrantProductIndex(settings)
+    product_indexes = {
+        platform: OpenSearchProductIndex(
+            settings.opensearch_endpoint,
+            index_name,
+            timeout_seconds=settings.opensearch_timeout_seconds,
+        )
+        for platform, index_name in INDEX_NAMES.items()
+    }
+    product_indexes.update(
+        {
+            f"amazon:{site_locale}": OpenSearchProductIndex(
+                settings.opensearch_endpoint,
+                INDEX_NAMES["amazon"],
+                timeout_seconds=settings.opensearch_timeout_seconds,
+                site_locale=site_locale,
+            )
+            for site_locale in ("us", "es", "jp")
+        },
+    )
     reranker = HttpReranker(settings) if settings.reranker_base_url else None
 
     cache = RedisCache(settings.redis_url)
@@ -142,6 +173,25 @@ async def build_container() -> Container:
         CachedEmbeddingClient(raw_embedder, cache, settings.embedding_model)
         if cache.enabled
         else raw_embedder
+    )
+    # Product Query Tower 使用与离线 Item Tower 一致的 BGE-M3；品类 RAG、语义缓存和
+    # 偏好相关性继续使用原 EMBEDDING_*，避免无意迁移已有 Qdrant collection。
+    product_embedding_settings = replace(
+        settings,
+        embedding_base_url=settings.product_embedding_base_url,
+        embedding_api_key=settings.product_embedding_api_key,
+        embedding_model=settings.product_embedding_model,
+        embedding_dim=settings.product_embedding_dim,
+    )
+    raw_product_embedder = OpenAIEmbeddingClient(product_embedding_settings)
+    product_embedder = (
+        CachedEmbeddingClient(
+            raw_product_embedder,
+            cache,
+            settings.product_embedding_model,
+        )
+        if cache.enabled
+        else raw_product_embedder
     )
     semantic_cache = SemanticCache(
         cache,
@@ -207,18 +257,36 @@ async def build_container() -> Container:
     drift_detector = DriftDetector() if settings.drift_detect_enabled else None
 
     # ---- Application ----
-    catalog_search = CatalogSearchUseCase(
-        product_repo, embedder=embedder, vector_index=vector_index, reranker=reranker,
-    )
+    catalog_searches = {
+        platform: CatalogSearchUseCase(
+            product_repo,
+            embedder=product_embedder,
+            vector_index=product_index,
+            reranker=reranker,
+            allow_keyword_fallback=False,
+        )
+        for platform, product_index in product_indexes.items()
+    }
     place_order = PlaceOrderUseCase(product_repo, order_repo)
     query_order = QueryOrderUseCase(order_repo)
     cancel_order = CancelOrderUseCase(product_repo, order_repo)
 
     search_factory = SearchAgentFactory(
-        settings, catalog_search, bus, knowledge_base, circuit_registry, throttle,
+        settings,
+        catalog_searches,
+        bus,
+        knowledge_base,
+        circuit_registry,
+        throttle,
     )
     trade_factory = TradeAgentFactory(
-        settings, place_order, query_order, cancel_order, bus, circuit_registry, throttle,
+        settings,
+        place_order,
+        query_order,
+        cancel_order,
+        bus,
+        circuit_registry,
+        throttle,
     )
     # 偏好选取器：主 Agent 注入与子 Agent 注入共用同一实例，口径不会两头漂。
     # 用带缓存的 embedder：重复的偏好 statement 不会每轮重复 embed。
@@ -227,14 +295,24 @@ async def build_container() -> Container:
         relevance_enabled=settings.preference_relevance_enabled,
     )
     main_factory = MainAgentFactory(
-        settings, search_factory, trade_factory, bus, preference_store, circuit_registry, throttle,
+        settings,
+        search_factory,
+        trade_factory,
+        bus,
+        preference_store,
+        circuit_registry,
+        throttle,
         sequencing=sequencing_tracker,
         loop_detector=loop_detector,
         preference_selector=preference_selector,
     )
     sessions = SessionRegistry(main_factory, session_store)
     orchestrator = MainAgentOrchestrator(
-        sessions, bus, preference_store, conversation_store, semantic_cache,
+        sessions,
+        bus,
+        preference_store,
+        conversation_store,
+        semantic_cache,
         output_guard_enabled=settings.output_guard_enabled,
         loop_detector=loop_detector,
         token_budget_total=settings.token_budget_total,
@@ -255,7 +333,9 @@ async def build_container() -> Container:
         cancel_order=cancel_order,
         product_repo=product_repo,
         embedder=embedder,
-        vector_index=vector_index,
+        product_embedder=product_embedder,
+        product_indexes=product_indexes,
+        catalog_searches=catalog_searches,
         knowledge_base=knowledge_base,
         db_engine=db_engine,
     )

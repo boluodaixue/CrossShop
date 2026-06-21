@@ -9,8 +9,12 @@
     5. Reranker 精排取 top_k；失败/未配置降级按向量分排序（rerank_applied=false）
     6. 组装商品卡 JSON；只投影本轮合格 SKU，并以内含最低价 SKU 展示起价
 
-降级链（recall_strategy 如实标注）：
-    embedding_rerank → embedding_only → keyword_2gram（embedding 服务异常时兜底）
+独立教学装配默认保留原三级降级链：
+    embedding_rerank → embedding_only → keyword_2gram
+
+H4 在线三平台装配显式关闭 keyword fallback。此时 Query Embedding 或 OpenSearch 异常
+属于商品检索基础设施故障，必须明确报错；不得扫描共享全量 Repository 做本地关键词
+二查，否则平台/站点任务会越界返回其他目录的商品。
 
 计价收敛设计：到手价在检索链路内联计算（TariffSchedule 规则内核），
 不给 Agent 单独暴露比价/运费工具，减少不必要的工具调用轮次。
@@ -51,6 +55,10 @@ class _ProductHydrationError(RuntimeError):
     """向量命中与严格 Product Repository 不一致，禁止降级掩盖。"""
 
 
+class CatalogRetrievalError(RuntimeError):
+    """Query Embedding/OpenSearch 商品召回基础设施异常。"""
+
+
 @dataclass(frozen=True)
 class ProductCard:
     product_id: str
@@ -84,11 +92,10 @@ class ProductCard:
 
 
 def tokenize(text: str) -> set[str]:
-    """极简分词：空格切词 + 中文连续段落的 2-gram（关键词降级召回用）。"""
+    """极简分词：空格切词 + 中文连续段落的 2-gram（教学关键词兜底用）。"""
     terms: set[str] = set()
     for chunk in text.lower().split():
         terms.add(chunk)
-        # 对含 CJK 的 chunk 补 2-gram，缓解中文无空格问题
         if any("\u4e00" <= ch <= "\u9fff" for ch in chunk) and len(chunk) >= 2:
             terms.update(chunk[i : i + 2] for i in range(len(chunk) - 1))
     return terms
@@ -102,34 +109,36 @@ class CatalogSearchUseCase:
         vector_index: Optional[ProductVectorIndex] = None,
         reranker: Optional[Reranker] = None,
         tariff_schedule: Optional[TariffSchedule] = None,
+        *,
+        allow_keyword_fallback: bool = True,
     ) -> None:
         self._product_repo = product_repo
         self._embedder = embedder
         self._vector_index = vector_index
         self._reranker = reranker
         self._tariff = tariff_schedule or TariffSchedule(rates=ExchangeRateTable())
+        self._allow_keyword_fallback = allow_keyword_fallback
 
     async def execute(self, spec: ProductSearchSpec) -> dict:
-        scored: list[tuple[float, Product]] = []
-        recall_strategy = "keyword_2gram"
         rerank_applied = False
-        keyword_fallback_required = True
-
-        if self._embedder is not None and self._vector_index is not None:
+        if self._embedder is None or self._vector_index is None:
+            if not self._allow_keyword_fallback:
+                raise CatalogRetrievalError("商品 Hybrid 检索基础设施未配置")
+            scored = await self._keyword_recall(spec)
+            recall_strategy = "keyword_2gram"
+        else:
             try:
                 scored = await self._vector_recall(spec)
                 recall_strategy = "embedding_only"
-                keyword_fallback_required = False
             except _ProductHydrationError:
-                # 全量 Repository 与索引不一致属于数据契约损坏，不能用关键词结果掩盖。
+                # 全量 Repository 与索引不一致属于数据契约损坏，不能重试或降级掩盖。
                 raise
-            except Exception as err:  # noqa: BLE001 —— 召回基建异常必须降级而非失败
+            except Exception as err:
+                if not self._allow_keyword_fallback:
+                    raise CatalogRetrievalError("商品 Hybrid 检索不可用") from err
                 logger.warning("向量召回不可用，降级关键词召回：%s", err)
-                scored = []
-
-        if keyword_fallback_required:
-            scored = await self._keyword_recall(spec)
-            recall_strategy = "keyword_2gram"
+                scored = await self._keyword_recall(spec)
+                recall_strategy = "keyword_2gram"
 
         # 库存 / ship_to / 价格硬约束必须先于精排。全 SKU 缺货的 Product 静默排除，
         # 保持 OpenSearch stock>0 前置过滤语义，不虚构第三种 filtered_out 原因。
@@ -292,7 +301,7 @@ class CatalogSearchUseCase:
         reranked.sort(key=lambda pair: pair[0], reverse=True)
         return reranked
 
-    # ---- 兜底：关键词召回 ----
+    # ---- 独立教学装配兜底（H4 在线平台路由显式关闭）----
 
     async def _keyword_recall(
         self, spec: ProductSearchSpec
@@ -317,7 +326,6 @@ class CatalogSearchUseCase:
         if not matched:
             return 0.0
         score = float(len(matched))
-        # 品类槽位命中加权，让"槽位过滤"优于全文命中
         if spec.category and spec.category in product.category:
             score += 3.0
         return score

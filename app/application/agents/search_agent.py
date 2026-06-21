@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """SearchAgent
 
 跨境商品检索专家。基于 AgentScope 2.0 Agent：
@@ -10,7 +9,10 @@
 每次调度新建独立实例：2.0 的对话上下文内建于 AgentState，独立实例天然上下文隔离。
 `build_tools()` 同时供 MainAgent 复用——主 Agent 持有同一批业务工具，可以不派发自己单干。
 """
+
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from agentscope.agent import Agent, ReActConfig
 from agentscope.rag import KnowledgeBase
@@ -24,12 +26,12 @@ from app.application.tools.web_search_tool import build_web_search_tool
 from app.application.usecases.catalog_search import CatalogSearchUseCase
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.llm import create_chat_model
-from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.resilience import (
     CircuitBreakerRegistry,
     ToolResilienceMiddleware,
 )
 from app.infrastructure.settings import Settings
+from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.tracing import build_agent_middlewares
 
 
@@ -37,7 +39,7 @@ class SearchAgentFactory:
     def __init__(
         self,
         settings: Settings,
-        catalog_search: CatalogSearchUseCase,
+        catalog_search: CatalogSearchUseCase | Mapping[str, CatalogSearchUseCase],
         bus: TradeEventBus,
         knowledge_base: KnowledgeBase,
         circuit_registry: CircuitBreakerRegistry,
@@ -54,14 +56,24 @@ class SearchAgentFactory:
     def _resilience(self) -> list:
         return [ToolResilienceMiddleware(self._circuit_registry, self._bus)]
 
-    def build_tools(self) -> list[FunctionTool]:
+    def build_tools(
+        self,
+        *,
+        platform: str | None = None,
+        site_locale: str | None = None,
+    ) -> list[FunctionTool]:
         """SearchAgent 的业务工具集，MainAgent 单干时持有同一批（均带超时+熔断保护）。
 
         web_search_tool 按"有 TAVILY_API_KEY 才注册"设计，未配置时 Agent 看不到它。
         """
         tools = [
             FunctionTool(
-                build_product_search_tool(self._catalog_search, self._bus),
+                build_product_search_tool(
+                    self._catalog_search,
+                    self._bus,
+                    fixed_platform=platform,
+                    fixed_site_locale=site_locale,
+                ),
                 is_read_only=True,
                 middlewares=self._resilience(),
             ),
@@ -81,13 +93,36 @@ class SearchAgentFactory:
             )
         return tools
 
-    def build(self) -> Agent:
+    def build(
+        self,
+        *,
+        platform: str | None = None,
+        site_locale: str | None = None,
+    ) -> Agent:
         prompts = load_prompts()["sub_agents"]["search"]
+        system_prompt = prompts["system_prompt"]
+        if platform is not None:
+            binding = f"\n\n## 本次派发固定范围\n- platform 必须保持为 {platform}。"
+            if site_locale is not None:
+                binding += f"\n- Amazon site_locale 必须保持为 {site_locale}。"
+            binding += (
+                "\n- 不得在重写 query 时改变上述平台或站点。"
+                "\n- 重查门槛只看第一次 product_search_tool 返回 JSON 顶层原始 "
+                "hits 数组长度：原始 hits >= 3 必须立即停止，不得因相关性、"
+                "质量或想凑满 5 件而重搜。"
+            )
+            system_prompt += binding
         return Agent(
             name=prompts["name"],
-            system_prompt=prompts["system_prompt"],
-            model=create_chat_model(self._settings, throttle=self._throttle, bus=self._bus),
-            toolkit=Toolkit(tools=list(self.build_tools())),
+            system_prompt=system_prompt,
+            model=create_chat_model(
+                self._settings, throttle=self._throttle, bus=self._bus
+            ),
+            toolkit=Toolkit(
+                tools=list(
+                    self.build_tools(platform=platform, site_locale=site_locale),
+                ),
+            ),
             middlewares=build_agent_middlewares(self._settings),
             context_config=build_context_config(
                 self._settings.context_size,

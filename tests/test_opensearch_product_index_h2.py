@@ -88,6 +88,43 @@ async def test_adapter_sends_exactly_one_frozen_hybrid_request(index_name: str) 
     client.get.assert_not_awaited()
 
 
+async def test_amazon_site_adapter_filters_both_branches_in_the_same_request() -> None:
+    client = AsyncMock()
+    client.post.return_value = _response(_hits("amazon:jp:p1"))
+    with patch(
+        "app.infrastructure.vector.opensearch_product_index.httpx.AsyncClient",
+        return_value=client,
+    ):
+        index = OpenSearchProductIndex(
+            "http://127.0.0.1:9200",
+            INDEX_NAMES["amazon"],
+            site_locale="jp",
+        )
+        vector = _vector()
+        await index.search(query="travel bag", embedding=vector, top_n=1)
+
+    client.post.assert_awaited_once_with(
+        f"/{INDEX_NAMES['amazon']}/_search",
+        params={"search_pipeline": RRF_PIPELINE_NAME},
+        json=hybrid_query("travel bag", vector, size=1, site_locale="jp"),
+    )
+
+
+def test_site_locale_is_restricted_to_the_amazon_index() -> None:
+    with pytest.raises(ValueError, match="only valid for the Amazon"):
+        OpenSearchProductIndex(
+            "http://127.0.0.1:9200",
+            INDEX_NAMES["taobao"],
+            site_locale="jp",
+        )
+    with pytest.raises(ValueError, match="unsupported Amazon site locale"):
+        OpenSearchProductIndex(
+            "http://127.0.0.1:9200",
+            INDEX_NAMES["amazon"],
+            site_locale="cn",
+        )
+
+
 async def test_adapter_rejects_identity_mismatch() -> None:
     client = AsyncMock()
     client.post.return_value = _response(

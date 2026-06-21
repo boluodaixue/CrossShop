@@ -224,7 +224,21 @@ def bm25_query(query: str, *, size: int = 10) -> dict[str, Any]:
     }
 
 
-def hybrid_query(query: str, vector: list[float], *, size: int = 10) -> dict[str, Any]:
+def hybrid_query(
+    query: str,
+    vector: list[float],
+    *,
+    size: int = 10,
+    site_locale: str | None = None,
+) -> dict[str, Any]:
+    if site_locale not in {None, "us", "es", "jp"}:
+        raise ValueError(f"unsupported Amazon site locale: {site_locale}")
+    ann_filter: dict[str, Any] = stock_filter()
+    bm25_filters = [stock_filter()]
+    if site_locale is not None:
+        locale_filter = {"term": {"locale": site_locale}}
+        ann_filter = {"bool": {"filter": [ann_filter, locale_filter]}}
+        bm25_filters.append(locale_filter)
     return {
         "size": size,
         "_source": {"excludes": ["content_vector"]},
@@ -236,7 +250,7 @@ def hybrid_query(query: str, vector: list[float], *, size: int = 10) -> dict[str
                             "content_vector": {
                                 "vector": vector,
                                 "k": size,
-                                "filter": stock_filter(),
+                                "filter": ann_filter,
                             }
                         }
                     },
@@ -250,7 +264,7 @@ def hybrid_query(query: str, vector: list[float], *, size: int = 10) -> dict[str
                                     }
                                 }
                             ],
-                            "filter": [stock_filter()],
+                            "filter": bm25_filters,
                         }
                     },
                 ]

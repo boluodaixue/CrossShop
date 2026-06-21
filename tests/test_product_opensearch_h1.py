@@ -20,6 +20,7 @@ from app.catalog.opensearch_product_h1 import (
     product_index_body,
     product_searchable_text,
     rrf_pipeline_body,
+    stock_filter,
 )
 from app.domain.catalog.money import Money
 from app.domain.catalog.product import Product, ProductHighlight
@@ -215,6 +216,24 @@ def test_queries_apply_only_any_nested_sku_in_stock_before_recall() -> None:
     for forbidden in ("ship_to", "price_max_major", "platform", "locale", "material"):
         assert forbidden not in serialized
     assert len(hybrid_queries) == 2
+
+
+def test_explicit_amazon_site_filter_is_applied_to_both_hybrid_branches() -> None:
+    hybrid = hybrid_query("travel bag", _vector(), site_locale="jp")
+    queries = hybrid["query"]["hybrid"]["queries"]
+    expected_locale_filter = {"term": {"locale": "jp"}}
+    ann_filter = queries[0]["knn"]["content_vector"]["filter"]
+    bm25_filters = queries[1]["bool"]["filter"]
+
+    assert ann_filter["bool"]["filter"][1] == expected_locale_filter
+    assert bm25_filters[1] == expected_locale_filter
+    assert ann_filter["bool"]["filter"][0] == stock_filter()
+    assert bm25_filters[0] == stock_filter()
+
+
+def test_hybrid_query_rejects_unknown_amazon_site_locale() -> None:
+    with pytest.raises(ValueError, match="unsupported Amazon site locale"):
+        hybrid_query("travel bag", _vector(), site_locale="cn")
 
 
 def test_partition_plan_uses_product_sources_and_one_amazon_index() -> None:

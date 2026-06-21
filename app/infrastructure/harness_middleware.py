@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """HarnessToolMiddleware
 
 工具边界上的护栏中间件（17-2 章的 Hook Pipeline 落地）。
@@ -23,10 +22,13 @@
 挂载位置与 ToolResilienceMiddleware 并列，见 main_agent._resilience()。
 洋葱顺序：Harness 在外、Resilience 在内——先做准入判断，再进超时/熔断保护。
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncGenerator, Callable, Optional
+from collections import defaultdict
+from collections.abc import AsyncGenerator, Callable
+from typing import Any
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolBase, ToolChunk, ToolMiddlewareBase
@@ -46,13 +48,14 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         *,
         sequencing: SequencingTracker,
         loop_detector: LoopDetector,
-        bus: Optional[TradeEventBus] = None,
+        bus: TradeEventBus | None = None,
         content_filter_enabled: bool = True,
     ) -> None:
         self._sequencing = sequencing
         self._loop_detector = loop_detector
         self._bus = bus
         self._content_filter_enabled = content_filter_enabled
+        self._active_dispatches: dict[str, set[str]] = defaultdict(set)
 
     def _publish(self, tool_name: str, payload: dict) -> None:
         if self._bus is None:
@@ -76,8 +79,12 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         # ---- pre_tool_call：顺序断言 ----
         seq = self._sequencing.check(session_id, tool_name)
         if seq.rejected:
-            logger.warning("Harness 硬拒工具调用：%s（%s）", tool_name, seq.reject_reason)
-            self._publish(tool_name, {"harness": "rejected", "error": seq.reject_reason})
+            logger.warning(
+                "Harness 硬拒工具调用：%s（%s）", tool_name, seq.reject_reason
+            )
+            self._publish(
+                tool_name, {"harness": "rejected", "error": seq.reject_reason}
+            )
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {seq.reject_reason}")],
                 state=ToolResultState.ERROR,
@@ -86,7 +93,20 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         notices.extend(seq.warnings)
 
         # ---- pre_tool_call：循环检测 ----
-        converge_hint = self._loop_detector.check(session_id, tool_name)
+        dispatch_key = ""
+        active_dispatches: set[str] = set()
+        is_distinct_parallel_dispatch = False
+        if tool_name == "task_dispatch":
+            dispatch_key = _loop_action_key(tool_name, input_kwargs)
+            active_dispatches = self._active_dispatches[session_id]
+            is_distinct_parallel_dispatch = bool(active_dispatches) and (
+                dispatch_key not in active_dispatches
+            )
+        converge_hint = (
+            None
+            if is_distinct_parallel_dispatch
+            else self._loop_detector.check(session_id, tool_name)
+        )
         if converge_hint:
             logger.info("Harness 循环收敛提示：%s", tool_name)
             self._publish(tool_name, {"harness": "loop_detected"})
@@ -96,9 +116,17 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         self._sequencing.record(session_id, tool_name)
 
         # ---- 执行工具 ----
+        if tool_name == "task_dispatch":
+            active_dispatches.add(dispatch_key)
         chunks: list[ToolChunk] = []
-        async for chunk in next_handler(**input_kwargs):
-            chunks.append(chunk)
+        try:
+            async for chunk in next_handler(**input_kwargs):
+                chunks.append(chunk)
+        finally:
+            if tool_name == "task_dispatch":
+                active_dispatches.discard(dispatch_key)
+                if not active_dispatches:
+                    self._active_dispatches.pop(session_id, None)
 
         if not chunks:
             return
@@ -116,7 +144,9 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
             reason = schema_outcome.failures[0]["reason"]
             logger.warning("Harness schema 断言失败：%s（%s）", tool_name, reason)
             self._publish(tool_name, {"harness": "schema_failed", "error": reason})
-            notices.append(f"上一步 {tool_name} 的返回结构异常（{reason}），请勿据此编造数据。")
+            notices.append(
+                f"上一步 {tool_name} 的返回结构异常（{reason}），请勿据此编造数据。"
+            )
 
         # L3 内容过滤
         if self._content_filter_enabled and text:
@@ -133,7 +163,7 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         yield _rebuild_chunk(last, text, notices)
 
 
-def _block_text(block: Any) -> Optional[str]:
+def _block_text(block: Any) -> str | None:
     """取一个 content block 的文本。
 
     AgentScope 的 `TextBlock` 是对象（`.text` 属性访问），不是 dict——
@@ -147,6 +177,24 @@ def _block_text(block: Any) -> Optional[str]:
     if getattr(block, "type", None) == "text":
         return str(getattr(block, "text", ""))
     return None
+
+
+def _loop_action_key(tool_name: str, input_kwargs: dict[str, Any]) -> str:
+    """返回循环检测使用的动作身份，不改变工具公开协议。
+
+    仅 ``task_dispatch`` 需要细分：H4 允许三个固定平台在同一轮并发派发。
+    其他工具仍只按工具名统计，原有循环保护不变。
+    """
+    if tool_name != "task_dispatch":
+        return tool_name
+    return ":".join(
+        (
+            tool_name,
+            str(input_kwargs.get("subagent_type") or ""),
+            str(input_kwargs.get("platform") or ""),
+            str(input_kwargs.get("site_locale") or ""),
+        )
+    )
 
 
 def _chunk_text(chunk: ToolChunk) -> str:

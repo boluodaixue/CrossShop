@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """子 Agent 偏好注入单测（task_dispatch 服务端注入）。
 
 背景：偏好原来只注入主 Agent 上下文，子 Agent 拿不到，只能靠主 Agent 把偏好
@@ -11,6 +10,7 @@
     3. 无偏好时不塞空块；
     4. 读记忆失败只跳过注入，不能让派发挂掉。
 """
+
 from agentscope.message import AssistantMsg
 
 from app.application.memory.preference_selector import PreferenceSelector
@@ -21,7 +21,10 @@ from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.persistence.json_file_stores import JsonFilePreferenceStore
 
 SNAPSHOT = ShoppingContextSnapshot(
-    shopping_session_id="s1", buyer_id="buyer-001", locale="zh-CN", currency="CNY",
+    shopping_session_id="s1",
+    buyer_id="buyer-001",
+    locale="zh-CN",
+    currency="CNY",
 )
 
 
@@ -40,8 +43,15 @@ class RecordingWorker:
 class RecordingFactory:
     def __init__(self) -> None:
         self.seen: list = []
+        self.scopes: list[tuple[str | None, str | None]] = []
 
-    def build(self) -> RecordingWorker:
+    def build(
+        self,
+        *,
+        platform: str | None = None,
+        site_locale: str | None = None,
+    ) -> RecordingWorker:
+        self.scopes.append((platform, site_locale))
         return RecordingWorker(self.seen)
 
 
@@ -60,7 +70,9 @@ async def _seeded_store(tmp_path, *preferences) -> JsonFilePreferenceStore:
 
 def _tool(search_factory, trade_factory, store, **kwargs):
     return build_task_dispatch_tool(
-        search_factory, trade_factory, TradeEventBus(),
+        search_factory,
+        trade_factory,
+        TradeEventBus(),
         preference_store=store,
         preference_selector=PreferenceSelector(),
         **kwargs,
@@ -75,7 +87,11 @@ class TestSearchAgentInjection:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找个 300 元内的旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找个 300 元内的旅行三件套",
+                platform="taobao",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -92,7 +108,11 @@ class TestSearchAgentInjection:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="globex_reference",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -105,7 +125,11 @@ class TestSearchAgentInjection:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="amazon",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -138,7 +162,11 @@ class TestGuards:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="taobao",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -151,7 +179,11 @@ class TestGuards:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="globex_reference",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -169,7 +201,11 @@ class TestGuards:
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            chunk = await tool(subagent_type="search_agent", demands="找旅行三件套")
+            chunk = await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="taobao",
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -182,7 +218,11 @@ class TestGuards:
         store = await _seeded_store(tmp_path, ("dislike", "不要塑料材质"))
         tool = _tool(search, trade, store)
 
-        await tool(subagent_type="search_agent", demands="找旅行三件套")
+        await tool(
+            subagent_type="search_agent",
+            demands="找旅行三件套",
+            platform="globex_reference",
+        )
 
         assert "<buyer-preferences>" not in _texts(search.seen)
 
@@ -190,13 +230,19 @@ class TestGuards:
         """top_k=0 也要保住黑名单——安全底线在子 Agent 侧同样成立。"""
         search, trade = RecordingFactory(), RecordingFactory()
         store = await _seeded_store(
-            tmp_path, ("dislike", "不要塑料材质"), ("like", "喜欢小众设计"),
+            tmp_path,
+            ("dislike", "不要塑料材质"),
+            ("like", "喜欢小众设计"),
         )
         tool = _tool(search, trade, store, preference_top_k=0)
 
         token = ShoppingContext.set(SNAPSHOT)
         try:
-            await tool(subagent_type="search_agent", demands="找旅行三件套")
+            await tool(
+                subagent_type="search_agent",
+                demands="找旅行三件套",
+                platform="amazon",
+            )
         finally:
             ShoppingContext.reset(token)
 

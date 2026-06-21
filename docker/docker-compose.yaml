@@ -22,10 +22,20 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen3-max}
       # 四期：网关配额闸门与限流回退（不配则用 settings 默认值）
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
-      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
+      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-3}
       LLM_MIN_INTERVAL_SECONDS: ${LLM_MIN_INTERVAL_SECONDS:-1.0}
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      # 商品 Query Tower 单独使用 BGE-M3，不能复用 text-embedding-v4 查询离线商品索引
+      PRODUCT_EMBEDDING_BASE_URL: ${PRODUCT_EMBEDDING_BASE_URL:?需设置 BGE-M3 Query endpoint}
+      PRODUCT_EMBEDDING_API_KEY: ${PRODUCT_EMBEDDING_API_KEY-}
+      PRODUCT_EMBEDDING_MODEL: ${PRODUCT_EMBEDDING_MODEL:-BAAI/bge-m3}
+      PRODUCT_EMBEDDING_DIM: "1024"
+      PRODUCT_CATALOG_ROOT: /app/data/processed/catalogs-v2
+      OPENSEARCH_ENDPOINT: http://opensearch:9200
+      OPENSEARCH_TIMEOUT_SECONDS: ${OPENSEARCH_TIMEOUT_SECONDS:-30}
+      RERANKER_BASE_URL: ${RERANKER_BASE_URL-}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-globex_products}
       # 四期：存储走 SQLite（落在 app-data 卷）；DATABASE_URL=file 退回 JSON 文件存储
@@ -42,11 +52,14 @@ services:
       CORS_ORIGINS: http://localhost:5173
     volumes:
       - app-data:/app/data
+      - ../data/processed/catalogs-v2:/app/data/processed/catalogs-v2:ro
     depends_on:
       qdrant:
         condition: service_started
       redis:
         condition: service_healthy
+      opensearch:
+        condition: service_started
     restart: unless-stopped
 
   # 意图消费进程：同镜像不同命令。削峰的实质是 WORKER_CONCURRENCY 限住同时在跑的轮数。
@@ -60,9 +73,18 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:?需设置 LLM_API_KEY}
       LLM_MODEL: ${LLM_MODEL:-qwen3-max}
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-qwen-plus}
-      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-2}
+      LLM_MAX_CONCURRENCY: ${LLM_MAX_CONCURRENCY:-3}
       LLM_MIN_INTERVAL_SECONDS: ${LLM_MIN_INTERVAL_SECONDS:-1.0}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v4}
+      PRODUCT_EMBEDDING_BASE_URL: ${PRODUCT_EMBEDDING_BASE_URL:?需设置 BGE-M3 Query endpoint}
+      PRODUCT_EMBEDDING_API_KEY: ${PRODUCT_EMBEDDING_API_KEY-}
+      PRODUCT_EMBEDDING_MODEL: ${PRODUCT_EMBEDDING_MODEL:-BAAI/bge-m3}
+      PRODUCT_EMBEDDING_DIM: "1024"
+      PRODUCT_CATALOG_ROOT: /app/data/processed/catalogs-v2
+      OPENSEARCH_ENDPOINT: http://opensearch:9200
+      OPENSEARCH_TIMEOUT_SECONDS: ${OPENSEARCH_TIMEOUT_SECONDS:-30}
+      RERANKER_BASE_URL: ${RERANKER_BASE_URL-}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-globex_products}
       # 与 app 共一个 SQLite 文件（共享 app-data 卷）；WAL 已开，缓解双进程写锁竞争
@@ -74,10 +96,13 @@ services:
       DATA_DIR: /app/data
     volumes:
       - app-data:/app/data
+      - ../data/processed/catalogs-v2:/app/data/processed/catalogs-v2:ro
     depends_on:
       redis:
         condition: service_healthy
       qdrant:
+        condition: service_started
+      opensearch:
         condition: service_started
     restart: unless-stopped
 
@@ -102,7 +127,7 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
-  # H1 离线商品检索基础设施；尚未接入 app/worker（在线接入属于 H2）。
+  # H1 离线构建、H4 在线只读查询；app/worker 不会写入商品索引。
   opensearch:
     build:
       context: ..

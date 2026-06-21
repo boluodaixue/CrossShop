@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """HarnessToolMiddleware 接线单测（P2）。
 
 按 tests/test_phase3.py 的既有写法，把中间件挂进真实 FunctionTool 再调用，
@@ -10,6 +9,8 @@
     - Schema 断言失败只提示、不 raise
     - 与 ToolResilienceMiddleware 串联时顺序正确
 """
+
+import asyncio
 import json
 
 from agentscope.message import TextBlock, ToolResultState
@@ -25,13 +26,21 @@ from app.infrastructure.resilience import (
 )
 
 SNAPSHOT = ShoppingContextSnapshot(
-    shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY",
+    shopping_session_id="s1",
+    buyer_id="b1",
+    locale="zh-CN",
+    currency="CNY",
 )
 
-SEARCH_PAYLOAD = {"hits": [{"product_id": "P1001"}], "recall_strategy": "embedding_only"}
+SEARCH_PAYLOAD = {
+    "hits": [{"product_id": "P1001"}],
+    "recall_strategy": "embedding_only",
+}
 
 
-def _tool_factory(name: str, text: str, state=ToolResultState.SUCCESS, spy: dict | None = None):
+def _tool_factory(
+    name: str, text: str, state=ToolResultState.SUCCESS, spy: dict | None = None
+):
     async def tool_func() -> ToolChunk:
         """测试用工具。"""
         if spy is not None:
@@ -50,8 +59,8 @@ def _harness(sequencing=None, loop_detector=None) -> HarnessToolMiddleware:
     )
 
 
-async def _call(tool: FunctionTool) -> ToolChunk:
-    result = await tool()
+async def _call(tool: FunctionTool, **kwargs) -> ToolChunk:
+    result = await tool(**kwargs)
     if hasattr(result, "__aiter__"):
         chunks = [chunk async for chunk in result]
         return chunks[-1]
@@ -72,7 +81,9 @@ def _text(chunk: ToolChunk) -> str:
 class TestHarnessMiddleware:
     async def test_normal_call_passes_through(self):
         tool = FunctionTool(
-            _tool_factory("product_search_tool", json.dumps(SEARCH_PAYLOAD, ensure_ascii=False)),
+            _tool_factory(
+                "product_search_tool", json.dumps(SEARCH_PAYLOAD, ensure_ascii=False)
+            ),
             middlewares=[_harness()],
         )
         token = ShoppingContext.set(SNAPSHOT)
@@ -111,7 +122,9 @@ class TestHarnessMiddleware:
         tracker.record("s1", "product_search_tool")
 
         tool = FunctionTool(
-            _tool_factory("create_order_tool", '{"order_id":"O1","status":"created"}', spy=spy),
+            _tool_factory(
+                "create_order_tool", '{"order_id":"O1","status":"created"}', spy=spy
+            ),
             middlewares=[_harness(sequencing=tracker)],
         )
         token = ShoppingContext.set(SNAPSHOT)
@@ -150,12 +163,14 @@ class TestHarnessMiddleware:
         try:
             for _ in range(2):
                 tool = FunctionTool(
-                    _tool_factory("product_search_tool", payload), middlewares=[harness],
+                    _tool_factory("product_search_tool", payload),
+                    middlewares=[harness],
                 )
                 assert "[harness]" not in _text(await _call(tool))
 
             tool = FunctionTool(
-                _tool_factory("product_search_tool", payload), middlewares=[harness],
+                _tool_factory("product_search_tool", payload),
+                middlewares=[harness],
             )
             chunk = await _call(tool)
         finally:
@@ -164,6 +179,57 @@ class TestHarnessMiddleware:
         body = _text(chunk)
         assert "[harness]" in body
         assert "连续 3 次" in body
+
+    async def test_loop_detector_distinguishes_platform_dispatch_actions(self):
+        detector = LoopDetector(repeat_threshold=3)
+        harness = _harness(loop_detector=detector)
+
+        async def task_dispatch(
+            subagent_type: str,
+            demands: str,
+            platform: str | None = None,
+            site_locale: str | None = None,
+        ) -> ToolChunk:
+            """测试用派发工具。"""
+            del subagent_type, demands, platform, site_locale
+            await asyncio.sleep(0.01)
+            return ToolChunk(
+                content=[TextBlock(type="text", text="ok")],
+                state=ToolResultState.SUCCESS,
+            )
+
+        tool = FunctionTool(task_dispatch, middlewares=[harness])
+        token = ShoppingContext.set(SNAPSHOT)
+        try:
+            chunks = await asyncio.gather(
+                *(
+                    _call(
+                        tool,
+                        subagent_type="search_agent",
+                        demands="找降噪耳机",
+                        platform=platform,
+                    )
+                    for platform in ("globex_reference", "taobao", "amazon")
+                )
+            )
+            for chunk in chunks:
+                assert "[harness]" not in _text(chunk)
+
+            detector.reset("s1")
+            repeated = None
+            for _ in range(3):
+                repeated = await _call(
+                    tool,
+                    subagent_type="search_agent",
+                    demands="再次找降噪耳机",
+                    platform="taobao",
+                )
+        finally:
+            ShoppingContext.reset(token)
+
+        assert repeated is not None
+        assert "[harness]" in _text(repeated)
+        assert "连续 3 次" in _text(repeated)
 
     async def test_schema_failure_is_reported_not_raised(self):
         tool = FunctionTool(
@@ -188,7 +254,9 @@ class TestHarnessMiddleware:
             ToolResilienceMiddleware(registry),
         ]
         failing = FunctionTool(
-            _tool_factory("product_search_tool", "[error] 下游报错", state=ToolResultState.ERROR),
+            _tool_factory(
+                "product_search_tool", "[error] 下游报错", state=ToolResultState.ERROR
+            ),
             middlewares=chain,
         )
         token = ShoppingContext.set(SNAPSHOT)

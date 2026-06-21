@@ -29,6 +29,7 @@ class OpenSearchProductIndex(ProductVectorIndex):
         index_name: str,
         *,
         timeout_seconds: float = 30.0,
+        site_locale: str | None = None,
     ) -> None:
         if index_name not in frozenset(INDEX_NAMES.values()):
             raise ValueError(f"unsupported frozen product index: {index_name}")
@@ -36,7 +37,12 @@ class OpenSearchProductIndex(ProductVectorIndex):
             raise ValueError("OpenSearch endpoint required")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if site_locale not in {None, "us", "es", "jp"}:
+            raise ValueError(f"unsupported Amazon site locale: {site_locale}")
+        if site_locale is not None and index_name != INDEX_NAMES["amazon"]:
+            raise ValueError("site_locale is only valid for the Amazon Product index")
         self._index_name = index_name
+        self._site_locale = site_locale
         self._client = httpx.AsyncClient(
             base_url=endpoint.rstrip("/"),
             timeout=timeout_seconds,
@@ -45,6 +51,10 @@ class OpenSearchProductIndex(ProductVectorIndex):
     @property
     def index_name(self) -> str:
         return self._index_name
+
+    @property
+    def site_locale(self) -> str | None:
+        return self._site_locale
 
     async def ensure_ready(self, vector_dim: int) -> None:
         if vector_dim != VECTOR_DIMENSION:
@@ -89,7 +99,12 @@ class OpenSearchProductIndex(ProductVectorIndex):
         response = await self._client.post(
             f"/{self._index_name}/_search",
             params={"search_pipeline": RRF_PIPELINE_NAME},
-            json=hybrid_query(query, embedding, size=top_n),
+            json=hybrid_query(
+                query,
+                embedding,
+                size=top_n,
+                site_locale=self._site_locale,
+            ),
         )
         response.raise_for_status()
 

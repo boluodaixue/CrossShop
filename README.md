@@ -5,8 +5,9 @@
 - **MainAgent**（CommerceConcierge）：超级框总调度，**持有全部业务工具可直接单干**；
   内置 Task 计划四件套管理任务清单；满足"可并行 / 上下文隔离 / 链深"任一条件时经 `task_dispatch` 派发子 Agent；
   发现稳定偏好时经 `remember_preference_tool` 写入长期记忆
-- **SearchAgent**（CatalogSearchAgent）：商品检索专家，query 改写 → **embedding+rerank 二阶段召回**（Qdrant），
-    失败逐级降级（embedding_only → keyword_2gram）；可选 web_search 兜底跨境政策/关税问答
+- **SearchAgent**（CatalogSearchAgent）：商品检索专家，query 改写 → 三个平台固定 OpenSearch 索引的
+  **BGE-M3 Query + ANN/BM25/RRF Hybrid + rerank**，
+  在线路由只允许 Reranker 失败时保留 Hybrid 原排序；可选 web_search 兜底跨境政策/关税问答
 - **TradeAgent**（OrderTradeAgent）：下单交易专家（订单创建 / 查询 / 取消，买家身份由 ShoppingContext 注入）
 
 分期设计脉络、关键取舍与踩坑记录见 [docs/设计演进记录.md](docs/设计演进记录.md)。
@@ -16,10 +17,12 @@
 - Python 3.11 + uv
 - AgentScope 2.x（Agent + ContextConfig 上下文压缩 + Toolkit/FunctionTool + 内置 Task 计划工具
   + reply_stream 类型化事件流 + TracingMiddleware / ReplyBudgetControlMiddleware / 自定义工具中间件）
-- 检索：OpenAI 兼容 embedding（text-embedding-v4）+ Qdrant（服务端/本地嵌入双形态）+ HTTP Reranker（可降级）
+- 商品检索：BGE-M3 Query/Item 双塔 + 三个平台 OpenSearch 2.19.1 ANN/BM25/RRF Hybrid
+  + HTTP Reranker；Qdrant 继续用于品类知识库，不承担在线商品召回
 - 知识库：AgentScope `rag.KnowledgeBase`（品类洞察 Markdown → 切片 → Qdrant）
 - FastAPI + Uvicorn + WebSocket；React 18 + Vite + TS 前端；Docker Compose（app + worker + qdrant + redis + frontend）
-- 持久化：SQLite（SQLAlchemy 2.0 async）存对话流水/事件轨迹/会话状态/订单/偏好；商品目录仍为内存仓储 + 种子数据
+- 持久化：SQLite（SQLAlchemy 2.0 async）存对话流水/事件轨迹/会话状态/订单/偏好；
+  商品目录由严格 `JsonlProductRepository` 从 `data/processed/catalogs-v2` 全量只读装载
 - 缓存与削峰：Redis（可选）——语义缓存 + embedding 缓存 + 幂等键 + Stream 任务队列 + 跨进程事件背板
 
 ## 架构
@@ -45,7 +48,7 @@ docker/                # docker-compose.yaml（app + worker + qdrant + redis + f
 
 关键设计（对齐参考实现与教程口径）：
 
-- **网关配额治理**：`GatewayThrottle` 同时限并发（`LLM_MAX_CONCURRENCY`，默认 2）与请求起点间隔
+- **网关配额治理**：`GatewayThrottle` 同时限并发（`LLM_MAX_CONCURRENCY`，默认 3）与请求起点间隔
   （`LLM_MIN_INTERVAL_SECONDS`）；流式请求的名额持有到流耗尽才释放；瞬时故障指数退避重试，
   用尽后回退 `LLM_FALLBACK_MODEL` 并发 `model.fallback` 事件（不静默降级）
 - **语义缓存**：相似问句（余弦 ≥ `SEMANTIC_CACHE_THRESHOLD`，默认 0.95）直接复用历史回复，
@@ -60,8 +63,10 @@ docker/                # docker-compose.yaml（app + worker + qdrant + redis + f
   广播带 `origin` 标识以跳过自己发的消息（否则事件会回环投递两次）
 - **主 Agent 单干优先**：MainAgent 与子 Agent 持有同一批业务工具（`build_tools()` 复用），
   只在"可并行 / 上下文隔离 / 调用链深"时派发
-- **二阶段召回**：embed → Qdrant 向量召回 topN → rerank 精排 topK；降级链
-  embedding_rerank → embedding_only → keyword_2gram，`recall_strategy` 如实标注；
+- **二阶段召回**：BGE-M3 Query embed → 固定平台 OpenSearch Hybrid 召回 topN → rerank 精排 topK；
+  独立教学装配默认保留 `embedding_rerank → embedding_only → keyword_2gram` 三级降级，
+  H4 在线平台路由则显式禁用本地关键词 fallback：Query Encoding/OpenSearch 故障直接报错，
+  正常 Hybrid 空结果保持真实空结果，不扫描共享全量目录二查；`recall_strategy` 如实标注；
   价格等硬约束走工具参数结构化过滤（price_max_major），不交给模型
 - **过滤可观测**：被 ship_to / 价格上限挡掉的候选以 `filtered_out`（含 reason）回传，
   让模型能区分"库里没有"与"有但不满足约束"，避免把超预算商品答成"没有这个商品"
@@ -92,6 +97,13 @@ uv sync
 export LLM_BASE_URL=<OpenAI 兼容网关地址>
 export LLM_API_KEY=<密钥>
 export LLM_MODEL=qwen-plus   # 可选，缺省 qwen3-max（限流时自动回退 LLM_FALLBACK_MODEL，缺省 qwen-plus）
+# 商品 Query endpoint 必须提供 OpenAI 兼容 /v1/embeddings，并返回 1024 维 BGE-M3 向量
+export PRODUCT_EMBEDDING_BASE_URL=<BGE-M3 Query endpoint>
+export PRODUCT_EMBEDDING_MODEL=BAAI/bge-m3
+export OPENSEARCH_ENDPOINT=http://127.0.0.1:9200
+# 可选：启用真实 BGE Reranker
+export RERANKER_BASE_URL=http://127.0.0.1:8001
+export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
 uv run uvicorn app.presentation.server:app --port 8000
 
 # 启用队列削峰时（需 REDIS_URL）另起消费进程：
@@ -125,9 +137,9 @@ uv run python scripts/eval_regression.py   # 评测回归：13 条 case，LLM ju
 
 ```bash
 export LLM_BASE_URL=<网关地址> LLM_API_KEY=<密钥>   # 敏感配置走环境变量，compose 透传
-docker compose -f docker/docker-compose.yaml up -d --build   # app + qdrant + frontend
+docker compose -f docker/docker-compose.yaml up -d --build   # app + OpenSearch + Qdrant(RAG) + frontend
 # 前端 http://localhost:5173  后端 http://localhost:8000
 ```
 
-本地开发不依赖 Docker：QDRANT_URL 置空时自动用 qdrant-client 本地嵌入模式（单进程文件锁，
-多实例/生产请用 compose 的 Qdrant 服务端）。
+本地开发时商品 OpenSearch 仍须可达；商品索引由 H1 离线构建，在线启动只校验三个冻结索引，
+不会建库或写文档。`QDRANT_URL` 置空只表示品类 RAG 使用 qdrant-client 本地嵌入模式。

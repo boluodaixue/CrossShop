@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """task_dispatch 工具
 
 SubAgent as Tool 的调度工具——MainAgent 调它意味着"派一个专家子 Agent 去执行这段 demands"。
@@ -18,10 +17,11 @@ SubAgent as Tool 的调度工具——MainAgent 调它意味着"派一个专家�
 
 注意：本模块不能用 `from __future__ import annotations`（AgentScope schema 生成依赖运行时注解）。
 """
+
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Literal, Optional
+from datetime import UTC, datetime
+from typing import Literal
 
 from agentscope.message import TextBlock, ToolResultState, UserMsg
 from agentscope.tool import ToolChunk
@@ -43,8 +43,8 @@ def build_task_dispatch_tool(
     search_factory: SearchAgentFactory,
     trade_factory: TradeAgentFactory,
     bus: TradeEventBus,
-    preference_store: Optional[PreferenceStore] = None,
-    preference_selector: Optional[PreferenceSelector] = None,
+    preference_store: PreferenceStore | None = None,
+    preference_selector: PreferenceSelector | None = None,
     preference_top_k: int = 5,
     subagent_inject: bool = True,
 ):
@@ -56,7 +56,9 @@ def build_task_dispatch_tool(
         只给 search_agent 注入：trade_agent 只按给定的 product_id/sku_id 执行下单，
         偏好影响不了它的行为，注入纯属白花 token，还会给它多余的发挥空间。
         """
-        if not (subagent_inject and preference_store and subagent_type == "search_agent"):
+        if not (
+            subagent_inject and preference_store and subagent_type == "search_agent"
+        ):
             return None
         snapshot = ShoppingContext.current()
         buyer_id = snapshot.buyer_id if snapshot else ""
@@ -64,7 +66,9 @@ def build_task_dispatch_tool(
             return None
         try:
             preferences = await preference_store.list_by_buyer(buyer_id)
-            selected = await selector.select(preferences, query=demands, top_k=preference_top_k)
+            selected = await selector.select(
+                preferences, query=demands, top_k=preference_top_k
+            )
         except Exception as err:  # noqa: BLE001 —— 读记忆失败不能让派发挂掉
             logger.warning("子 Agent 偏好注入跳过（读取失败）：%s", err)
             return None
@@ -73,6 +77,8 @@ def build_task_dispatch_tool(
     async def task_dispatch(
         subagent_type: Literal["search_agent", "trade_agent"],
         demands: str,
+        platform: Literal["globex_reference", "taobao", "amazon"] | None = None,
+        site_locale: Literal["us", "es", "jp"] | None = None,
     ) -> ToolChunk:
         """调度专家子代理执行子任务，返回子代理的结论（JSON 字符串）。
 
@@ -86,23 +92,47 @@ def build_task_dispatch_tool(
             demands (`str`):
                 自包含的自然语言指令，必须包含子代理完成任务所需的全部上下文
                 （买家偏好、预算、product_id/sku_id、收货地址等），子代理看不到主对话历史。
+            platform (`str | None`):
+                派发 search_agent 时明确固定的平台；trade_agent 不得传。
+            site_locale (`str | None`):
+                仅在 platform="amazon" 且买家明确指定 Amazon 站点时传入。
         """
+        if subagent_type == "trade_agent" and (platform or site_locale):
+            return _dispatch_error("trade_agent 不接受 platform 或 site_locale")
+        if subagent_type == "search_agent" and platform is None:
+            return _dispatch_error("派发 search_agent 必须明确指定 platform")
+        if site_locale is not None and platform != "amazon":
+            return _dispatch_error("site_locale 仅可用于 amazon 检索任务")
+
         session_id = ShoppingContext.current_session_id()
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = datetime.now(UTC).isoformat()
         started_monotonic = time.monotonic()
         bus.publish(
             session_id,
             "agent.dispatch",
-            {"agent": subagent_type, "demands": demands, "started_at": started_at},
+            {
+                "agent": subagent_type,
+                "demands": demands,
+                "platform": platform,
+                "site_locale": site_locale,
+                "started_at": started_at,
+            },
         )
 
         if subagent_type == "search_agent":
-            worker = search_factory.build()
+            worker = search_factory.build(
+                platform=platform,
+                site_locale=site_locale,
+            )
         elif subagent_type == "trade_agent":
             worker = trade_factory.build()
         else:
             return ToolChunk(
-                content=[TextBlock(type="text", text=f"[error] 未知 subagent_type：{subagent_type}")],
+                content=[
+                    TextBlock(
+                        type="text", text=f"[error] 未知 subagent_type：{subagent_type}"
+                    )
+                ],
                 state=ToolResultState.ERROR,
             )
 
@@ -119,8 +149,10 @@ def build_task_dispatch_tool(
             {
                 "tool": "task_dispatch",
                 "agent": subagent_type,
+                "platform": platform,
+                "site_locale": site_locale,
                 "started_at": started_at,
-                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
                 "elapsed_ms": round((time.monotonic() - started_monotonic) * 1000),
             },
         )
@@ -130,3 +162,10 @@ def build_task_dispatch_tool(
         )
 
     return task_dispatch
+
+
+def _dispatch_error(message: str) -> ToolChunk:
+    return ToolChunk(
+        content=[TextBlock(type="text", text=f"[error] {message}")],
+        state=ToolResultState.ERROR,
+    )
