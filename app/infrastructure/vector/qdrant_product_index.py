@@ -55,7 +55,14 @@ class QdrantProductIndex(ProductVectorIndex):
         ]
         await self._client.upsert(collection_name=self._collection, points=points)
 
-    async def search(self, embedding: list[float], top_n: int) -> list[VectorHit]:
+    async def search(
+        self,
+        *,
+        query: str,
+        embedding: list[float],
+        top_n: int,
+    ) -> list[VectorHit]:
+        del query  # Qdrant 基线只使用向量；保留它以实现统一的 Hybrid 检索端口。
         result = await self._client.query_points(
             collection_name=self._collection,
             query=embedding,

@@ -1,21 +1,35 @@
-# -*- coding: utf-8 -*-
 """二期检索链路单测：二阶段召回 / 降级链 / 价格硬约束 / 到手价内联。
 
 embedding 用确定性桩实现（关键词特征轴 + 余弦），向量索引用 Qdrant 本地嵌入模式，
 全程不依赖外部服务与 LLM。
 """
+
 import pytest
 
 from app.application.usecases.catalog_search import CatalogSearchUseCase
 from app.domain.catalog.ports.retrieval_ports import EmbeddingClient, Reranker
 from app.domain.catalog.product_search_spec import ProductSearchSpec
-from app.infrastructure.persistence.in_memory_repositories import InMemoryProductRepository
+from app.infrastructure.persistence.in_memory_repositories import (
+    InMemoryProductRepository,
+)
 from app.infrastructure.settings import Settings
 from app.infrastructure.vector.index_bootstrap import bootstrap_product_index
 from app.infrastructure.vector.qdrant_product_index import QdrantProductIndex
 
 # 特征轴词表：文本命中即该维置 1，余弦相似度即可反映关键词重合度
-_FEATURE_TERMS = ("露营灯", "登山杖", "毛巾", "睡袋", "行李箱", "耳机", "充电器", "三件套", "背包", "茶具")
+_FEATURE_TERMS = (
+    "露营灯",
+    "抗造",
+    "登山杖",
+    "毛巾",
+    "睡袋",
+    "行李箱",
+    "耳机",
+    "充电器",
+    "三件套",
+    "背包",
+    "茶具",
+)
 
 
 class AxisEmbeddingClient(EmbeddingClient):
@@ -45,14 +59,28 @@ class ReverseReranker(Reranker):
 
 def _settings(tmp_path) -> Settings:
     base = Settings(
-        llm_base_url="", llm_api_key="", llm_model="", port=8000, log_level="info",
-        embedding_base_url="", embedding_api_key="", embedding_model="", embedding_dim=8,
-        qdrant_url="", qdrant_collection="test_products",
-        reranker_base_url="", reranker_model="", tavily_api_key="",
-        otlp_endpoint="", data_dir=tmp_path,
+        llm_base_url="",
+        llm_api_key="",
+        llm_model="",
+        port=8000,
+        log_level="info",
+        embedding_base_url="",
+        embedding_api_key="",
+        embedding_model="",
+        embedding_dim=8,
+        qdrant_url="",
+        qdrant_collection="test_products",
+        reranker_base_url="",
+        reranker_model="",
+        tavily_api_key="",
+        otlp_endpoint="",
+        data_dir=tmp_path,
         category_kb_collection="test_category_kb",
-        context_size=128000, tool_result_limit=20000, reply_token_budget=0,
-        tool_failure_threshold=3, tool_circuit_reset_seconds=60.0,
+        context_size=128000,
+        tool_result_limit=20000,
+        reply_token_budget=0,
+        tool_failure_threshold=3,
+        tool_circuit_reset_seconds=60.0,
         cors_origins=["http://localhost:5173"],
     )
     return base
@@ -74,7 +102,9 @@ class TestTwoStageRecall:
     async def test_embedding_recall_ranks_camping_light_first(self, indexed):
         repo, embedder, index = indexed
         usecase = CatalogSearchUseCase(repo, embedder=embedder, vector_index=index)
-        result = await usecase.execute(ProductSearchSpec(normalized_query="露营灯 抗造"))
+        result = await usecase.execute(
+            ProductSearchSpec(normalized_query="露营灯 抗造")
+        )
         assert result["recall_strategy"] == "embedding_only"
         assert result["rerank_applied"] is False
         assert result["hits"][0]["product_id"] == "P1008", "露营灯应排第一"
@@ -82,7 +112,10 @@ class TestTwoStageRecall:
     async def test_rerank_applied_changes_order(self, indexed):
         repo, embedder, index = indexed
         usecase = CatalogSearchUseCase(
-            repo, embedder=embedder, vector_index=index, reranker=ReverseReranker(),
+            repo,
+            embedder=embedder,
+            vector_index=index,
+            reranker=ReverseReranker(),
         )
         result = await usecase.execute(ProductSearchSpec(normalized_query="露营灯"))
         assert result["recall_strategy"] == "embedding_rerank"
@@ -92,8 +125,12 @@ class TestTwoStageRecall:
 
     async def test_degrade_to_keyword_when_embedding_broken(self, indexed):
         repo, _, index = indexed
-        usecase = CatalogSearchUseCase(repo, embedder=BrokenEmbeddingClient(), vector_index=index)
-        result = await usecase.execute(ProductSearchSpec(normalized_query="露营灯 抗造"))
+        usecase = CatalogSearchUseCase(
+            repo, embedder=BrokenEmbeddingClient(), vector_index=index
+        )
+        result = await usecase.execute(
+            ProductSearchSpec(normalized_query="露营灯 抗造")
+        )
         assert result["recall_strategy"] == "keyword_2gram"
         assert result["hits"], "关键词降级仍应有召回"
         assert result["hits"][0]["product_id"] == "P1008"
@@ -129,7 +166,9 @@ class TestTwoStageRecall:
             ProductSearchSpec(normalized_query="露营灯 抗造", ship_to="BR"),
         )
         reasons = {item["reason"] for item in result["filtered_out"]}
-        assert reasons == {"ship_to_unavailable"}, "不可达目的国应标注为 ship_to_unavailable"
+        assert reasons == {"ship_to_unavailable"}, (
+            "不可达目的国应标注为 ship_to_unavailable"
+        )
 
     async def test_no_filtered_out_key_without_hard_constraints(self, indexed):
         repo, embedder, index = indexed
@@ -141,7 +180,9 @@ class TestTwoStageRecall:
         repo, embedder, index = indexed
         usecase = CatalogSearchUseCase(repo, embedder=embedder, vector_index=index)
         result = await usecase.execute(
-            ProductSearchSpec(normalized_query="露营灯", ship_to="US", target_currency="USD"),
+            ProductSearchSpec(
+                normalized_query="露营灯", ship_to="US", target_currency="USD"
+            ),
         )
         top = result["hits"][0]
         assert "landed_price" in top
@@ -173,11 +214,16 @@ class TestTwoStageRecall:
         )
         token = ShoppingContext.set(
             ShoppingContextSnapshot(
-                shopping_session_id="s-cards", buyer_id="b", locale="zh-CN", currency="CNY",
+                shopping_session_id="s-cards",
+                buyer_id="b",
+                locale="zh-CN",
+                currency="CNY",
             ),
         )
         try:
-            await tool(normalized_query="露营灯", ship_to="US", target_currency="USD")
+            await tool(
+                normalized_query="露营灯 抗造", ship_to="US", target_currency="USD"
+            )
         finally:
             ShoppingContext.reset(token)
 

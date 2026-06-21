@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """检索基础设施端口：EmbeddingClient / ProductVectorIndex / Reranker
 
-Domain 不关心实现：Infrastructure 提供 OpenAI 兼容 embedding、Qdrant 索引、HTTP reranker。
-UseCase 通过这三个端口完成"embed → 向量召回 → rerank"二阶段召回，
-任一环节不可用时由 UseCase 负责降级（关键词召回 / 跳过精排）。
+Domain 不关心实现：Infrastructure 提供 embedding、Qdrant/OpenSearch 商品索引和 reranker。
+检索端口同时接收 query 文本与 embedding：Qdrant 基线忽略文本继续纯向量召回，
+OpenSearch 在一次请求内执行 ANN + BM25 + RRF。任一环节不可用时仍由 UseCase 降级。
 """
 from __future__ import annotations
 
@@ -39,7 +39,13 @@ class ProductVectorIndex(ABC):
         ...
 
     @abstractmethod
-    async def search(self, embedding: list[float], top_n: int) -> list[VectorHit]:
+    async def search(
+        self,
+        *,
+        query: str,
+        embedding: list[float],
+        top_n: int,
+    ) -> list[VectorHit]:
         ...
 
 

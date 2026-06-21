@@ -3,7 +3,7 @@
 
 商品检索核心 UseCase，对齐参考实现五步流程：
     1. EmbeddingClient 把 normalized_query 向量化
-    2. ProductVectorIndex.search(top_n) 拿候选 product_id（Qdrant，COSINE）
+    2. ProductVectorIndex.search(query, embedding, top_n) 拿候选 product_id
     3. ProductRepository.find_by_ids 还原 Product 聚合
     4. Reranker 精排取 top_k；失败/未配置降级按向量分排序（rerank_applied=false）
     5. 组装商品卡 JSON；命中 ship_to 时内联到手价（小计+运费+关税，统一目标币种）
@@ -178,7 +178,11 @@ class CatalogSearchUseCase:
 
     async def _vector_recall(self, spec: ProductSearchSpec) -> list[tuple[float, Product]]:
         embedding = await self._embedder.embed(spec.normalized_query)
-        vector_hits = await self._vector_index.search(embedding, top_n=_RECALL_TOP_N)
+        vector_hits = await self._vector_index.search(
+            query=spec.normalized_query,
+            embedding=embedding,
+            top_n=_RECALL_TOP_N,
+        )
         products = await self._product_repo.find_by_ids([hit.product_id for hit in vector_hits])
         by_id = {product.product_id: product for product in products}
         return [
