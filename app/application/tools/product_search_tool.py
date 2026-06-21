@@ -8,6 +8,7 @@ MainAgent 单干与 SearchAgent 派发两条路径共用同一工具实例。
 注意：本模块不能用 `from __future__ import annotations`——
 AgentScope 用 pydantic 从函数签名动态生成 JSON schema，字符串化注解会解析失败。
 """
+
 import json
 from typing import Optional
 
@@ -25,25 +26,31 @@ def build_product_search_tool(usecase: CatalogSearchUseCase, bus: TradeEventBus)
         normalized_query: str,
         category: Optional[str] = None,
         ship_to: Optional[str] = None,
+        locale: str = "zh-CN",
         top_k: int | str = 5,
         price_max_major: float | str | None = None,
         target_currency: str = "CNY",
     ) -> ToolChunk:
         """检索跨境商品库（embedding+rerank 二阶段召回），返回 Top-K 商品卡 JSON。
-        传入 ship_to 时商品卡自动内联 landed_price 到手价明细（小计+运费+关税，统一折算 target_currency），
-        无需另行计算价格。
+        传入 ship_to 时商品卡自动内联 landed_price 到手价明细
+        （小计+运费+关税，统一折算 target_currency），无需另行计算价格。
 
         Args:
             normalized_query (`str`):
-                标准化检索词，保留品类词与关键属性词（如"旅行三件套 抗造 轻便 无塑料"）。
+                标准化检索词，保留品类词与关键属性词
+                （如"旅行三件套 抗造 轻便 无塑料"）。
             category (`str | None`):
                 品类槽位，可选，如"旅行装备"、"数码配件"。
             ship_to (`str | None`):
-                收货国家二位码，可选，如 "CN"、"US"；传入后过滤不可送达商品并内联到手价。
+                收货国家二位码，可选，如 "CN"、"US"；传入后过滤不可送达商品，
+                并内联到手价。
+            locale (`str`):
+                买家语言与本地化区域，默认 "zh-CN"；不作为普通商品硬约束。
             top_k (`int`):
                 返回候选数量，默认 5。
             price_max_major (`float | None`):
-                价格上限（target_currency 主单位），买家有预算硬约束时必传，由检索链路结构化过滤。
+                价格上限（target_currency 主单位），买家有预算硬约束时必传，
+                由检索链路结构化过滤。
             target_currency (`str`):
                 价格口径币种，默认 "CNY"。
         """
@@ -54,7 +61,9 @@ def build_product_search_tool(usecase: CatalogSearchUseCase, bus: TradeEventBus)
                 top_k = int(top_k)
             except ValueError:
                 return ToolChunk(
-                    content=[TextBlock(type="text", text=f"[error] top_k 非法：{top_k}")],
+                    content=[
+                        TextBlock(type="text", text=f"[error] top_k 非法：{top_k}")
+                    ],
                     state=ToolResultState.ERROR,
                 )
         if isinstance(price_max_major, str):
@@ -62,7 +71,12 @@ def build_product_search_tool(usecase: CatalogSearchUseCase, bus: TradeEventBus)
                 price_max_major = float(price_max_major)
             except ValueError:
                 return ToolChunk(
-                    content=[TextBlock(type="text", text=f"[error] price_max_major 非法：{price_max_major}")],
+                    content=[
+                        TextBlock(
+                            type="text",
+                            text=f"[error] price_max_major 非法：{price_max_major}",
+                        )
+                    ],
                     state=ToolResultState.ERROR,
                 )
         session_id = ShoppingContext.current_session_id()
@@ -70,23 +84,31 @@ def build_product_search_tool(usecase: CatalogSearchUseCase, bus: TradeEventBus)
             "normalized_query": normalized_query,
             "category": category,
             "ship_to": ship_to,
+            "locale": locale,
             "top_k": top_k,
             "price_max_major": price_max_major,
             "target_currency": target_currency,
         }
-        bus.publish(session_id, "tool.invoke", {"tool": "product_search_tool", "args": args})
+        bus.publish(
+            session_id, "tool.invoke", {"tool": "product_search_tool", "args": args}
+        )
         try:
             spec = ProductSearchSpec(
                 normalized_query=normalized_query,
                 category=category,
                 ship_to=ship_to,
+                locale=locale,
                 top_k=top_k,
                 price_max_major=price_max_major,
                 target_currency=target_currency,
             )
             result = await usecase.execute(spec)
         except ValueError as err:
-            bus.publish(session_id, "tool.result", {"tool": "product_search_tool", "error": str(err)})
+            bus.publish(
+                session_id,
+                "tool.result",
+                {"tool": "product_search_tool", "error": str(err)},
+            )
             return ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {err}")],
                 state=ToolResultState.ERROR,
@@ -103,7 +125,9 @@ def build_product_search_tool(usecase: CatalogSearchUseCase, bus: TradeEventBus)
             },
         )
         return ToolChunk(
-            content=[TextBlock(type="text", text=json.dumps(result, ensure_ascii=False))],
+            content=[
+                TextBlock(type="text", text=json.dumps(result, ensure_ascii=False))
+            ],
             state=ToolResultState.SUCCESS,
         )
 
