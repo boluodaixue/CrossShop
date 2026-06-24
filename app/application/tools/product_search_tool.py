@@ -17,7 +17,7 @@ from agentscope.tool import ToolChunk
 
 from app.application.usecases.catalog_search import CatalogSearchUseCase
 from app.domain.catalog.product_search_spec import ProductSearchSpec
-from app.infrastructure.context import ShoppingContext
+from app.infrastructure.context import SearchDispatchContext, ShoppingContext
 from app.infrastructure.eventbus import TradeEventBus
 
 _PLATFORMS = frozenset({"globex_reference", "taobao", "amazon"})
@@ -137,7 +137,13 @@ def build_product_search_tool(
             "target_currency": target_currency,
         }
         bus.publish(
-            session_id, "tool.invoke", {"tool": "product_search_tool", "args": args}
+            session_id,
+            "tool.invoke",
+            {
+                "tool": "product_search_tool",
+                "args": args,
+                "dispatch_correlation_id": SearchDispatchContext.current(),
+            },
         )
         try:
             spec = ProductSearchSpec(
@@ -159,7 +165,14 @@ def build_product_search_tool(
             bus.publish(
                 session_id,
                 "tool.result",
-                {"tool": "product_search_tool", "error": str(err)},
+                {
+                    "tool": "product_search_tool",
+                    "platform": selected_platform,
+                    "site_locale": selected_site_locale,
+                    "args": args,
+                    "dispatch_correlation_id": SearchDispatchContext.current(),
+                    "error": str(err),
+                },
             )
             return ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {err}")],
@@ -172,10 +185,14 @@ def build_product_search_tool(
                 "tool": "product_search_tool",
                 "platform": selected_platform,
                 "site_locale": selected_site_locale,
+                "args": args,
+                "dispatch_correlation_id": SearchDispatchContext.current(),
                 "hit_count": len(result["hits"]),
+                "filtered_count": len(result.get("filtered_out") or []),
                 "recall_strategy": result["recall_strategy"],
                 # 商品卡随事件下发，前端无需再调接口即可渲染（含 landed_price 到手价）
                 "hits": result["hits"],
+                "filtered_out": result.get("filtered_out") or [],
             },
         )
         return ToolChunk(

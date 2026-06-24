@@ -20,16 +20,19 @@ SearchAgent 的 normalized_query、OpenSearch 或 Reranker。因此本工具只�
 （AgentScope schema 生成依赖运行时注解）。
 """
 
+import json
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Literal
+from uuid import uuid4
 
 from agentscope.message import TextBlock, ToolResultState, UserMsg
 from agentscope.tool import ToolChunk
 
 from app.application.agents.search_agent import SearchAgentFactory
 from app.application.agents.trade_agent import TradeAgentFactory
-from app.infrastructure.context import ShoppingContext
+from app.infrastructure.context import SearchDispatchContext, ShoppingContext
 from app.infrastructure.eventbus import TradeEventBus
 
 
@@ -71,6 +74,9 @@ def build_task_dispatch_tool(
             return _dispatch_error("site_locale 仅可用于 amazon 检索任务")
 
         session_id = ShoppingContext.current_session_id()
+        dispatch_correlation_id = (
+            uuid4().hex if subagent_type == "search_agent" else None
+        )
         started_at = datetime.now(UTC).isoformat()
         started_monotonic = time.monotonic()
         bus.publish(
@@ -81,6 +87,7 @@ def build_task_dispatch_tool(
                 "demands": demands,
                 "platform": platform,
                 "site_locale": site_locale,
+                "dispatch_correlation_id": dispatch_correlation_id,
                 "started_at": started_at,
             },
         )
@@ -102,8 +109,46 @@ def build_task_dispatch_tool(
                 state=ToolResultState.ERROR,
             )
 
-        reply = await worker.reply(UserMsg("commerce_concierge", demands))
+        search_events = (
+            bus.subscribe(session_id) if subagent_type == "search_agent" else None
+        )
+        dispatch_token = (
+            SearchDispatchContext.set(dispatch_correlation_id)
+            if dispatch_correlation_id is not None
+            else None
+        )
+        try:
+            reply = await worker.reply(UserMsg("commerce_concierge", demands))
+        finally:
+            captured = []
+            if search_events is not None:
+                while not search_events.empty():
+                    captured.append(search_events.get_nowait())
+                bus.unsubscribe(session_id, search_events)
+            if dispatch_token is not None:
+                SearchDispatchContext.reset(dispatch_token)
         output = reply.get_text_content() or ""
+        if subagent_type == "search_agent":
+            search_result = _latest_search_result(
+                captured,
+                dispatch_correlation_id=dispatch_correlation_id,
+                platform=platform,
+                site_locale=site_locale,
+            )
+            output = json.dumps(
+                {
+                    "agent": "search_agent",
+                    "platform": platform,
+                    "site_locale": site_locale,
+                    "search_result_available": bool(search_result),
+                    "search_args": search_result.get("args", {}),
+                    "hits": search_result.get("hits", []),
+                    "filtered_out": search_result.get("filtered_out", []),
+                    "recall_strategy": search_result.get("recall_strategy"),
+                    "agent_output": output,
+                },
+                ensure_ascii=False,
+            )
         bus.publish(
             session_id,
             "tool.result",
@@ -112,6 +157,7 @@ def build_task_dispatch_tool(
                 "agent": subagent_type,
                 "platform": platform,
                 "site_locale": site_locale,
+                "dispatch_correlation_id": dispatch_correlation_id,
                 "started_at": started_at,
                 "finished_at": datetime.now(UTC).isoformat(),
                 "elapsed_ms": round((time.monotonic() - started_monotonic) * 1000),
@@ -130,3 +176,43 @@ def _dispatch_error(message: str) -> ToolChunk:
         content=[TextBlock(type="text", text=f"[error] {message}")],
         state=ToolResultState.ERROR,
     )
+
+
+def _latest_search_result(
+    events,
+    *,
+    dispatch_correlation_id: str | None,
+    platform: str | None,
+    site_locale: str | None,
+) -> dict:
+    """Return the latest exact product-tool event for this fixed SearchAgent.
+
+    Each concurrent dispatch has its own local EventBus queue. Queues receive
+    all events for the shopping session, so an internal correlation ID selects
+    the owning dispatch; platform/site are verified as a second boundary. The
+    SearchAgent's prose is never inspected or parsed.
+    """
+    latest: dict = {}
+    for event in events:
+        if getattr(event, "type", "") != "tool.result":
+            continue
+        payload = getattr(event, "payload", None)
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("tool") != "product_search_tool" or payload.get("error"):
+            continue
+        if payload.get("dispatch_correlation_id") != dispatch_correlation_id:
+            continue
+        if payload.get("platform") != platform:
+            continue
+        if payload.get("site_locale") != site_locale:
+            continue
+        if not isinstance(payload.get("hits"), list):
+            continue
+        latest = {
+            "args": dict(payload.get("args") or {}),
+            "hits": list(payload["hits"]),
+            "filtered_out": list(payload.get("filtered_out") or []),
+            "recall_strategy": payload.get("recall_strategy"),
+        }
+    return latest

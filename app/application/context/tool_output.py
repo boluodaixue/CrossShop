@@ -85,12 +85,23 @@ TOOL_OUTPUT_CONTRACTS: dict[str, ToolOutputContract] = {
         max_total_chars=4_000,
     ),
     "task_dispatch": ToolOutputContract(
-        # H4 returns natural text. The mapping branch remains explicit for
-        # structured failures without creating a new dispatch result protocol.
-        allowed_fields=("dispatches", "error"),
-        list_limits={"dispatches": 8},
+        # SearchAgent dispatch returns the exact structured product-tool result
+        # beside its human-facing conclusion. Main and L4 never parse prose.
+        allowed_fields=(
+            "agent",
+            "platform",
+            "site_locale",
+            "search_result_available",
+            "search_args",
+            "hits",
+            "filtered_out",
+            "recall_strategy",
+            "agent_output",
+            "error",
+        ),
+        list_limits={"hits": 5, "hits.*.skus": 12, "filtered_out": 5},
         max_string_chars=2_000,
-        max_total_chars=12_000,
+        max_total_chars=16_000,
     ),
     "remember_preference_tool": ToolOutputContract(
         allowed_fields=("saved", "kind", "error"),

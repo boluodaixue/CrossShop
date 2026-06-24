@@ -34,6 +34,7 @@ _ORDER_ITEM_FIELDS = {
 _MAX_ITEMS = 10
 _MAX_REFS = 20
 _MAX_STRING = 512
+_PLATFORM_ORDER = {"globex_reference": 0, "taobao": 1, "amazon": 2}
 
 
 def _event_parts(event: Any) -> tuple[str, Mapping[str, Any], str]:
@@ -149,6 +150,7 @@ def reduce_l4(
 
     normalized = [_event_parts(event) for event in events]
     invokes: dict[str, tuple[str, dict[str, Any]]] = {}
+    dispatch_searches: list[dict[str, Any]] = []
     for kind, payload, _occurred_at in normalized:
         if kind != "tool.invoke":
             continue
@@ -186,6 +188,42 @@ def reduce_l4(
                 "returned_count": len(hits),
                 "product_refs": refs,
             }
+        elif (
+            tool == "task_dispatch"
+            and output.get("agent") == "search_agent"
+            and output.get("search_result_available") is True
+            and isinstance(output.get("hits"), list)
+            and isinstance(output.get("filtered_out"), list)
+        ):
+            hits = output["hits"]
+            filtered_out = output["filtered_out"]
+            refs = [
+                str(hit["product_id"])
+                for hit in hits
+                if isinstance(hit, Mapping) and _present(hit.get("product_id"))
+            ][:_MAX_REFS]
+            filtered_refs = [
+                str(hit["product_id"])
+                for hit in filtered_out
+                if isinstance(hit, Mapping) and _present(hit.get("product_id"))
+            ][:_MAX_REFS]
+            search_args = _compact_mapping(output.get("search_args"), _SEARCH_ARGS)
+            if _present(output.get("platform")):
+                search_args["platform"] = _bounded(output["platform"])
+            if _present(output.get("site_locale")):
+                search_args["site_locale"] = _bounded(output["site_locale"])
+            dispatch_searches.append(
+                {
+                    "tool_call_id": call_id,
+                    "platform": _bounded(output.get("platform")),
+                    "site_locale": _bounded(output.get("site_locale")),
+                    "args": search_args,
+                    "returned_count": len(hits),
+                    "filtered_count": len(filtered_out),
+                    "product_refs": refs,
+                    "filtered_product_refs": filtered_refs,
+                },
+            )
         elif tool in {"create_order_tool", "query_order_tool", "cancel_order_tool"}:
             order = copy.deepcopy(state.get("order") or {})
             for key in (
@@ -203,6 +241,40 @@ def reduce_l4(
             if items:
                 order["items"] = items
             state["order"] = order or state.get("order")
+
+    if dispatch_searches:
+        dispatch_searches.sort(
+            key=lambda item: (
+                _PLATFORM_ORDER.get(str(item.get("platform")), 99),
+                str(item.get("site_locale") or ""),
+                str(item.get("tool_call_id") or ""),
+            ),
+        )
+        product_refs = list(
+            dict.fromkeys(
+                ref for result in dispatch_searches for ref in result["product_refs"]
+            ),
+        )[:_MAX_REFS]
+        filtered_refs = list(
+            dict.fromkeys(
+                ref
+                for result in dispatch_searches
+                for ref in result["filtered_product_refs"]
+            ),
+        )[:_MAX_REFS]
+        state["last_search"] = {
+            "tool_call_ids": [item["tool_call_id"] for item in dispatch_searches],
+            "status": "succeeded",
+            "returned_count": sum(
+                int(item["returned_count"]) for item in dispatch_searches
+            ),
+            "filtered_count": sum(
+                int(item["filtered_count"]) for item in dispatch_searches
+            ),
+            "product_refs": product_refs,
+            "filtered_product_refs": filtered_refs,
+            "platform_results": dispatch_searches,
+        }
 
     # V2 has no authoritative structured selected-product result. Natural
     # language final text is deliberately not parsed into last_recommendation.

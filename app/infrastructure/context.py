@@ -5,6 +5,7 @@
 跨层透明传递：工具与子 Agent 执行时随时读取，无需层层透传参数。
 多用户并发任务依赖 asyncio Task 级隔离，不会串台。
 """
+
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -22,6 +23,10 @@ class ShoppingContextSnapshot:
 
 _current_snapshot: ContextVar[Optional[ShoppingContextSnapshot]] = ContextVar(
     "globex_shopping_context",
+    default=None,
+)
+_current_search_dispatch_id: ContextVar[str | None] = ContextVar(
+    "globex_search_dispatch_id",
     default=None,
 )
 
@@ -43,3 +48,23 @@ class ShoppingContext:
     def current_session_id() -> str:
         snapshot = _current_snapshot.get()
         return snapshot.shopping_session_id if snapshot else "anonymous"
+
+
+class SearchDispatchContext:
+    """Internal correlation for one SearchAgent dispatch and its tools.
+
+    This value is EventBus metadata only. It is never a public tool argument,
+    model input, ProductSearchSpec field, or product-domain attribute.
+    """
+
+    @staticmethod
+    def set(dispatch_id: str):
+        return _current_search_dispatch_id.set(dispatch_id)
+
+    @staticmethod
+    def reset(token) -> None:
+        _current_search_dispatch_id.reset(token)
+
+    @staticmethod
+    def current() -> str | None:
+        return _current_search_dispatch_id.get()
