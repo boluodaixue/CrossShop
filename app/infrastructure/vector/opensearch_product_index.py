@@ -14,6 +14,7 @@ from app.catalog.opensearch_product_h1 import (
 )
 from app.domain.catalog.ports.retrieval_ports import ProductVectorIndex, VectorHit
 from app.domain.catalog.product import Product
+from app.infrastructure.tracing import set_span_attributes, text_digest, trace_span
 
 
 class OpenSearchProductIndex(ProductVectorIndex):
@@ -96,36 +97,49 @@ class OpenSearchProductIndex(ProductVectorIndex):
         if not all(math.isfinite(value) for value in embedding):
             raise ValueError("query embedding contains a non-finite value")
 
-        response = await self._client.post(
-            f"/{self._index_name}/_search",
-            params={"search_pipeline": RRF_PIPELINE_NAME},
-            json=hybrid_query(
-                query,
-                embedding,
-                size=top_n,
-                site_locale=self._site_locale,
-            ),
-        )
-        response.raise_for_status()
+        with trace_span(
+            "globex.product.opensearch.hybrid",
+            {
+                "globex.opensearch.index": self._index_name,
+                "globex.opensearch.site_locale": self._site_locale or "all",
+                "globex.opensearch.top_n": top_n,
+                "globex.opensearch.query_digest": text_digest(query),
+                "globex.opensearch.vector_dimension": len(embedding),
+                "globex.opensearch.pipeline": RRF_PIPELINE_NAME,
+            },
+        ) as span:
+            response = await self._client.post(
+                f"/{self._index_name}/_search",
+                params={"search_pipeline": RRF_PIPELINE_NAME},
+                json=hybrid_query(
+                    query,
+                    embedding,
+                    size=top_n,
+                    site_locale=self._site_locale,
+                ),
+            )
+            response.raise_for_status()
 
-        hits: list[VectorHit] = []
-        seen_product_ids: set[str] = set()
-        for hit in response.json()["hits"]["hits"]:
-            product_id = hit.get("_source", {}).get("product_id")
-            if not isinstance(product_id, str) or not product_id:
-                raise RuntimeError("OpenSearch Product hit is missing product_id")
-            if hit.get("_id") != product_id:
-                raise RuntimeError(
-                    f"OpenSearch identity mismatch: _id={hit.get('_id')!r}, product_id={product_id!r}"
-                )
-            if product_id in seen_product_ids:
-                raise RuntimeError(f"duplicate Product hit: {product_id}")
-            score = float(hit["_score"])
-            if not math.isfinite(score):
-                raise RuntimeError(f"non-finite score for Product {product_id}")
-            seen_product_ids.add(product_id)
-            hits.append(VectorHit(product_id=product_id, score=score))
-        return hits
+            hits: list[VectorHit] = []
+            seen_product_ids: set[str] = set()
+            for hit in response.json()["hits"]["hits"]:
+                product_id = hit.get("_source", {}).get("product_id")
+                if not isinstance(product_id, str) or not product_id:
+                    raise RuntimeError("OpenSearch Product hit is missing product_id")
+                if hit.get("_id") != product_id:
+                    raise RuntimeError(
+                        "OpenSearch identity mismatch: "
+                        f"_id={hit.get('_id')!r}, product_id={product_id!r}"
+                    )
+                if product_id in seen_product_ids:
+                    raise RuntimeError(f"duplicate Product hit: {product_id}")
+                score = float(hit["_score"])
+                if not math.isfinite(score):
+                    raise RuntimeError(f"non-finite score for Product {product_id}")
+                seen_product_ids.add(product_id)
+                hits.append(VectorHit(product_id=product_id, score=score))
+            set_span_attributes(span, {"globex.opensearch.hit_count": len(hits)})
+            return hits
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -80,14 +80,16 @@ docker/                # docker-compose.yaml（app + worker + qdrant + redis + f
   `scripts/verify_parallel.py` 用事件时间戳比对并行/串行墙钟耗时
 - **到手价内联**：传 ship_to 时商品卡自动内联 landed_price（小计+运费+关税，汇率统一折算），
   比价/运费不单独暴露工具，减少不必要的工具调用轮次
-- **长期记忆**：写路径 remember_preference_tool → JSON 文件 Store；读路径 orchestrator
-  在偏好变化时注入 `<buyer-preferences>` hint，跨会话、跨重启生效
+- **长期记忆**：写路径 remember_preference_tool → Store；读路径由 orchestrator 向 Main 注入
+  全量 dislike + 当前需求相关 like Top-K。SearchAgent 不接收历史偏好；Main 只能在
+  `hits/filtered_out` 返回后用偏好挑选和说明候选，偏好不得进入商品 Query/Reranker 文本
 - **会话持久化**：AgentState 每轮落盘 DATA_DIR/sessions/，服务重启后恢复多轮对话
 - **SubAgent as Tool**：2.0 库级无 subagent 原语（官方 Agent Team 在 agentscope.app 平台层），
   用 FunctionTool 包装 `task_dispatch(subagent_type, demands)` 实现同等语义
 - **事件流**：reply_stream → token.delta / plan.update；工具自身发布 tool.invoke/tool.result；
   TradeEventBus 按会话路由 WebSocket
-- **可观测**：全部 Agent 挂 TracingMiddleware，OTEL_EXPORTER_OTLP_ENDPOINT 配置后导出 OTLP Trace
+- **可观测**：全部 Agent 复用 AgentScope `TracingMiddleware`；可选导出到 LangFuse/OTLP，
+  默认不采集输入输出，并对会话标识、工具载荷与错误信息做导出前脱敏
 
 ## 启动
 
@@ -112,6 +114,18 @@ uv run python -m app.worker
 
 > 本地开发也可 `cp .env.example .env` 填值兜底（已被 gitignore，勿提交真实密钥）；
 > 同名环境变量优先于 .env。
+
+### 可选 LangFuse Trace
+
+设置 `LANGFUSE_ENABLED=1` 并在本地环境提供 `LANGFUSE_PUBLIC_KEY`、
+`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST` 后，AgentScope 的 Main/Search/Trade、模型与
+工具 span 会通过 OTLP 导出。商品链路另记录 BGE Query、OpenSearch Hybrid、硬约束摘要
+与 Reranker 子 span。未配置时不会创建 exporter 或发送网络请求。
+
+`LANGFUSE_CAPTURE_INPUT` 与 `LANGFUSE_CAPTURE_OUTPUT` 默认均为 `0`；常规验收只保留
+模型名、token、平台、索引、候选数量、耗时和错误状态。`.env` 已被 Git 忽略，禁止把
+LangFuse 或模型密钥写入受跟踪文件。即使显式开启 capture，也只导出内容摘要指纹和
+JSON 顶层结构，不导出完整 query、模型回复、商品卡、地址或凭据。
 
 ## API 概览
 

@@ -4,6 +4,7 @@
 OpenAI 兼容 /v1/embeddings 客户端（httpx 直连，不引入 openai SDK 的 embedding 封装，
 便于对接任意兼容网关）。模型默认 text-embedding-v4。
 """
+
 from __future__ import annotations
 
 import os
@@ -12,6 +13,7 @@ import httpx
 
 from app.domain.catalog.ports.retrieval_ports import EmbeddingClient
 from app.infrastructure.settings import Settings
+from app.infrastructure.tracing import set_span_attributes, text_digest, trace_span
 
 # 单次请求最多带多少条文本。
 #
@@ -39,16 +41,32 @@ class OpenAIEmbeddingClient(EmbeddingClient):
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        vectors: list[list[float]] = []
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            # 分片串行请求：批量上限是网关侧约束，超限不会报错只会返回空 body
-            for start in range(0, len(texts), _MAX_BATCH):
-                chunk = texts[start : start + _MAX_BATCH]
-                vectors.extend(await self._embed_chunk(client, chunk))
-        return vectors
+        attributes = {
+            "globex.embedding.model": self._model,
+            "globex.embedding.input_count": len(texts),
+        }
+        if len(texts) == 1:
+            attributes["globex.embedding.input_digest"] = text_digest(texts[0])
+        with trace_span("globex.embedding.request", attributes) as span:
+            vectors: list[list[float]] = []
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                # 分片串行请求：批量上限是网关侧约束，超限不会报错只会返回空 body
+                for start in range(0, len(texts), _MAX_BATCH):
+                    chunk = texts[start : start + _MAX_BATCH]
+                    vectors.extend(await self._embed_chunk(client, chunk))
+            set_span_attributes(
+                span,
+                {
+                    "globex.embedding.output_count": len(vectors),
+                    "globex.embedding.dimension": len(vectors[0]) if vectors else 0,
+                },
+            )
+            return vectors
 
     async def _embed_chunk(
-        self, client: httpx.AsyncClient, chunk: list[str],
+        self,
+        client: httpx.AsyncClient,
+        chunk: list[str],
     ) -> list[list[float]]:
         response = await client.post(
             f"{self._base_url}/embeddings",

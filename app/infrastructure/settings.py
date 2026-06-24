@@ -23,6 +23,28 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_unit_interval(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(0.0, min(1.0, value))
+
+
+def _env_positive_float(name: str, default: float) -> float:
+    try:
+        return max(0.05, float(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     llm_base_url: str
@@ -86,12 +108,9 @@ class Settings:
     breaker_shared: bool = False  # 熔断状态跨实例共享（需 REDIS_URL）
     # 长期记忆：偏好注入策略
     preference_relevance_enabled: bool = (
-        False  # 向量相关性筛选，每轮多一次 embedding，默认关
+        True  # H5：like 必须按当前需求做向量相关 Top-K；失败时仅保留 dislike
     )
     preference_top_k: int = 5  # like 注入上限；dislike（黑名单）不受此限
-    preference_subagent_inject: bool = (
-        True  # 给检索子 Agent 注入偏好（纯本地拼装，零成本）
-    )
     queue_priority_enabled: bool = True  # 双队列优先级（无 Redis 时自动无效）
     queue_large_request_turns: int = 30  # 对话轮数 >= 此值走大请求队列
     # ---- H4：Product OpenSearch 在线检索 ----
@@ -104,6 +123,15 @@ class Settings:
     product_embedding_api_key: str = ""
     product_embedding_model: str = "BAAI/bge-m3"
     product_embedding_dim: int = 1024
+    # ---- H5：LangFuse / OpenTelemetry（默认关闭、fail-open）----
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_sample_rate: float = 1.0
+    langfuse_capture_input: bool = False
+    langfuse_capture_output: bool = False
+    langfuse_flush_timeout_seconds: float = 2.0
 
 
 def load_settings() -> Settings:
@@ -181,11 +209,9 @@ def load_settings() -> Settings:
         not in ("0", "false", "False"),
         token_budget_total=int(os.getenv("TOKEN_BUDGET_TOTAL", "0")),
         breaker_shared=os.getenv("BREAKER_SHARED", "0") not in ("0", "false", "False"),
-        preference_relevance_enabled=os.getenv("PREFERENCE_RELEVANCE_ENABLED", "0")
+        preference_relevance_enabled=os.getenv("PREFERENCE_RELEVANCE_ENABLED", "1")
         not in ("0", "false", "False"),
         preference_top_k=int(os.getenv("PREFERENCE_TOP_K", "5")),
-        preference_subagent_inject=os.getenv("PREFERENCE_SUBAGENT_INJECT", "1")
-        not in ("0", "false", "False"),
         queue_priority_enabled=os.getenv("QUEUE_PRIORITY_ENABLED", "1")
         not in ("0", "false", "False"),
         queue_large_request_turns=int(os.getenv("QUEUE_LARGE_REQUEST_TURNS", "30")),
@@ -215,4 +241,18 @@ def load_settings() -> Settings:
             "BAAI/bge-m3",
         ),
         product_embedding_dim=int(os.getenv("PRODUCT_EMBEDDING_DIM", "1024")),
+        langfuse_enabled=_env_flag("LANGFUSE_ENABLED"),
+        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", "").strip(),
+        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", "").strip(),
+        langfuse_host=(
+            os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com").strip()
+            or "https://cloud.langfuse.com"
+        ),
+        langfuse_sample_rate=_env_unit_interval("LANGFUSE_SAMPLE_RATE", 1.0),
+        langfuse_capture_input=_env_flag("LANGFUSE_CAPTURE_INPUT"),
+        langfuse_capture_output=_env_flag("LANGFUSE_CAPTURE_OUTPUT"),
+        langfuse_flush_timeout_seconds=_env_positive_float(
+            "LANGFUSE_FLUSH_TIMEOUT_SECONDS",
+            2.0,
+        ),
     )

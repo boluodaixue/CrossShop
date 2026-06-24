@@ -8,8 +8,10 @@
 四期把 session/conversation 的方法改成 async 以对齐端口——文件 IO 本身是同步的，
 但端口按数据库实现的需要定义，这样换实现不必改调用方。
 """
+
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -38,11 +40,21 @@ class JsonFilePreferenceStore(PreferenceStore):
         self._dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, buyer_id: str) -> Path:
+        # `_safe_name` 会把 `buyer/a` 与 `buyera` 清洗成同一个文件名，造成跨买家
+        # 偏好串读。文件名加入原始 buyer_id 的稳定 hash，使映射保持不可碰撞；
+        # 可读前缀仅用于本地排查，不承担身份唯一性。
+        digest = hashlib.sha256(buyer_id.encode("utf-8")).hexdigest()[:16]
+        return self._dir / f"{_safe_name(buyer_id)}-{digest}.json"
+
+    def _legacy_path(self, buyer_id: str) -> Path:
         return self._dir / f"{_safe_name(buyer_id)}.json"
 
     async def append(self, preference: BuyerPreference) -> None:
         existing = await self.list_by_buyer(preference.buyer_id)
-        if any(p.statement == preference.statement and p.kind == preference.kind for p in existing):
+        if any(
+            p.statement == preference.statement and p.kind == preference.kind
+            for p in existing
+        ):
             return  # 幂等去重
         existing.append(preference)
         self._write(preference.buyer_id, existing)
@@ -50,10 +62,20 @@ class JsonFilePreferenceStore(PreferenceStore):
     async def list_by_buyer(self, buyer_id: str) -> list[BuyerPreference]:
         path = self._path(buyer_id)
         if not path.exists():
+            # H5 前的文件名没有 hash。只在文件内 buyer_id 全部精确匹配时读取，
+            # 防止清洗碰撞把另一个买家的旧文件暴露出来；下一次写入会迁移到新路径。
+            legacy = self._legacy_path(buyer_id)
+            if legacy.exists():
+                path = legacy
+        if not path.exists():
             return []
         try:
             items = json.loads(path.read_text(encoding="utf-8"))
-            return [BuyerPreference(**item) for item in items]
+            preferences = [BuyerPreference(**item) for item in items]
+            if any(preference.buyer_id != buyer_id for preference in preferences):
+                logger.warning("偏好文件 buyer_id 不匹配，拒绝读取：%s", path)
+                return []
+            return preferences
         except (ValueError, TypeError) as err:
             logger.warning("偏好文件损坏，按空处理：%s（%s）", path, err)
             return []
@@ -74,7 +96,12 @@ class JsonFilePreferenceStore(PreferenceStore):
 
     def _write(self, buyer_id: str, preferences: list[BuyerPreference]) -> None:
         payload = [
-            {"buyer_id": p.buyer_id, "kind": p.kind, "statement": p.statement, "created_at": p.created_at}
+            {
+                "buyer_id": p.buyer_id,
+                "kind": p.kind,
+                "statement": p.statement,
+                "created_at": p.created_at,
+            }
             for p in preferences
         ]
         self._path(buyer_id).write_text(
@@ -146,7 +173,9 @@ class JsonFileConversationStore(ConversationStore):
                 },
             )
 
-    async def list_turns(self, session_id: str, limit: int = 50) -> list[ConversationTurn]:
+    async def list_turns(
+        self, session_id: str, limit: int = 50
+    ) -> list[ConversationTurn]:
         path = self._path(session_id)
         if not path.exists():
             return []
@@ -173,14 +202,21 @@ class JsonFileConversationStore(ConversationStore):
             )
         return turns[-limit:]
 
-    async def touch_session(self, session_id: str, buyer_id: str, locale: str, currency: str) -> None:
+    async def touch_session(
+        self, session_id: str, buyer_id: str, locale: str, currency: str
+    ) -> None:
         # 文件形态没有独立的会话主表，首轮写入时记一条元信息即可
         path = self._path(session_id)
         if path.exists():
             return
         self._append_line(
             session_id,
-            {"kind": "session", "buyer_id": buyer_id, "locale": locale, "currency": currency},
+            {
+                "kind": "session",
+                "buyer_id": buyer_id,
+                "locale": locale,
+                "currency": currency,
+            },
         )
 
     async def find_session(self, session_id: str) -> Optional[dict]:

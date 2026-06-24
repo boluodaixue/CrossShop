@@ -71,7 +71,7 @@ from app.infrastructure.resilience import CircuitBreakerRegistry
 from app.infrastructure.settings import Settings, load_settings
 from app.infrastructure.shared_breaker import SharedCircuitBreakerRegistry
 from app.infrastructure.throttle import GatewayThrottle
-from app.infrastructure.tracing import setup_tracing
+from app.infrastructure.tracing import setup_tracing, shutdown_tracing
 from app.infrastructure.vector.opensearch_product_index import OpenSearchProductIndex
 
 logger = logging.getLogger(__name__)
@@ -127,11 +127,15 @@ class Container:
         await bootstrap_category_knowledge(self.knowledge_base)
 
     async def shutdown(self) -> None:
-        for index in self.product_indexes.values():
-            await index.close()
-        await self.cache.close()
-        if self.db_engine is not None:
-            await self.db_engine.dispose()
+        try:
+            for index in self.product_indexes.values():
+                await index.close()
+            await self.cache.close()
+            if self.db_engine is not None:
+                await self.db_engine.dispose()
+        finally:
+            # Short-lived workers/acceptance runs must not lose the last batch.
+            await shutdown_tracing()
 
 
 async def build_container() -> Container:
@@ -288,8 +292,8 @@ async def build_container() -> Container:
         circuit_registry,
         throttle,
     )
-    # 偏好选取器：主 Agent 注入与子 Agent 注入共用同一实例，口径不会两头漂。
-    # 用带缓存的 embedder：重复的偏好 statement 不会每轮重复 embed。
+    # H5：偏好只由 Main Agent 编排入口读取；SearchAgent 始终保持中性检索。
+    # 相关 like Top-K 使用通用、带缓存的 EMBEDDING_*，绝不复用商品 Query Tower。
     preference_selector = PreferenceSelector(
         embedder=embedder,
         relevance_enabled=settings.preference_relevance_enabled,
@@ -304,7 +308,6 @@ async def build_container() -> Container:
         throttle,
         sequencing=sequencing_tracker,
         loop_detector=loop_detector,
-        preference_selector=preference_selector,
     )
     sessions = SessionRegistry(main_factory, session_store)
     orchestrator = MainAgentOrchestrator(

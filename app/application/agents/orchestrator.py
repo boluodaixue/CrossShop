@@ -3,8 +3,8 @@
 
 应用层编排入口：
     1. 把会话快照写入 ShoppingContext（ContextVar，工具与子 Agent 透明可读）；
-    2. 长期记忆读路径：买家偏好经 PreferenceSelector 按本轮 query 相关性挑选后，
-       有变化时随本轮输入注入一条 <buyer-preferences> hint 消息（dislike 不参与截断）；
+    2. 长期记忆读路径：每轮请求开始时，买家偏好经 PreferenceSelector
+       按当前 query 重新挑选后注入 <buyer-preferences> hint（dislike 不参与截断）；
     3. 消费 MainAgent 的 reply_stream 类型化事件流并映射到 TradeEventBus：
        TextBlockDeltaEvent → token.delta
        Task* 工具结果      → plan.update（从 AgentState.tasks_context 快照）
@@ -17,6 +17,7 @@
 限流错误写在 SSE 流中间（报 openai.APIError），此时已经走出模型层重试范围，不兜底就会
 整轮失败。重试期间前端可能看到重复的流式片段，final.result 到达时会被覆盖。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -48,12 +49,15 @@ from app.domain.session.ports.conversation_store import (
     ConversationStore,
     ConversationTurn,
 )
-from app.domain.session.ports.session_store import SessionStore  # noqa: F401 —— 保留类型引用
+from app.domain.session.ports.session_store import (
+    SessionStore,  # noqa: F401 —— 保留类型引用
+)
+from app.infrastructure.budget import init_budget
 from app.infrastructure.cache.semantic_cache import SemanticCache
 from app.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from app.infrastructure.eventbus import TradeEventBus
-from app.infrastructure.budget import init_budget
 from app.infrastructure.security.output_guard import audit_output
+from app.infrastructure.tracing import set_span_attributes, trace_intent
 from app.infrastructure.transient import is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -61,7 +65,8 @@ logger = logging.getLogger(__name__)
 # 内置 Task 计划工具名，其结果落地后向前端推送 plan.update 快照
 _TASK_TOOL_NAMES = {"TaskCreate", "TaskUpdate", "TaskList", "TaskGet"}
 
-# 上游瞬时故障判据与模型层共用同一份（app/infrastructure/transient.py），避免两处标记表漂移。
+# 上游瞬时故障判据与模型层共用同一份
+# （app/infrastructure/transient.py），避免两处标记表漂移。
 # 模型层已做一轮退避重试 + 备用模型回退，这里是最外层兜底：覆盖模型层之外
 # （工具、子 Agent 调度、事件消费）招致的瞬时失败。
 _MAX_TURN_RETRIES = 2
@@ -117,11 +122,9 @@ class MainAgentOrchestrator:
         self._loop_detector = loop_detector
         self._token_budget_total = token_budget_total
         self._drift_detector = drift_detector
-        # 默认 selector 不带 embedder，退化为“按时间倒序取 top_k”，单测与无凭据环境可直接跑
+        # 无 embedder 时只保留全量 dislike；不能把“最新 like”冒充“相关 like Top-K”。
         self._preference_selector = preference_selector or PreferenceSelector()
         self._preference_top_k = preference_top_k
-        # 会话内已注入的偏好快照，变化时才重新注入，避免每轮重复填充上下文
-        self._injected_preferences: dict[str, str] = {}
 
     def _guard_final_text(self, session_id: str, text: str) -> str:
         """L4 输出审核：最终回复推给买家前脱敏内部信息。
@@ -134,7 +137,9 @@ class MainAgentOrchestrator:
         safe, cleaned = audit_output(text)
         if not safe:
             logger.warning("L4 输出审核命中敏感内容，已脱敏（会话 %s）", session_id)
-            self._bus.publish(session_id, "error", {"message": "输出审核命中内部信息，已脱敏后下发"})
+            self._bus.publish(
+                session_id, "error", {"message": "输出审核命中内部信息，已脱敏后下发"}
+            )
         return cleaned
 
     async def handle_intent(self, intent: SubmitIntentInput) -> SubmitIntentOutput:
@@ -146,6 +151,30 @@ class MainAgentOrchestrator:
             currency=intent.currency,
         )
         token = ShoppingContext.set(snapshot)
+        try:
+            with trace_intent(
+                session_id=session_id,
+                buyer_id=intent.buyer_id,
+                locale=intent.locale,
+                currency=intent.currency,
+            ) as intent_span:
+                output = await self._handle_intent_in_context(intent)
+                set_span_attributes(
+                    intent_span,
+                    {
+                        "globex.result.error": output.final_text.startswith("[error]"),
+                        "globex.result.text_length": len(output.final_text),
+                    },
+                )
+                return output
+        finally:
+            ShoppingContext.reset(token)
+
+    async def _handle_intent_in_context(
+        self,
+        intent: SubmitIntentInput,
+    ) -> SubmitIntentOutput:
+        session_id = intent.shopping_session_id
         started_at = time.monotonic()
         # 本轮 Token 预算（TOKEN_BUDGET_TOTAL=0时为 None，不启用四档降级）
         init_budget(self._token_budget_total)
@@ -163,9 +192,11 @@ class MainAgentOrchestrator:
             if cached is not None:
                 final_text = self._guard_final_text(session_id, cached)
                 self._bus.publish(session_id, "final.result", {"text": final_text})
-                return SubmitIntentOutput(shopping_session_id=session_id, final_text=final_text)
+                return SubmitIntentOutput(
+                    shopping_session_id=session_id, final_text=final_text
+                )
 
-            inputs = await self._build_inputs(intent, session_id)
+            inputs = await self._build_inputs(intent)
 
             final_text = await self._reply_with_retry(session_id, agent, inputs)
             final_text = self._guard_final_text(session_id, final_text)
@@ -174,17 +205,24 @@ class MainAgentOrchestrator:
             self._publish_compression(session_id, agent, summary_before)
             self._bus.publish(session_id, "final.result", {"text": final_text})
             await self._remember_cache(intent, final_text, has_history)
-            return SubmitIntentOutput(shopping_session_id=session_id, final_text=final_text)
+            return SubmitIntentOutput(
+                shopping_session_id=session_id, final_text=final_text
+            )
         except Exception as err:  # noqa: BLE001 —— 兜底转事件，避免长任务静默失败
             logger.exception("MainAgent 异常")
             self._bus.publish(session_id, "error", {"message": str(err)})
             final_text = f"[error] {err}"
-            return SubmitIntentOutput(shopping_session_id=session_id, final_text=final_text)
+            return SubmitIntentOutput(
+                shopping_session_id=session_id, final_text=final_text
+            )
         finally:
             # 无论成功失败都落盘会话状态（失败内部仅告警）
             await self._sessions.persist(session_id)
             await self._record_conversation(
-                intent, final_text, int((time.monotonic() - started_at) * 1000), trace,
+                intent,
+                final_text,
+                int((time.monotonic() - started_at) * 1000),
+                trace,
             )
             # 循环检测是"本轮内是不是在打转"的判定，轮末必须清零；
             # 阶段无关的顺序记录（SequencingTracker）则按会话保留，
@@ -193,7 +231,6 @@ class MainAgentOrchestrator:
                 self._loop_detector.reset(session_id)
             if self._drift_detector is not None:
                 self._drift_detector.reset(session_id)
-            ShoppingContext.reset(token)
 
     async def _preference_scope(self, buyer_id: str) -> str:
         """买家当前偏好的指纹，作为语义缓存的分桶维度。
@@ -212,7 +249,9 @@ class MainAgentOrchestrator:
             render_preference_lines(preferences).encode(),
         ).hexdigest()[:16]
 
-    async def _lookup_cache(self, intent: SubmitIntentInput, has_history: bool) -> Optional[str]:
+    async def _lookup_cache(
+        self, intent: SubmitIntentInput, has_history: bool
+    ) -> Optional[str]:
         """语义缓存查询；命中时发 cache.hit 事件让过程可见（不静默复用）。"""
         if self._semantic_cache is None:
             return None
@@ -233,7 +272,10 @@ class MainAgentOrchestrator:
         return hit.reply
 
     async def _remember_cache(
-        self, intent: SubmitIntentInput, final_text: str, has_history: bool,
+        self,
+        intent: SubmitIntentInput,
+        final_text: str,
+        has_history: bool,
     ) -> None:
         if self._semantic_cache is None:
             return
@@ -268,13 +310,18 @@ class MainAgentOrchestrator:
                     ConversationEventRecord(
                         session_id=session_id,
                         type=event.type,
-                        payload=event.payload if isinstance(event.payload, dict) else {"value": event.payload},
+                        payload=event.payload
+                        if isinstance(event.payload, dict)
+                        else {"value": event.payload},
                         occurred_at=event.occurred_at,
                     ),
                 )
         try:
             await self._conversation_store.touch_session(
-                session_id, intent.buyer_id, intent.locale, intent.currency,
+                session_id,
+                intent.buyer_id,
+                intent.locale,
+                intent.currency,
             )
             await self._conversation_store.append_turn(
                 ConversationTurn(
@@ -297,7 +344,9 @@ class MainAgentOrchestrator:
         except Exception as err:  # noqa: BLE001
             logger.warning("对话记录写入失败：%s（%s）", session_id, err)
 
-    async def _reply_with_retry(self, session_id: str, agent: Agent, inputs: list[Msg]) -> str:
+    async def _reply_with_retry(
+        self, session_id: str, agent: Agent, inputs: list[Msg]
+    ) -> str:
         """跑一轮 Agent 并映射事件流；上游瞬时错误按指数退避重试。"""
         last_error: Exception | None = None
         for attempt in range(_MAX_TURN_RETRIES + 1):
@@ -326,7 +375,9 @@ class MainAgentOrchestrator:
                 await asyncio.sleep(delay)
         raise last_error if last_error else RuntimeError("reply 重试耗尽")
 
-    async def _consume_reply(self, session_id: str, agent: Agent, inputs: list[Msg]) -> str:
+    async def _consume_reply(
+        self, session_id: str, agent: Agent, inputs: list[Msg]
+    ) -> str:
         final_text = ""
         # tool_call_id → 工具名，用于把 ToolResultEndEvent 关联回 Task 工具
         call_names: dict[str, str] = {}
@@ -349,7 +400,9 @@ class MainAgentOrchestrator:
                 self._observe_for_drift(session_id, tool_name, event)
         return final_text
 
-    def _observe_for_drift(self, session_id: str, tool_name: Optional[str], event: Any) -> None:
+    def _observe_for_drift(
+        self, session_id: str, tool_name: Optional[str], event: Any
+    ) -> None:
         """把一次工具结果记进漂移轨迹（开关关时零开销）。"""
         if self._drift_detector is None or not tool_name:
             return
@@ -357,7 +410,10 @@ class MainAgentOrchestrator:
         try:
             blocks = getattr(event, "output", None) or []
             text = "\n".join(
-                str(getattr(block, "text", "") or (block.get("text", "") if isinstance(block, dict) else ""))
+                str(
+                    getattr(block, "text", "")
+                    or (block.get("text", "") if isinstance(block, dict) else "")
+                )
                 for block in blocks
             )
         except Exception:  # noqa: BLE001 —— 观测不能影响主链路
@@ -365,7 +421,9 @@ class MainAgentOrchestrator:
         # “无候选”的判据：检索类工具返回的 hits 为空
         result_empty = bool(text) and ('"hits": []' in text or '"hits":[]' in text)
         self._drift_detector.observe_action(
-            session_id, f"{tool_name} {text[:200]}", result_empty=result_empty,
+            session_id,
+            f"{tool_name} {text[:200]}",
+            result_empty=result_empty,
         )
 
     async def _check_drift(self, session_id: str) -> None:
@@ -382,7 +440,11 @@ class MainAgentOrchestrator:
             logger.warning("漂移检测异常，忽略：%s", err)
             return
         if report.drifted:
-            logger.warning("检测到静默漂移（会话 %s）：%s", session_id, report.reasons or report.verdict)
+            logger.warning(
+                "检测到静默漂移（会话 %s）：%s",
+                session_id,
+                report.reasons or report.verdict,
+            )
             self._bus.publish(
                 session_id,
                 "error",
@@ -393,7 +455,9 @@ class MainAgentOrchestrator:
                 },
             )
 
-    def _publish_compression(self, session_id: str, agent: Agent, summary_before: str | None) -> None:
+    def _publish_compression(
+        self, session_id: str, agent: Agent, summary_before: str | None
+    ) -> None:
         """上下文压缩发生时，2.0 会把早期消息压成摘要写入 AgentState.summary，
         比对本轮前后的 summary 即可判定并上报。"""
         summary_after = agent.state.summary
@@ -408,8 +472,13 @@ class MainAgentOrchestrator:
             },
         )
 
-    async def _build_inputs(self, intent: SubmitIntentInput, session_id: str) -> list[Msg]:
-        """长期记忆读路径：偏好有变化时随本轮输入注入 hint 消息。"""
+    async def _build_inputs(self, intent: SubmitIntentInput) -> list[Msg]:
+        """长期记忆读路径：每轮按当前请求重新选择并注入偏好。
+
+        hint 是当前轮的短期模型输入，不写入 L4，也不依赖历史
+        L2/L3 是否仍保留上轮 hint。如果按会话指纹抑制重复注入，
+        上轮 hint 被冻结或压缩后，本轮偏好就会从模型视图消失。
+        """
         user_msg = UserMsg(intent.buyer_id, intent.raw_query)
         try:
             preferences = await self._preference_store.list_by_buyer(intent.buyer_id)
@@ -419,17 +488,16 @@ class MainAgentOrchestrator:
         if not preferences:
             return [user_msg]
 
-        # 按与本轮 query 的相关性挑选：偏好越攒越多时，全量铺进去会把真正相关的那几条稀释。
+        # 按与本轮 query 的相关性挑选：偏好越攒越多时，
+        # 全量铺进去会把真正相关的那几条稀释。
         # dislike 不参与截断（见 PreferenceSelector 文档字符串）。
         selected = await self._preference_selector.select(
-            preferences, query=intent.raw_query, top_k=self._preference_top_k,
+            preferences,
+            query=intent.raw_query,
+            top_k=self._preference_top_k,
         )
         if not selected:
             return [user_msg]
 
-        rendered = render_preference_lines(selected)
-        if self._injected_preferences.get(session_id) == rendered:
-            return [user_msg]
-        self._injected_preferences[session_id] = rendered
         hint_msg = UserMsg("memory_hint", render_preference_hint(selected))
         return [hint_msg, user_msg]

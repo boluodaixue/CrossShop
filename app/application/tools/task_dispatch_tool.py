@@ -1,24 +1,25 @@
 """task_dispatch 工具
 
-SubAgent as Tool 的调度工具——MainAgent 调它意味着"派一个专家子 Agent 去执行这段 demands"。
+SubAgent as Tool 的调度工具——MainAgent 调它意味着
+"派一个专家子 Agent 去执行这段 demands"。
 2.0 库级没有 subagent 原语，用 FunctionTool 包装子 Agent 实现同等语义。
 
-子 Agent 每次调度新建实例（独立 AgentState = 上下文隔离），只把最终结论回传给 MainAgent，
+子 Agent 每次调度新建实例（独立 AgentState = 上下文隔离），
+只把最终结论回传给 MainAgent，
 中间的工具调用过程由业务工具自身通过 EventBus 直接上报前端。
 
 真并行：本工具注册为 is_concurrency_safe，主 Agent 同一轮发起的多个 task_dispatch
 会被 2.0 批量 asyncio.gather 并发执行；agent.dispatch 事件带 started_at，
 完成时另发 tool.result 带 finished_at/elapsed_ms，可从事件流直接判定时间重叠。
 
-买家偏好由**本工具服务端注入**，不依赖主 Agent 把偏好抄进 demands：
-    buyer_id 从 ShoppingContext（ContextVar）取，作用域覆盖到 worker.reply()，
-    因此子 Agent 无需改签名就能拿到偏好。以前靠提示词要求“demands 必须自包含偏好”
-    是**软约束**：模型漏抄就静默降级为无偏好推荐，不报错、无告警。
+H5 偏好边界：历史偏好只供 MainAgent 在检索结果产生后做最终挑选，不能进入
+SearchAgent 的 normalized_query、OpenSearch 或 Reranker。因此本工具只转发当前轮
+明确需求，绝不读取或注入 PreferenceStore。
 
-注意：本模块不能用 `from __future__ import annotations`（AgentScope schema 生成依赖运行时注解）。
+注意：本模块不能用 `from __future__ import annotations`
+（AgentScope schema 生成依赖运行时注解）。
 """
 
-import logging
 import time
 from datetime import UTC, datetime
 from typing import Literal
@@ -28,52 +29,15 @@ from agentscope.tool import ToolChunk
 
 from app.application.agents.search_agent import SearchAgentFactory
 from app.application.agents.trade_agent import TradeAgentFactory
-from app.application.memory.preference_selector import (
-    PreferenceSelector,
-    render_preference_hint,
-)
-from app.domain.buyer.preference import PreferenceStore
 from app.infrastructure.context import ShoppingContext
 from app.infrastructure.eventbus import TradeEventBus
-
-logger = logging.getLogger(__name__)
 
 
 def build_task_dispatch_tool(
     search_factory: SearchAgentFactory,
     trade_factory: TradeAgentFactory,
     bus: TradeEventBus,
-    preference_store: PreferenceStore | None = None,
-    preference_selector: PreferenceSelector | None = None,
-    preference_top_k: int = 5,
-    subagent_inject: bool = True,
 ):
-    selector = preference_selector or PreferenceSelector()
-
-    async def _preference_hint(subagent_type: str, demands: str):
-        """给子 Agent 算出要注入的偏好块；无需注入时返回 None。
-
-        只给 search_agent 注入：trade_agent 只按给定的 product_id/sku_id 执行下单，
-        偏好影响不了它的行为，注入纯属白花 token，还会给它多余的发挥空间。
-        """
-        if not (
-            subagent_inject and preference_store and subagent_type == "search_agent"
-        ):
-            return None
-        snapshot = ShoppingContext.current()
-        buyer_id = snapshot.buyer_id if snapshot else ""
-        if not buyer_id:
-            return None
-        try:
-            preferences = await preference_store.list_by_buyer(buyer_id)
-            selected = await selector.select(
-                preferences, query=demands, top_k=preference_top_k
-            )
-        except Exception as err:  # noqa: BLE001 —— 读记忆失败不能让派发挂掉
-            logger.warning("子 Agent 偏好注入跳过（读取失败）：%s", err)
-            return None
-        return render_preference_hint(selected) if selected else None
-
     async def task_dispatch(
         subagent_type: Literal["search_agent", "trade_agent"],
         demands: str,
@@ -88,10 +52,12 @@ def build_task_dispatch_tool(
 
         Args:
             subagent_type (`str`):
-                子代理类型："search_agent"（跨境商品检索专家）或 "trade_agent"（下单交易专家）。
+                子代理类型："search_agent"（跨境商品检索专家）或
+                "trade_agent"（下单交易专家）。
             demands (`str`):
                 自包含的自然语言指令，必须包含子代理完成任务所需的全部上下文
-                （买家偏好、预算、product_id/sku_id、收货地址等），子代理看不到主对话历史。
+                （当前轮预算、product_id/sku_id、收货地址等），子代理看不到主对话历史。
+                不得包含长期 like/dislike 或其他历史偏好。
             platform (`str | None`):
                 派发 search_agent 时明确固定的平台；trade_agent 不得传。
             site_locale (`str | None`):
@@ -136,12 +102,7 @@ def build_task_dispatch_tool(
                 state=ToolResultState.ERROR,
             )
 
-        inputs = [UserMsg("commerce_concierge", demands)]
-        hint = await _preference_hint(subagent_type, demands)
-        if hint:
-            inputs.insert(0, UserMsg("memory_hint", hint))
-
-        reply = await worker.reply(inputs)
+        reply = await worker.reply(UserMsg("commerce_concierge", demands))
         output = reply.get_text_content() or ""
         bus.publish(
             session_id,

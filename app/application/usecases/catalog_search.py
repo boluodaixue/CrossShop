@@ -41,6 +41,7 @@ from app.domain.catalog.product import Product
 from app.domain.catalog.product_search_spec import ProductSearchSpec
 from app.domain.catalog.sku import Sku
 from app.domain.shipping.tariff_schedule import TariffSchedule
+from app.infrastructure.tracing import set_span_attributes, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,22 @@ class CatalogSearchUseCase:
 
         # 库存 / ship_to / 价格硬约束必须先于精排。全 SKU 缺货的 Product 静默排除，
         # 保持 OpenSearch stock>0 前置过滤语义，不虚构第三种 filtered_out 原因。
-        eligible, filtered_out = self._apply_constraints(scored, spec)
+        with trace_span(
+            "globex.product.constraints",
+            {
+                "globex.constraints.candidate_count": len(scored),
+                "globex.constraints.has_ship_to": bool(spec.ship_to),
+                "globex.constraints.has_price_cap": spec.price_max_major is not None,
+            },
+        ) as constraint_span:
+            eligible, filtered_out = self._apply_constraints(scored, spec)
+            set_span_attributes(
+                constraint_span,
+                {
+                    "globex.constraints.eligible_count": len(eligible),
+                    "globex.constraints.filtered_count": len(filtered_out),
+                },
+            )
 
         if recall_strategy == "embedding_only" and eligible:
             # 只精排合格候选；失败时沿用原向量分和原顺序，不发第二次召回。

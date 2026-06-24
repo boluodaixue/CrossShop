@@ -14,6 +14,7 @@
 只有 `like`（正向偏好）走相关性排序——漏掉一条"喜欢小众设计"最多是推荐不够贴，
 不会造成"推了我明确说不要的东西"这种硬伤。
 """
+
 from __future__ import annotations
 
 import logging
@@ -60,11 +61,12 @@ class PreferenceSelector:
     def __init__(
         self,
         embedder: Optional[EmbeddingClient] = None,
-        relevance_enabled: bool = False,
+        relevance_enabled: bool = True,
     ) -> None:
         self._embedder = embedder
-        # 开关关闭（或没有 embedder）时退化为「按时间倒序取 top_k」：
-        # 零额外调用、确定性，无凭据的 CI 也能跑
+        # H5 冻结口径：正向偏好必须是“相关 like Top-K”，不能把最近 Top-K
+        # 冒充相关结果。能力关闭或不可用时宁可舍弃 like，也不能改变推荐语义；
+        # dislike 始终由 select() 全量保留。
         self._relevance_enabled = relevance_enabled and embedder is not None
 
     async def select(
@@ -84,33 +86,42 @@ class PreferenceSelector:
             # 只保留安全底线，正向偏好全部让位
             return dislikes
 
-        if len(likes) <= top_k:
-            selected_likes = likes
-        elif self._relevance_enabled:
-            selected_likes = await self._rank_by_relevance(likes, query, top_k)
-        else:
-            selected_likes = self._latest_first(likes, top_k)
+        if not self._relevance_enabled:
+            logger.warning("偏好相关性能力不可用，仅保留全部 dislike，舍弃 like")
+            return dislikes
+
+        # 即使 like 数量未超过 top_k，也要实际跑一次相关性选择：
+        # 否则 embedder 关闭或异常时仍会把未验证的 like 冒充“相关 like”。
+        selected_likes = await self._rank_by_relevance(
+            likes,
+            query,
+            min(top_k, len(likes)),
+        )
 
         return dislikes + selected_likes
 
     async def _rank_by_relevance(
-        self, likes: list[BuyerPreference], query: str, top_k: int,
+        self,
+        likes: list[BuyerPreference],
+        query: str,
+        top_k: int,
     ) -> list[BuyerPreference]:
         """按 statement 与 query 的余弦相似度取 top_k。
 
         embedding 走 CachedEmbeddingClient 时，重复的 statement 不会重复计费；
-        query 每轮一次调用。任何异常都降级为按时间倒序，不能因为选偏好把对话搞挂。
+        query 每轮一次调用。任何异常都只舍弃 like，不能因为选偏好把购物主链路搞挂，
+        也不能把“最近 like”误报成“相关 like”。
         """
         try:
             vectors = await self._embedder.embed_batch([p.statement for p in likes])
             query_vector = await self._embedder.embed(query)
         except Exception as err:  # noqa: BLE001 —— 选偏好失败不阻断对话
-            logger.warning("偏好相关性排序失败，降级按时间倒序：%s", err)
-            return self._latest_first(likes, top_k)
+            logger.warning("偏好相关性排序失败，仅保留 dislike：%s", err)
+            return []
 
         if len(vectors) != len(likes) or not query_vector:
-            logger.warning("偏好向量数量与偏好数不一致，降级按时间倒序")
-            return self._latest_first(likes, top_k)
+            logger.warning("偏好向量数量与偏好数不一致，仅保留 dislike")
+            return []
 
         scored = [
             (_cosine(vector, query_vector), index, preference)
@@ -121,9 +132,3 @@ class PreferenceSelector:
         picked = [preference for _, _, preference in scored[:top_k]]
         # 回到原始相对顺序输出，避免注入块的行序每轮抖动导致重复注入
         return [p for p in likes if p in picked]
-
-    @staticmethod
-    def _latest_first(likes: list[BuyerPreference], top_k: int) -> list[BuyerPreference]:
-        """按 created_at 倒序取 top_k，再复原相对顺序。"""
-        newest = sorted(likes, key=lambda p: p.created_at, reverse=True)[:top_k]
-        return [p for p in likes if p in newest]

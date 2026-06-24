@@ -18,6 +18,7 @@ Presentation 层按 shopping_session_id 订阅后推送给前端 WebSocket。
     final.result        最终回复
     error               异常
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -104,9 +105,16 @@ class TradeEventBus:
         for queue in self._subscribers.get(event.shopping_session_id, []):
             queue.put_nowait(event)
 
-    def publish(self, shopping_session_id: str, event_type: TradeEventType, payload: Any) -> None:
+    def publish(
+        self, shopping_session_id: str, event_type: TradeEventType, payload: Any
+    ) -> None:
         if event_type not in EVENT_TYPES:
             raise ValueError(f"未知事件类型：{event_type}")
+        # 只把白名单统计写入当前 OTel span；完整业务 payload 仍只走原事件总线。
+        # 延迟导入避免 tracing -> Settings 与 EventBus 形成模块级循环依赖。
+        from app.infrastructure.tracing import record_business_event
+
+        record_business_event(event_type, payload)
         event = TradeEvent(
             shopping_session_id=shopping_session_id,
             type=event_type,

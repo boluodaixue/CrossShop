@@ -13,6 +13,7 @@
 AgentState 每轮落盘 DATA_DIR/sessions/，服务重启后恢复多轮对话；
 子 Agent 则每次调度新建（上下文隔离）。
 """
+
 from __future__ import annotations
 
 import logging
@@ -35,22 +36,24 @@ from app.application.agents.search_agent import SearchAgentFactory
 from app.application.agents.trade_agent import TradeAgentFactory
 from app.application.harness.assertions import SequencingTracker
 from app.application.harness.loop_detector import LoopDetector
-from app.application.memory.preference_selector import PreferenceSelector
 from app.application.prompts.loader import load_prompts
 from app.application.tools.forget_preference_tool import build_forget_preference_tool
-from app.application.tools.remember_preference_tool import build_remember_preference_tool
+from app.application.tools.remember_preference_tool import (
+    build_remember_preference_tool,
+)
 from app.application.tools.task_dispatch_tool import build_task_dispatch_tool
 from app.domain.buyer.preference import PreferenceStore
 from app.domain.session.ports.session_store import SessionStore
+from app.infrastructure.context_middleware import ContextLifecycleMiddleware
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.harness_middleware import HarnessToolMiddleware
 from app.infrastructure.llm import create_chat_model
-from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.resilience import (
     CircuitBreakerRegistry,
     ToolResilienceMiddleware,
 )
 from app.infrastructure.settings import Settings
+from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.tracing import build_agent_middlewares
 
 logger = logging.getLogger(__name__)
@@ -68,7 +71,6 @@ class MainAgentFactory:
         throttle: GatewayThrottle,
         sequencing: Optional[SequencingTracker] = None,
         loop_detector: Optional[LoopDetector] = None,
-        preference_selector: Optional[PreferenceSelector] = None,
     ) -> None:
         self._settings = settings
         self._search_factory = search_factory
@@ -77,8 +79,6 @@ class MainAgentFactory:
         self._preference_store = preference_store
         self._circuit_registry = circuit_registry
         self._throttle = throttle
-        # 与 orchestrator 共用同一个 selector，保证主/子 Agent 的偏好选取口径一致
-        self._preference_selector = preference_selector or PreferenceSelector()
         # 护栏判定器按会话累积状态，须跨 Agent 实例共享（与熔断注册表同理）
         self._sequencing = sequencing or SequencingTracker()
         self._loop_detector = loop_detector or LoopDetector(
@@ -122,10 +122,6 @@ class MainAgentFactory:
                     self._search_factory,
                     self._trade_factory,
                     self._bus,
-                    preference_store=self._preference_store,
-                    preference_selector=self._preference_selector,
-                    preference_top_k=self._settings.preference_top_k,
-                    subagent_inject=self._settings.preference_subagent_inject,
                 ),
                 is_concurrency_safe=True,
                 middlewares=self._resilience(),
@@ -146,9 +142,22 @@ class MainAgentFactory:
             Agent(
                 name=prompts["name"],
                 system_prompt=prompts["system_prompt"],
-                model=create_chat_model(self._settings, throttle=self._throttle, bus=self._bus),
+                model=create_chat_model(
+                    self._settings, throttle=self._throttle, bus=self._bus
+                ),
                 toolkit=Toolkit(tools=tools),
-                middlewares=build_agent_middlewares(self._settings),
+                middlewares=[
+                    ContextLifecycleMiddleware(
+                        artifact_root=self._settings.data_dir / "context-artifacts",
+                        model_context_tokens=self._settings.context_size,
+                        tool_result_limit=self._settings.tool_result_limit,
+                        reply_reserved_tokens=max(
+                            2_048,
+                            self._settings.reply_token_budget,
+                        ),
+                    ),
+                    *build_agent_middlewares(self._settings),
+                ],
                 context_config=build_context_config(
                     self._settings.context_size,
                     self._settings.tool_result_limit,
@@ -163,7 +172,9 @@ class SessionRegistry:
     """按 shopping_session_id 缓存 MainAgent 实例，支撑多轮对话；
     AgentState 经 SessionStore 端口落盘（SQLite 或文件），服务重启后恢复。"""
 
-    def __init__(self, main_factory: MainAgentFactory, session_store: SessionStore) -> None:
+    def __init__(
+        self, main_factory: MainAgentFactory, session_store: SessionStore
+    ) -> None:
         self._main_factory = main_factory
         self._session_store = session_store
         self._agents: dict[str, Agent] = {}
@@ -180,7 +191,9 @@ class SessionRegistry:
         if agent is None:
             return
         try:
-            await self._session_store.save(shopping_session_id, agent.state.model_dump_json())
+            await self._session_store.save(
+                shopping_session_id, agent.state.model_dump_json()
+            )
         except Exception as err:  # noqa: BLE001
             logger.warning("会话状态落盘失败：%s（%s）", shopping_session_id, err)
 
@@ -188,14 +201,22 @@ class SessionRegistry:
         try:
             raw = await self._session_store.load(shopping_session_id)
         except Exception as err:  # noqa: BLE001 —— 存储不可用时按新会话继续，不阻断对话
-            logger.warning("会话状态读取失败，按新会话处理：%s（%s）", shopping_session_id, err)
+            logger.warning(
+                "会话状态读取失败，按新会话处理：%s（%s）", shopping_session_id, err
+            )
             return None
         if raw is None:
             return None
         try:
             state = AgentState.model_validate_json(raw)
-            logger.info("会话状态已恢复：%s（%d 条上下文）", shopping_session_id, len(state.context))
+            logger.info(
+                "会话状态已恢复：%s（%d 条上下文）",
+                shopping_session_id,
+                len(state.context),
+            )
             return state
         except Exception as err:  # noqa: BLE001 —— 快照损坏按新会话处理
-            logger.warning("会话状态恢复失败，按新会话处理：%s（%s）", shopping_session_id, err)
+            logger.warning(
+                "会话状态恢复失败，按新会话处理：%s（%s）", shopping_session_id, err
+            )
             return None

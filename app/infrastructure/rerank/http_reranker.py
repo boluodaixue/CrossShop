@@ -13,6 +13,7 @@ import httpx
 
 from app.domain.catalog.ports.retrieval_ports import Reranker
 from app.infrastructure.settings import Settings
+from app.infrastructure.tracing import set_span_attributes, text_digest, trace_span
 
 
 class HttpReranker(Reranker):
@@ -24,14 +25,28 @@ class HttpReranker(Reranker):
     async def rerank(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
             return []
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                f"{self._base_url}/rerank",
-                json={"model": self._model, "query": query, "documents": documents},
-            )
-            response.raise_for_status()
-            body = response.json()
-        return self._parse_scores(body, expected_count=len(documents))
+        with trace_span(
+            "globex.product.rerank",
+            {
+                "globex.reranker.model": self._model,
+                "globex.reranker.query_digest": text_digest(query),
+                "globex.reranker.document_count": len(documents),
+            },
+        ) as span:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    f"{self._base_url}/rerank",
+                    json={
+                        "model": self._model,
+                        "query": query,
+                        "documents": documents,
+                    },
+                )
+                response.raise_for_status()
+                body = response.json()
+            scores = self._parse_scores(body, expected_count=len(documents))
+            set_span_attributes(span, {"globex.reranker.score_count": len(scores)})
+            return scores
 
     @staticmethod
     def _parse_scores(body: object, *, expected_count: int) -> list[float]:

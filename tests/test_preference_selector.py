@@ -5,6 +5,7 @@
 「不要塑料材质」与「推荐个咖啡杯」的向量相似度很低，纯 top_k 会把它丢掉，
 于是推出一只塑料杯。漏黑名单是安全问题，不是相关性问题。
 """
+
 from app.application.memory.preference_selector import PreferenceSelector
 from app.domain.buyer.preference import BuyerPreference
 from app.domain.catalog.ports.retrieval_ports import EmbeddingClient
@@ -42,7 +43,10 @@ class ShortVectorEmbeddingClient(EmbeddingClient):
 
 def _pref(kind: str, statement: str, created_at: str) -> BuyerPreference:
     return BuyerPreference(
-        buyer_id="b1", kind=kind, statement=statement, created_at=created_at,
+        buyer_id="b1",
+        kind=kind,
+        statement=statement,
+        created_at=created_at,
     )
 
 
@@ -110,16 +114,17 @@ class TestRelevanceRanking:
         selected = await selector.select(preferences, query="想买个咖啡杯", top_k=1)
         assert _statements(selected) == ["喜欢咖啡杯"]
 
-    async def test_no_truncation_when_likes_within_top_k(self):
-        """条数没超上限时不该白调 embedding，直接全给。"""
+    async def test_embedding_failure_drops_likes_even_when_within_top_k(self):
+        """未超上限也不能把未验证的 like 冒充“相关 like”。"""
         preferences = [
+            _pref("dislike", "不要塑料材质", "2026-01-00"),
             _pref("like", "喜欢小众设计", "2026-01-01"),
             _pref("like", "喜欢露营风格", "2026-01-02"),
         ]
         selector = PreferenceSelector(BrokenEmbeddingClient(), relevance_enabled=True)
 
         selected = await selector.select(preferences, query="q", top_k=5)
-        assert len(selected) == 2, "未超上限就不该走 embedding，坏 embedder 也不影响"
+        assert _statements(selected) == ["不要塑料材质"]
 
     async def test_output_preserves_original_relative_order(self):
         """注入块行序必须稳定，否则 orchestrator 的『变了才重注入』会每轮误判。"""
@@ -135,46 +140,52 @@ class TestRelevanceRanking:
 
 
 class TestFallbacks:
-    async def test_disabled_uses_latest_first(self):
+    async def test_disabled_drops_likes_instead_of_claiming_latest_are_relevant(self):
         preferences = [
+            _pref("dislike", "不要塑料", "2026-01-00"),
             _pref("like", "旧偏好", "2026-01-01"),
             _pref("like", "新偏好", "2026-06-01"),
         ]
         selector = PreferenceSelector(AxisEmbeddingClient(), relevance_enabled=False)
 
         selected = await selector.select(preferences, query="q", top_k=1)
-        assert _statements(selected) == ["新偏好"]
+        assert _statements(selected) == ["不要塑料"]
 
-    async def test_no_embedder_falls_back_even_if_enabled(self):
+    async def test_no_embedder_keeps_dislikes_and_drops_likes(self):
         preferences = [
+            _pref("dislike", "不要塑料", "2026-01-00"),
             _pref("like", "旧偏好", "2026-01-01"),
             _pref("like", "新偏好", "2026-06-01"),
         ]
         selector = PreferenceSelector(embedder=None, relevance_enabled=True)
 
         selected = await selector.select(preferences, query="q", top_k=1)
-        assert _statements(selected) == ["新偏好"]
+        assert _statements(selected) == ["不要塑料"]
 
-    async def test_embedding_failure_degrades_not_raises(self):
+    async def test_embedding_failure_keeps_dislikes_and_drops_likes(self):
         """选偏好失败不能把整轮对话搞挂。"""
         preferences = [
+            _pref("dislike", "不要塑料", "2026-01-00"),
             _pref("like", "旧偏好", "2026-01-01"),
             _pref("like", "新偏好", "2026-06-01"),
         ]
         selector = PreferenceSelector(BrokenEmbeddingClient(), relevance_enabled=True)
 
         selected = await selector.select(preferences, query="q", top_k=1)
-        assert _statements(selected) == ["新偏好"]
+        assert _statements(selected) == ["不要塑料"]
 
     async def test_vector_count_mismatch_degrades(self):
         preferences = [
+            _pref("dislike", "不要塑料", "2026-01-00"),
             _pref("like", "旧偏好", "2026-01-01"),
             _pref("like", "新偏好", "2026-06-01"),
         ]
-        selector = PreferenceSelector(ShortVectorEmbeddingClient(), relevance_enabled=True)
+        selector = PreferenceSelector(
+            ShortVectorEmbeddingClient(), relevance_enabled=True
+        )
 
         selected = await selector.select(preferences, query="q", top_k=1)
-        assert _statements(selected) == ["新偏好"]
+        assert _statements(selected) == ["不要塑料"]
 
 
 class TestEdgeCases:
