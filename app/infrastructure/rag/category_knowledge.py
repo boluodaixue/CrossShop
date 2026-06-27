@@ -35,14 +35,19 @@ _KB_DESCRIPTION = (
 
 def build_category_knowledge_base(settings: Settings) -> KnowledgeBase:
     """构建品类知识库对象（不建库，建库见 bootstrap_category_knowledge）。"""
+    # CategoryInsight v1 was released and evaluated with the local BGE-M3
+    # encoder (1024d). Querying that frozen Qdrant collection with the generic
+    # EMBEDDING_* gateway can either fail or, worse, mix embedding spaces.
+    # Reuse the configured BGE-M3 endpoint/model contract; the collection is
+    # still category-only and remains entirely separate from product indexes.
     credential = OpenAICredential(
-        api_key=settings.embedding_api_key,
-        base_url=settings.embedding_base_url,
+        api_key=settings.product_embedding_api_key,
+        base_url=settings.product_embedding_base_url,
     )
     embedding_model = OpenAIEmbeddingModel(
         credential=credential,
-        model=settings.embedding_model,
-        dimensions=settings.embedding_dim,
+        model=settings.product_embedding_model,
+        dimensions=settings.product_embedding_dim,
         pass_dimensions=False,  # 兼容不接受 dimensions 入参的网关，维度仅用于建 collection
     )
     if settings.qdrant_url:

@@ -11,6 +11,7 @@
 让同一工具在不同 Agent 实例间共享故障视图；降级返回始终是 ToolChunk(ERROR)，
 Agent 能看到失败原因并如实告知买家，不会误以为工具成功。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -159,7 +160,9 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
             await _record_failure(self._registry, tool_name)
             detail = f"{tool_name} 执行超过 {timeout:.0f} 秒已中断"
             logger.warning("工具超时：%s（%.0fs）", tool_name, timeout)
-            self._publish_circuit(tool_name, await _status(self._registry, tool_name), detail)
+            self._publish_circuit(
+                tool_name, await _status(self._registry, tool_name), detail
+            )
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {detail}")],
                 state=ToolResultState.ERROR,
@@ -167,9 +170,13 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
             return
         except Exception as err:  # noqa: BLE001 —— 未捕获异常也计入失败并降级
             await _record_failure(self._registry, tool_name)
-            detail = f"{tool_name} 执行异常：{err}"
-            logger.warning("工具异常：%s（%s）", tool_name, err)
-            self._publish_circuit(tool_name, await _status(self._registry, tool_name), detail)
+            detail = f"{tool_name} 执行异常，请稍后重试"
+            # 完整异常只保留在服务端日志；EventBus 与 ToolChunk 不回显
+            # URL、令牌或依赖内部细节。
+            logger.exception("工具异常：%s", tool_name)
+            self._publish_circuit(
+                tool_name, await _status(self._registry, tool_name), detail
+            )
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {detail}")],
                 state=ToolResultState.ERROR,

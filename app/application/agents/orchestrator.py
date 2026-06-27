@@ -210,8 +210,23 @@ class MainAgentOrchestrator:
             )
         except Exception as err:  # noqa: BLE001 —— 兜底转事件，避免长任务静默失败
             logger.exception("MainAgent 异常")
-            self._bus.publish(session_id, "error", {"message": str(err)})
-            final_text = f"[error] {err}"
+            transient = is_transient_error(err)
+            public_message = (
+                "上游服务暂时不可用，请稍后重试。"
+                if transient
+                else "系统暂时无法完成本次请求，请联系管理员。"
+            )
+            # 完整异常只保留在服务端 logger.exception；事件、会话存储与
+            # 买家回复不回显 URL、密钥或内部依赖细节。
+            self._bus.publish(
+                session_id,
+                "error",
+                {
+                    "message": public_message,
+                    "classification": "transient" if transient else "non_transient",
+                },
+            )
+            final_text = f"[error] {public_message}"
             return SubmitIntentOutput(
                 shopping_session_id=session_id, final_text=final_text
             )
@@ -368,7 +383,11 @@ class MainAgentOrchestrator:
                 self._bus.publish(
                     session_id,
                     "error",
-                    {"message": f"上游瞬时故障，正在重试：{err}", "retrying": True},
+                    {
+                        "message": "上游服务暂时不可用，正在重试。",
+                        "classification": "transient",
+                        "retrying": True,
+                    },
                 )
                 # 重试时不再重复送入 inputs，避免上下文里出现两次买家发言
                 inputs = []

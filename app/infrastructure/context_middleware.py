@@ -149,6 +149,11 @@ class ContextLifecycleMiddleware(MiddlewareBase):
         finally:
             # Completed tool events are reduced even when a later model call
             # fails; error/denied/interrupted responses are ignored by L4.
+            # on_model_call replaces the namespace mapping with the assembled
+            # context view. Re-acquire it here so tool events collected after
+            # that replacement are reduced into the live AgentState rather
+            # than an orphaned pre-model dictionary.
+            namespace = _namespace(agent)
             active_intent = namespace.get("current_intent") or {}
             events = list(namespace.pop("current_turn_events", []))
             if final_msg is not None:
