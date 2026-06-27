@@ -1,8 +1,9 @@
-"""Build the review-only category insight candidate dataset.
+"""Build the source-aligned CategoryInsight audit dataset.
 
 The builder preserves the approved Taobao CategoryCard seed bytes, validates
-all source contracts, and publishes candidate artifacts outside the runtime
-``knowledge/`` directory.  It intentionally does not index or activate them.
+all source contracts, and publishes the approved promotion inputs beside the
+legacy audit artifacts. Runtime Markdown is built separately by
+``promote_category_insight_v1.py``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ DEFAULT_H0_PRODUCTS = (
     ROOT / "data" / "processed" / "catalogs-v2" / "taobao" / "products.jsonl"
 )
 
-DATASET_VERSION = "category-insight-candidates-v1"
+DATASET_VERSION = "category-insight-approved-input-v1"
 BUILDER_VERSION = "build-category-candidates-v1"
 LEGACY_CARD_FIELDS = frozenset(
     {
@@ -172,8 +173,8 @@ def _validate_candidates(
         if parsed_timestamp.tzinfo is None:
             raise ValueError(f"last_updated must include a timezone: {candidate_id}")
         _require_confidence(row["confidence"], "confidence")
-        if row["review_status"] != "candidate":
-            raise ValueError(f"review_status must be candidate: {candidate_id}")
+        if row["review_status"] != "approved":
+            raise ValueError(f"review_status must be approved: {candidate_id}")
 
         if source_ref.startswith("legacy_cards:"):
             source_ids = source_ref.removeprefix("legacy_cards:").split("|")
@@ -210,7 +211,8 @@ def _validate_candidates(
                 )
             if float(row["confidence"]) != 0.0:
                 raise ValueError(
-                    f"unverified Markdown confidence must be 0.0: {candidate_id}"
+                    "officially reviewed Markdown confidence must remain 0.0 "
+                    f"without a calibrated scoring rule: {candidate_id}"
                 )
         else:
             raise ValueError(f"unsupported source_ref: {candidate_id}")
@@ -403,7 +405,10 @@ def build(
             "legacy_provenance": _file_entry(legacy_provenance_path, len(provenance)),
             "legacy_taxonomy": _file_entry(taxonomy_path),
         },
-        "intended_use": "offline review candidates only; not runtime knowledge",
+        "intended_use": (
+            "approved promotion inputs plus legacy audit artifacts; runtime "
+            "Markdown is built by promote_category_insight_v1.py"
+        ),
         "migration_source": {
             "artifact_commit": "e6852d0886bbdf42d16fe7adedb35fca8fad97d8",
             "repository": "D:/PycharmProjects/GlobexAgentLearning",
@@ -416,7 +421,7 @@ def build(
         "truth_boundary": {
             "bestseller": "catalog frequency/form proxy; not a real sales ranking",
             "legacy_facts": "offline provenance sidecar only; never indexed as RAG content",
-            "knowledge_candidates": "candidate-only until explicit review and approval",
+            "knowledge_candidates": "user-approved promotion inputs; provenance remains sidecar-only",
             "price_range": "observed listing/specification price reference; not transaction or real-time price",
         },
     }

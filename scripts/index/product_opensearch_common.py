@@ -116,6 +116,18 @@ class BgeM3Encoder:
                 f"BGE-M3 hidden dimension must be 1024, got {hidden_size}"
             )
 
+    def token_count(self, texts: list[str]) -> list[int]:
+        """Count each truncated input's real tokens without batch padding."""
+        encoded = self._tokenizer(
+            texts,
+            padding=False,
+            truncation=True,
+            max_length=self._max_seq_length,
+            return_attention_mask=True,
+        )
+        attention_masks = encoded["attention_mask"]
+        return [sum(int(value) for value in mask) for mask in attention_masks]
+
     def encode(self, texts: list[str]) -> list[list[float]]:
         torch = self._torch
         encoded = self._tokenizer(

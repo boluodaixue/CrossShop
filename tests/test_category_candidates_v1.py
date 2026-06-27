@@ -102,21 +102,35 @@ def test_legacy_seed_files_are_byte_exact_and_cards_are_strict() -> None:
         assert 0.5 <= card["confidence"] <= 1
 
 
-def test_knowledge_candidates_use_the_review_only_contract() -> None:
+def test_knowledge_candidates_use_the_approved_promotion_contract() -> None:
     candidates = _read_jsonl(SOURCE_DIR / "knowledge_candidates.jsonl")
+    legacy_cards = {
+        row["card_id"]: row
+        for row in _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl")
+    }
     assert len(candidates) == 16
     assert len({row["candidate_id"] for row in candidates}) == 16
     assert {row["candidate_type"] for row in candidates} <= {
         "selection_guide",
         "pitfall",
     }
-    assert {row["review_status"] for row in candidates} == {"candidate"}
+    assert {row["review_status"] for row in candidates} == {"approved"}
     for candidate in candidates:
         assert set(candidate) == CANDIDATE_FIELDS
         assert 1 <= len(candidate["raw_evidence"]) <= 3
         assert all(1 <= len(item) <= 80 for item in candidate["raw_evidence"])
         assert 1 <= len(candidate["summary"]) <= 200
         assert 0 <= candidate["confidence"] <= 1
+        if candidate["source_ref"].startswith("legacy_cards:"):
+            source_ids = (
+                candidate["source_ref"].removeprefix("legacy_cards:").split("|")
+            )
+            assert candidate["confidence"] == min(
+                legacy_cards[card_id]["confidence"] for card_id in source_ids
+            )
+        else:
+            assert candidate["source_ref"].startswith("knowledge/")
+            assert candidate["confidence"] == 0.0
 
 
 def test_review_checklist_exactly_mirrors_candidate_contract() -> None:
@@ -124,7 +138,7 @@ def test_review_checklist_exactly_mirrors_candidate_contract() -> None:
     checklist = (
         ROOT / "data" / "category_insight" / "CANDIDATE_REVIEW_CHECKLIST.md"
     ).read_text(encoding="utf-8")
-    assert checklist.count("- 选择：[ ] 通过　[ ] 修改　[ ] 删除") == 16
+    assert checklist.count("- 选择：[x] 通过　[ ] 修改　[ ] 删除") == 16
     for index, candidate in enumerate(candidates, 1):
         marker = f"## {index}. `{candidate['candidate_id']}`"
         start = checklist.index(marker)
@@ -204,11 +218,11 @@ def test_published_dataset_hashes_and_rebuild_are_stable(tmp_path: Path) -> None
     ).read_bytes()
 
 
-def test_runtime_does_not_consume_review_candidates() -> None:
+def test_runtime_uses_versioned_markdown_not_source_json() -> None:
     runtime_source = (
         ROOT / "app" / "infrastructure" / "rag" / "category_knowledge.py"
     ).read_text(encoding="utf-8")
-    assert "category-insight-v1" not in runtime_source
+    assert 'PROJECT_ROOT / "knowledge" / "category-insight-v1"' in runtime_source
     assert "knowledge_candidates.jsonl" not in runtime_source
     assert 'directory.glob("*.md")' in runtime_source
     assert not (ROOT / "knowledge" / "knowledge_candidates.jsonl").exists()
@@ -296,7 +310,7 @@ def test_candidate_builder_enforces_evidence_based_confidence(tmp_path: Path) ->
     )
     markdown_row["confidence"] = 0.5
     _write_jsonl(path, rows)
-    with pytest.raises(ValueError, match="must be 0.0"):
+    with pytest.raises(ValueError, match="must remain 0.0"):
         BUILDER.build(
             markdown_source,
             tmp_path / "markdown-confidence-output",

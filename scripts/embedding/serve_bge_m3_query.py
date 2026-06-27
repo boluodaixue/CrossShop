@@ -99,16 +99,24 @@ class EmbeddingData(BaseModel):
     index: int
 
 
+class EmbeddingUsage(BaseModel):
+    prompt_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
+
+
 class EmbeddingResponse(BaseModel):
     object: Literal["list"] = "list"
     data: list[EmbeddingData]
     model: str
+    usage: EmbeddingUsage
 
 
 class BatchEmbeddingBackend(Protocol):
     def warmup(self) -> None: ...
 
     def encode_batch(self, texts: Sequence[str]) -> list[list[float]]: ...
+
+    def token_count(self, texts: Sequence[str]) -> list[int]: ...
 
 
 class BgeM3CpuBackend:
@@ -135,6 +143,9 @@ class BgeM3CpuBackend:
     def encode_batch(self, texts: Sequence[str]) -> list[list[float]]:
         return self._encoder.encode(list(texts))
 
+    def token_count(self, texts: Sequence[str]) -> list[int]:
+        return self._encoder.token_count(list(texts))
+
 
 class EmbeddingService:
     def __init__(self, config: ServiceConfig, backend: BatchEmbeddingBackend) -> None:
@@ -156,18 +167,25 @@ class EmbeddingService:
         size = self.config.micro_batch_size
         # CPU inference is serialized to bound RAM use and prevent oversubscription.
         with self._inference_lock:
+            token_counts = self._backend.token_count(texts)
+            _validate_token_counts(token_counts, expected_count=len(texts))
             for start in range(0, len(texts), size):
                 batch = texts[start : start + size]
                 batch_vectors = self._backend.encode_batch(batch)
                 _validate_vectors(batch_vectors, expected_count=len(batch))
                 vectors.extend(batch_vectors)
 
+        prompt_tokens = sum(token_counts)
         return EmbeddingResponse(
             data=[
                 EmbeddingData(index=index, embedding=vector)
                 for index, vector in enumerate(vectors)
             ],
             model=MODEL_ID,
+            usage=EmbeddingUsage(
+                prompt_tokens=prompt_tokens,
+                total_tokens=prompt_tokens,
+            ),
         )
 
     def health(self) -> dict[str, object]:
@@ -209,6 +227,20 @@ def _validate_vectors(vectors: object, *, expected_count: int) -> None:
             raise RuntimeError(
                 f"embedding {index} must be L2-normalized, norm={norm:.6f}"
             )
+
+
+def _validate_token_counts(counts: object, *, expected_count: int) -> None:
+    if not isinstance(counts, list) or len(counts) != expected_count:
+        actual = len(counts) if isinstance(counts, list) else type(counts).__name__
+        raise RuntimeError(
+            "embedding backend returned an invalid token count list: "
+            f"expected={expected_count}, actual={actual}"
+        )
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in counts
+    ):
+        raise RuntimeError("embedding backend returned an invalid token count")
 
 
 BackendFactory = Callable[[ServiceConfig], BatchEmbeddingBackend]

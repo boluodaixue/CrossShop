@@ -9,6 +9,7 @@
 
     uv run python scripts/eval/validate_datasets.py
 """
+
 from __future__ import annotations
 
 import json
@@ -22,13 +23,17 @@ from app.infrastructure.persistence.in_memory_repositories import (  # noqa: E40
 )
 
 _PRODUCT_DATASET = Path("eval/product_recall.jsonl")
-_CATEGORY_DATASET = Path("eval/category_recall.jsonl")
-_KNOWLEDGE_DIR = Path("knowledge")
+_CATEGORY_DATASET = Path(
+    "data/category_insight/releases/category-insight-v1/retrieval_eval_cases.jsonl",
+)
+_KNOWLEDGE_DIR = Path("knowledge/category-insight-v1")
 
 
 def _load(path: Path) -> list[tuple[int, dict]]:
     cases = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, raw in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if raw.strip():
             cases.append((lineno, json.loads(raw)))
     return cases
@@ -89,7 +94,7 @@ def validate_categories() -> list[str]:
             if name not in docs:
                 problems.append(
                     f"L{lineno} [{case['query']}] 知识文档不存在：{name}"
-                    f"（标注单位应为 knowledge/*.md 的文件名）",
+                    f"（标注单位应为 knowledge/category-insight-v1/*.md 的文件名）",
                 )
     return problems
 

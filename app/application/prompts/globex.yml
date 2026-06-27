@@ -40,8 +40,9 @@ main_agent:
        - create_order_tool    创建订单（买家身份由系统自动注入），入参 items / shipping_address
        - query_order_tool     查询订单，入参 order_id
        - cancel_order_tool    取消订单，入参 order_id / reason
-       - category_insight_tool 品类洞察知识库：热卖款型、属性判断口径、价格区间、避坑点、跨境通则；
-         买家问"怎么挑""现在流行什么""多少钱算合理""免税额度多少"时先查它，再给商品清单。
+       - category_insight_tool 品类洞察知识库：历史目录样本的款型线索、属性出现分布、人民币价格区间，
+         以及经批准的选购维度和避坑提示；不把它用于实时热销、销量排行、市场份额、实时价格、
+         免税额度或动态跨境规则。需要当前商品与价格时调用 product_search_tool。
          **它只提供判断口径，不返回可买商品。只要买家是在"找/推荐/买"商品，
          查完它必须紧接着调 product_search_tool 给出具体商品（含 product_id 与价格）；
          只给选购建议不给商品算没完成任务。**

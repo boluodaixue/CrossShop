@@ -5,10 +5,12 @@
 
 与商品向量索引分开两套 collection：
     globex_products     商品卡向量（模块一：二阶段召回）
-    globex_category_kb  品类洞察知识（本模块：RAG 问答）
+    globex_category_kb_v1  品类洞察知识（本模块：RAG 问答）
 
-建库流程：TextParser 读 knowledge/*.md → ApproxTokenChunker 切块 → insert_document（按文件名做 document_id，幂等）。
+建库流程：TextParser 读 knowledge/category-insight-v1/*.md →
+ApproxTokenChunker 切块 → insert_document（按文件名做 document_id，幂等）。
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,11 +25,11 @@ from app.infrastructure.settings import PROJECT_ROOT, Settings
 
 logger = logging.getLogger(__name__)
 
-KNOWLEDGE_DIR = PROJECT_ROOT / "knowledge"
+KNOWLEDGE_DIR = PROJECT_ROOT / "knowledge" / "category-insight-v1"
 
 _KB_DESCRIPTION = (
-    "Globex 跨境电商品类洞察知识库：各品类的热卖款型、关键属性判断口径、"
-    "价格区间参考、避坑点，以及跨境到手价/免税额度/合规通则。"
+    "Globex 品类洞察知识库 v1：历史目录款型、属性分布、人民币价格区间，"
+    "以及经批准的选购维度和避坑提示。"
 )
 
 
@@ -62,7 +64,7 @@ async def bootstrap_category_knowledge(
     knowledge_base: KnowledgeBase,
     knowledge_dir: Optional[Path] = None,
 ) -> int:
-    """把 knowledge/*.md 灌入知识库（幂等），返回入库文档数；失败仅告警返回 0。"""
+    """把版本目录中的 Markdown 灌入知识库（幂等），返回新增文档数。"""
     directory = knowledge_dir or KNOWLEDGE_DIR
     try:
         await knowledge_base.ensure_collection()

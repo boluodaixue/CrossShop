@@ -39,7 +39,9 @@ app/
 ├── presentation/      # FastAPI 路由、WebSocket ConnectionManager、DTO
 ├── composition.py     # 装配容器（API 与 worker 共用一份接线）
 └── worker.py          # 意图消费进程入口
-knowledge/             # 品类洞察知识文档（Markdown，服务启动时幂等入库）
+knowledge/
+├── category-insight-v1/ # 当前品类洞察 release：64 篇 Markdown，服务启动时幂等入库
+└── *.md                 # 历史教学样例；保留但不再由默认运行时读取
 frontend/              # React + Vite 前端：对话流 + 商品卡 + 事件时间线
 eval/                  # 评测用例集 cases.yaml + 回归报告
 docs/                  # 设计演进记录（分期取舍与踩坑档案）
@@ -70,8 +72,13 @@ docker/                # docker-compose.yaml（app + worker + qdrant + redis + f
   价格等硬约束走工具参数结构化过滤（price_max_major），不交给模型
 - **过滤可观测**：被 ship_to / 价格上限挡掉的候选以 `filtered_out`（含 reason）回传，
   让模型能区分"库里没有"与"有但不满足约束"，避免把超预算商品答成"没有这个商品"
-- **品类洞察 RAG**：`category_insight_tool` 查 `rag.KnowledgeBase`（选购口径、价格区间、避坑点、
-  跨境通则），先给判断标准再给商品清单
+- **品类洞察 RAG**：`category_insight_tool` 查 AgentScope `rag.KnowledgeBase`；默认只把
+  `knowledge/category-insight-v1` 的 64 篇正式文档（48 张历史目录 CategoryCard + 16 张已批准
+  选购/避坑卡）幂等写入 Qdrant collection
+  `globex_category_kb_v1`。`knowledge/*.md` 顶层旧文件仅作历史教学样例，不是默认运行时来源；
+  `cross-border-guide.md` 未复制进本 release。该工具只提供目录样本款型、属性分布、人民币历史
+  价格区间及经批准的选购/避坑提示，不承诺实时热销、销量排行、市场份额、实时价格、免税额度
+  或动态跨境通则
 - **上下文工程**：ContextConfig 定制压缩（trigger_ratio 0.75 / reserve_ratio 0.15 + 工具结果截断），
   摘要落 AgentState.summary 并推送 `context.compressed` 事件；配合 Token 预算中间件收口单轮开销
 - **工具韧性**：ToolResilienceMiddleware 分级超时 + 按工具熔断（closed→open→half_open），
@@ -114,6 +121,23 @@ uv run python -m app.worker
 
 > 本地开发也可 `cp .env.example .env` 填值兜底（已被 gitignore，勿提交真实密钥）；
 > 同名环境变量优先于 .env。
+
+### 本地 BGE-M3 品类召回验收
+
+先启动与离线向量同模型的本地 OpenAI 兼容服务，再在另一终端运行评测；命令不包含密钥：
+
+```bash
+python -m scripts.embedding.serve_bge_m3_query
+
+export EMBEDDING_BASE_URL=http://127.0.0.1:8002/v1
+export EMBEDDING_MODEL=BAAI/bge-m3
+uv run python scripts/eval/run_category_recall.py --top-k 3
+```
+
+评测会先幂等 bootstrap，再强制核对 Qdrant 文档集合与 release 的 64 张标注完全一致；重复运行
+允许 `inserted=0`。控制台和报告会记录实际数据集路径、embedding model、collection、release
+manifest/approved cards 哈希、预期与实际文档数以及本次新增数。若 collection 含缺失或多余文档，
+评测会在计算 Recall/MRR/NDCG 前阻断。
 
 ### 可选 LangFuse Trace
 

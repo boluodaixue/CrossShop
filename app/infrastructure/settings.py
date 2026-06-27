@@ -168,7 +168,7 @@ def load_settings() -> Settings:
         otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
         data_dir=data_dir,
         category_kb_collection=os.getenv(
-            "CATEGORY_KB_COLLECTION", "globex_category_kb"
+            "CATEGORY_KB_COLLECTION", "globex_category_kb_v1"
         ),
         context_size=int(os.getenv("CONTEXT_SIZE", "128000")),
         tool_result_limit=int(os.getenv("TOOL_RESULT_LIMIT", "20000")),

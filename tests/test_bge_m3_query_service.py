@@ -17,6 +17,7 @@ from scripts.embedding.serve_bge_m3_query import (
     ServiceConfig,
     create_app,
 )
+from scripts.index.product_opensearch_common import BgeM3Encoder
 
 
 def _unit_vector(axis: int = 0) -> list[float]:
@@ -38,6 +39,9 @@ class _FakeBackend:
         return [
             _unit_vector((len(self.calls) + index) % 8) for index, _ in enumerate(texts)
         ]
+
+    def token_count(self, texts: Sequence[str]) -> list[int]:
+        return [min(len(text) + 2, MAX_LENGTH) for text in texts]
 
 
 class _BrokenBackend(_FakeBackend):
@@ -96,6 +100,13 @@ def test_openai_protocol_health_batching_and_original_indices() -> None:
     assert [item["index"] for item in body["data"]] == [0, 1, 2]
     assert all(item["object"] == "embedding" for item in body["data"])
     assert all(len(item["embedding"]) == 1024 for item in body["data"])
+    expected_tokens = sum(
+        len(text) + 2 for text in ["降噪耳机", "轻便旅行背包", "旅行茶具"]
+    )
+    assert body["usage"] == {
+        "prompt_tokens": expected_tokens,
+        "total_tokens": expected_tokens,
+    }
     assert backend.calls == [
         ["降噪耳机", "轻便旅行背包"],
         ["旅行茶具"],
@@ -103,14 +114,24 @@ def test_openai_protocol_health_batching_and_original_indices() -> None:
 
 
 def test_openai_protocol_accepts_one_string_input() -> None:
-    app = create_app(_config(), backend_factory=lambda _: _FakeBackend())
+    backend = _FakeBackend()
+    app = create_app(_config(), backend_factory=lambda _: backend)
     with TestClient(app) as client:
         response = client.post(
             "/v1/embeddings",
             json={"model": MODEL_ID, "input": "noise cancelling headphones"},
         )
     assert response.status_code == 200
-    assert [item["index"] for item in response.json()["data"]] == [0]
+    body = response.json()
+    assert [item["index"] for item in body["data"]] == [0]
+    assert body["usage"] == {
+        "prompt_tokens": len("noise cancelling headphones") + 2,
+        "total_tokens": len("noise cancelling headphones") + 2,
+    }
+    shared_response = EmbeddingService(_config(), _FakeBackend()).embed(
+        EmbeddingRequest(model=MODEL_ID, input="noise cancelling headphones")
+    )
+    assert body == shared_response.model_dump()
 
 
 @pytest.mark.parametrize(
@@ -177,6 +198,9 @@ def test_cpu_backend_reuses_frozen_h1_encoder(monkeypatch: pytest.MonkeyPatch) -
         def encode(self, texts: list[str]) -> list[list[float]]:
             return [_unit_vector() for _ in texts]
 
+        def token_count(self, texts: list[str]) -> list[int]:
+            return [len(text) + 2 for text in texts]
+
     monkeypatch.setattr(Path, "is_dir", lambda _: True)
     monkeypatch.setattr(
         "scripts.index.product_opensearch_common.BgeM3Encoder",
@@ -185,11 +209,43 @@ def test_cpu_backend_reuses_frozen_h1_encoder(monkeypatch: pytest.MonkeyPatch) -
     backend = BgeM3CpuBackend(_config())
 
     assert backend.encode_batch(["query"]) == [_unit_vector()]
+    assert backend.token_count(["query"]) == [7]
     assert calls == [
         {
             "model_name": r"D:\models\bge-m3",
             "device": "cpu",
             "max_seq_length": MAX_LENGTH,
             "local_files_only": True,
+        }
+    ]
+
+
+def test_encoder_token_count_uses_matching_truncation_without_padding() -> None:
+    calls: list[dict[str, object]] = []
+
+    class _FakeTokenizer:
+        def __call__(
+            self, texts: list[str], **kwargs: object
+        ) -> dict[str, list[list[int]]]:
+            calls.append({"texts": texts, **kwargs})
+            max_length = int(kwargs["max_length"])
+            return {
+                "attention_mask": [
+                    [1] * min(len(text) + 2, max_length) for text in texts
+                ]
+            }
+
+    encoder = object.__new__(BgeM3Encoder)
+    encoder._tokenizer = _FakeTokenizer()  # type: ignore[attr-defined]
+    encoder._max_seq_length = 5  # type: ignore[attr-defined]
+
+    assert encoder.token_count(["a", "abcdefgh"]) == [3, 5]
+    assert calls == [
+        {
+            "texts": ["a", "abcdefgh"],
+            "padding": False,
+            "truncation": True,
+            "max_length": 5,
+            "return_attention_mask": True,
         }
     ]
