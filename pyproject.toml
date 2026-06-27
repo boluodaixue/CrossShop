@@ -29,10 +29,19 @@ members = []
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
+[tool.ruff]
+target-version = "py311"
+extend-exclude = [".venv", "artifacts", "data", ".pytest-*", "pytest-*"]
+
+[tool.ruff.lint]
+# 先建立不会重写 H0～H5 历史代码的正确性基线；风格与现代化规则后续渐进开启。
+select = ["E9", "F63", "F7", "F82"]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.5",
     "websockets>=16.1.1",
 ]

@@ -138,7 +138,8 @@ JSON 顶层结构，不导出完整 query、模型回复、商品卡、地址或
 ## 验证
 
 ```bash
-uv run pytest                          # 137 个单测：domain / 召回降级与过滤回传 / 计价规则 / 记忆持久化 / 压缩策略 / 韧性中间件
+uv run ruff check .                    # 统一静态检查；规则由 pyproject.toml 固定
+uv run pytest                          # 完整单测回归
 uv run python scripts/smoke_e2e.py    # 端到端冒烟：WS 订阅 + 提交意图，实时打印事件流
 uv run python scripts/verify_parallel.py   # 并行验证：同轮多派 vs 串行的墙钟耗时与事件重叠数对比
 uv run python scripts/eval_regression.py   # 评测回归：13 条 case，LLM judge 按 P0/P1/P2 Rubric 打分出报告

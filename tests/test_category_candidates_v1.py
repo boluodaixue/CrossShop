@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).parents[1]
 SOURCE_DIR = ROOT / "data" / "category_insight" / "sources"
 TAOBAO_SOURCE_DIR = SOURCE_DIR / "taobao_zh"
@@ -120,18 +119,33 @@ def test_knowledge_candidates_use_the_review_only_contract() -> None:
         assert 0 <= candidate["confidence"] <= 1
 
 
+def test_review_checklist_exactly_mirrors_candidate_contract() -> None:
+    candidates = _read_jsonl(SOURCE_DIR / "knowledge_candidates.jsonl")
+    checklist = (
+        ROOT / "data" / "category_insight" / "CANDIDATE_REVIEW_CHECKLIST.md"
+    ).read_text(encoding="utf-8")
+    assert checklist.count("- 选择：[ ] 通过　[ ] 修改　[ ] 删除") == 16
+    for index, candidate in enumerate(candidates, 1):
+        marker = f"## {index}. `{candidate['candidate_id']}`"
+        start = checklist.index(marker)
+        end = checklist.find("\n## ", start + len(marker))
+        section = checklist[start:] if end == -1 else checklist[start:end]
+        assert f"- 品类：{candidate['category']}" in section
+        assert f"- 类型：`{candidate['candidate_type']}`" in section
+        assert f"- 摘要：{candidate['summary']}" in section
+        assert f"- 来源：`{candidate['source_ref']}`" in section
+        assert f"- 限制：{candidate['claim_scope']}" in section
+        assert f"- 置信度：`{candidate['confidence']}`" in section
+
+
 def test_provenance_exactly_covers_cards_and_all_source_ids_exist_in_h0() -> None:
     cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl")
     provenance = _read_jsonl(
         TAOBAO_SOURCE_DIR / "category_card_provenance_taobao_zh.jsonl"
     )
     assert len(provenance) == 48
-    assert {row["card_id"] for row in provenance} == {
-        row["card_id"] for row in cards
-    }
-    source_ids = {
-        item_id for row in provenance for item_id in row["source_item_ids"]
-    }
+    assert {row["card_id"] for row in provenance} == {row["card_id"] for row in cards}
+    source_ids = {item_id for row in provenance for item_id in row["source_item_ids"]}
     assert len(source_ids) == 779
 
     h0_ids = {row["product_id"] for row in _read_jsonl(H0_PRODUCTS)}
@@ -185,9 +199,7 @@ def test_published_dataset_hashes_and_rebuild_are_stable(tmp_path: Path) -> None
     assert (PUBLISHED_DIR / "legacy_category_cards.jsonl").read_bytes() == (
         TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl"
     ).read_bytes()
-    assert (
-        PUBLISHED_DIR / "legacy_category_card_provenance.jsonl"
-    ).read_bytes() == (
+    assert (PUBLISHED_DIR / "legacy_category_card_provenance.jsonl").read_bytes() == (
         TAOBAO_SOURCE_DIR / "category_card_provenance_taobao_zh.jsonl"
     ).read_bytes()
 
@@ -309,9 +321,7 @@ def test_candidate_builder_enforces_evidence_based_confidence(tmp_path: Path) ->
         ),
         (
             "raw-price",
-            lambda row: row.__setitem__(
-                "raw_price_observations_cny", [99999999.0]
-            ),
+            lambda row: row.__setitem__("raw_price_observations_cny", [99999999.0]),
             "raw_price_observations_cny is not an H0 SKU subset",
         ),
         (

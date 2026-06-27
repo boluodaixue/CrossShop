@@ -68,7 +68,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
                 continue
             value = json.loads(line)
             if not isinstance(value, dict):
-                raise ValueError(f"JSON object required at {path}:{line_number}")
+                raise TypeError(f"JSON object required at {path}:{line_number}")
             rows.append(value)
     return rows
 
@@ -89,7 +89,7 @@ def _require_text(value: object, field: str) -> str:
 
 def _require_confidence(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be numeric")
+        raise TypeError(f"{field} must be numeric")
     confidence = float(value)
     if not 0 <= confidence <= 1:
         raise ValueError(f"{field} must be within 0..1")
@@ -177,9 +177,13 @@ def _validate_candidates(
 
         if source_ref.startswith("legacy_cards:"):
             source_ids = source_ref.removeprefix("legacy_cards:").split("|")
-            if len(source_ids) != 3 or any(value not in legacy_by_id for value in source_ids):
+            if len(source_ids) != 3 or any(
+                value not in legacy_by_id for value in source_ids
+            ):
                 raise ValueError(f"invalid legacy card source_ref: {candidate_id}")
-            source_summaries = {str(legacy_by_id[value]["summary"]) for value in source_ids}
+            source_summaries = {
+                str(legacy_by_id[value]["summary"]) for value in source_ids
+            }
             if set(row["raw_evidence"]) != source_summaries:
                 raise ValueError(f"legacy evidence is not source-exact: {candidate_id}")
             expected_confidence = min(
@@ -198,8 +202,12 @@ def _validate_candidates(
             headings = [value.strip() for value in heading_text.split(",")]
             if any(f"## {heading}" not in source_text for heading in headings):
                 raise ValueError(f"missing Markdown heading source: {candidate_id}")
-            if any(str(evidence) not in source_text for evidence in row["raw_evidence"]):
-                raise ValueError(f"Markdown evidence is not source-exact: {candidate_id}")
+            if any(
+                str(evidence) not in source_text for evidence in row["raw_evidence"]
+            ):
+                raise ValueError(
+                    f"Markdown evidence is not source-exact: {candidate_id}"
+                )
             if float(row["confidence"]) != 0.0:
                 raise ValueError(
                     f"unverified Markdown confidence must be 0.0: {candidate_id}"
@@ -232,7 +240,7 @@ def _validate_provenance(
 def _validate_taxonomy(path: Path, categories: set[str]) -> None:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not isinstance(value.get("categories"), list):
-        raise ValueError("taxonomy.categories must be a list")
+        raise TypeError("taxonomy.categories must be a list")
     taxonomy_categories = {
         _require_text(row.get("category"), "taxonomy.category")
         for row in value["categories"]
@@ -280,7 +288,7 @@ def _validate_facts(
             raise ValueError(f"legacy fact title differs from H0: {item_id}")
         assignment = row.get("category_assignment")
         if not isinstance(assignment, dict):
-            raise ValueError(f"category_assignment required: {item_id}")
+            raise TypeError(f"category_assignment required: {item_id}")
         if assignment.get("source_leaf_name") != product.get("category"):
             raise ValueError(f"legacy fact leaf category differs from H0: {item_id}")
 
@@ -290,7 +298,7 @@ def _validate_facts(
             raise ValueError(f"H0 skus required: {item_id}")
         for sku in skus:
             if not isinstance(sku, dict) or not isinstance(sku.get("price"), dict):
-                raise ValueError(f"H0 sku price required: {item_id}")
+                raise TypeError(f"H0 sku price required: {item_id}")
             price = sku["price"]
             if price.get("currency") != "CNY":
                 raise ValueError(f"unexpected H0 currency: {item_id}")
@@ -298,7 +306,7 @@ def _validate_facts(
         for field in ("raw_price_observations_cny", "price_observations_cny"):
             observations = row.get(field)
             if not isinstance(observations, list):
-                raise ValueError(f"{field} must be a list: {item_id}")
+                raise TypeError(f"{field} must be a list: {item_id}")
             observed_prices = Counter(_price_minor(value) for value in observations)
             if any(
                 current_prices[value] < count
@@ -326,9 +334,7 @@ def build(
 ) -> dict[str, Any]:
     taobao_dir = source_dir / "taobao_zh"
     legacy_cards_path = taobao_dir / "category_cards_taobao_zh.jsonl"
-    legacy_provenance_path = (
-        taobao_dir / "category_card_provenance_taobao_zh.jsonl"
-    )
+    legacy_provenance_path = taobao_dir / "category_card_provenance_taobao_zh.jsonl"
     taxonomy_path = taobao_dir / "category_taxonomy_taobao_zh.json"
     legacy_manifest_path = taobao_dir / "category_card_manifest_taobao_zh.json"
     legacy_facts_path = taobao_dir / "category_item_facts_taobao_zh.jsonl"
@@ -370,9 +376,7 @@ def build(
     shutil.copyfile(candidates_path, output_candidates)
 
     card_type_counts = Counter(str(row["card_type"]) for row in legacy_cards)
-    candidate_type_counts = Counter(
-        str(row["candidate_type"]) for row in candidates
-    )
+    candidate_type_counts = Counter(str(row["candidate_type"]) for row in candidates)
     manifest: dict[str, Any] = {
         "builder_version": BUILDER_VERSION,
         "counts": {
@@ -396,9 +400,7 @@ def build(
             "legacy_cards": _file_entry(legacy_cards_path, len(legacy_cards)),
             "legacy_facts": _file_entry(legacy_facts_path, len(facts)),
             "legacy_manifest": _file_entry(legacy_manifest_path),
-            "legacy_provenance": _file_entry(
-                legacy_provenance_path, len(provenance)
-            ),
+            "legacy_provenance": _file_entry(legacy_provenance_path, len(provenance)),
             "legacy_taxonomy": _file_entry(taxonomy_path),
         },
         "intended_use": "offline review candidates only; not runtime knowledge",

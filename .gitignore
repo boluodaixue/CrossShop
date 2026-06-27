@@ -9,6 +9,7 @@ data/*
 !data/category_insight/
 data/category_insight/*
 !data/category_insight/CANDIDATE_SOURCE_REPORT.md
+!data/category_insight/CANDIDATE_REVIEW_CHECKLIST.md
 !data/category_insight/sources/
 data/category_insight/sources/*
 !data/category_insight/sources/knowledge_candidates.jsonl
