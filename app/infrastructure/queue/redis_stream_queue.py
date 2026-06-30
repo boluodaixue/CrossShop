@@ -7,6 +7,7 @@
 为什么用 Stream 而不是 List：Stream 有消费者组与未确认（pending）列表，
 worker 崩溃后未 ack 的消息能被重新领取，List 做不到这点。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +48,9 @@ class RedisStreamTaskQueue(TaskQueue):
 
     async def enqueue(self, task: IntentTask) -> None:
         stream = _LARGE_STREAM if task.priority > 0 else _STREAM
-        await self._client.xadd(stream, {"payload": json.dumps(task.to_dict(), ensure_ascii=False)})
+        await self._client.xadd(
+            stream, {"payload": json.dumps(task.to_dict(), ensure_ascii=False)}
+        )
 
     async def set_status(self, status: TaskStatus) -> None:
         await self._client.set(
@@ -58,6 +61,7 @@ class RedisStreamTaskQueue(TaskQueue):
                     "state": status.state,
                     "final_text": status.final_text,
                     "error": status.error,
+                    "displayed_products": list(status.displayed_products),
                 },
                 ensure_ascii=False,
             ),
@@ -76,6 +80,11 @@ class RedisStreamTaskQueue(TaskQueue):
             final_text=data.get("final_text", ""),
             error=data.get("error", ""),
             queue_position=position,
+            displayed_products=tuple(
+                item
+                for item in data.get("displayed_products", [])
+                if isinstance(item, dict)
+            )[:5],
         )
 
     async def depth(self) -> int:
@@ -140,11 +149,17 @@ class RedisStreamTaskQueue(TaskQueue):
                 continue
             for stream, entries in batches:
                 # ack 必须回到消息所属的流，不能写死 _STREAM
-                stream_name = stream.decode() if isinstance(stream, bytes) else str(stream)
+                stream_name = (
+                    stream.decode() if isinstance(stream, bytes) else str(stream)
+                )
                 for message_id, fields in entries:
                     task = asyncio.create_task(
                         self._handle_one(
-                            stream_name, message_id, fields, handler, max_deliveries,
+                            stream_name,
+                            message_id,
+                            fields,
+                            handler,
+                            max_deliveries,
                         ),
                     )
                     in_flight.add(task)
@@ -181,25 +196,39 @@ class RedisStreamTaskQueue(TaskQueue):
             if deliveries >= max_deliveries:
                 logger.error("任务重试超限进死信：%s（%s）", task.task_id, err)
                 await self._client.xadd(
-                    _DEAD_STREAM, {"payload": raw, "reason": str(err)},
+                    _DEAD_STREAM,
+                    {"payload": raw, "reason": str(err)},
                 )
                 await self._client.xack(stream, _GROUP, message_id)
             else:
                 # 不 ack：留在 pending 里等重投
-                logger.warning("任务处理失败（第 %d 次投递）：%s（%s）", deliveries, task.task_id, err)
+                logger.warning(
+                    "任务处理失败（第 %d 次投递）：%s（%s）",
+                    deliveries,
+                    task.task_id,
+                    err,
+                )
 
     async def _delivery_count(self, stream: str, message_id: str) -> int:
         try:
-            pending = await self._client.xpending_range(stream, _GROUP, message_id, message_id, 1)
+            pending = await self._client.xpending_range(
+                stream, _GROUP, message_id, message_id, 1
+            )
             return int(pending[0]["times_delivered"]) if pending else 1
         except Exception:  # noqa: BLE001
             return 1
 
-    async def claim_stale(self, consumer_name: str, idle_ms: int = 60000) -> list[IntentTask]:
+    async def claim_stale(
+        self, consumer_name: str, idle_ms: int = 60000
+    ) -> list[IntentTask]:
         """把长时间没 ack 的消息领回来（前一个 worker 挂了的情况）。"""
         try:
             result = await self._client.xautoclaim(
-                _STREAM, _GROUP, consumer_name, min_idle_time=idle_ms, count=10,
+                _STREAM,
+                _GROUP,
+                consumer_name,
+                min_idle_time=idle_ms,
+                count=10,
             )
         except Exception:  # noqa: BLE001
             return []
@@ -235,7 +264,9 @@ class RedisEventBackplane:
         channel = f"{_EVENT_CHANNEL_PREFIX}{event.shopping_session_id}"
         envelope = {"origin": self._origin, "event": event.to_dict()}
         try:
-            await self._client.publish(channel, json.dumps(envelope, ensure_ascii=False))
+            await self._client.publish(
+                channel, json.dumps(envelope, ensure_ascii=False)
+            )
         except Exception as err:  # noqa: BLE001 —— 广播失败不影响本进程投递
             logger.warning("事件广播失败：%s（%s）", channel, err)
 

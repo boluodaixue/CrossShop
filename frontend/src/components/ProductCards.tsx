@@ -1,28 +1,30 @@
-import type { ProductCard, TradeEvent } from "../types";
+import type { DisplayedProduct, TradeEvent } from "../types";
 
-/** 从最近一次 product_search 相关的工具事件里取商品卡（工具结果 JSON 由 Agent 侧透传）。 */
-function latestCards(events: TradeEvent[]): ProductCard[] {
+/** 只展示 Main 最终明确选择且经后端真实候选校验过的商品。 */
+function latestDisplayed(events: TradeEvent[]): DisplayedProduct[] {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (event.type !== "tool.result") continue;
-    const cards = event.payload?.hits as ProductCard[] | undefined;
-    if (cards && cards.length) return cards;
+    if (event.type !== "final.result") continue;
+    return (event.payload?.displayed_products as DisplayedProduct[] | undefined) ?? [];
   }
   return [];
 }
 
 export default function ProductCards({ events }: { events: TradeEvent[] }) {
-  const cards = latestCards(events);
-  if (!cards.length) return null;
+  const displayed = latestDisplayed(events);
+  if (!displayed.length) return null;
 
   return (
     <div className="cards">
-      {cards.map((card) => (
-        <article key={card.product_id} className="card">
+      {displayed.map(({ rank, platform, site_locale: siteLocale, card }) => (
+        <article key={`${platform}:${card.product_id}`} className="card">
           <header>
-            <strong>{card.title}</strong>
+            <strong>
+              {rank}. {card.title}
+            </strong>
             <span className="brand">
-              {card.brand} · {card.origin_country}
+              {platform}
+              {siteLocale ? `/${siteLocale}` : ""} · {card.brand} · {card.origin_country}
             </span>
           </header>
           <div className="price">

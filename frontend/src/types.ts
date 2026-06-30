@@ -42,3 +42,16 @@ export interface ProductCard {
   score: number;
   landed_price?: LandedPrice;
 }
+
+export interface DisplayedProduct {
+  rank: number;
+  platform: "globex_reference" | "taobao" | "amazon";
+  site_locale?: "us" | "es" | "jp" | null;
+  card: ProductCard;
+}
+
+export interface SubmitIntentResponse {
+  shopping_session_id: string;
+  final_text: string;
+  displayed_products: DisplayedProduct[];
+}

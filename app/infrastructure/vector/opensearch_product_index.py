@@ -15,6 +15,7 @@ from app.catalog.opensearch_product_h1 import (
 from app.domain.catalog.ports.retrieval_ports import ProductVectorIndex, VectorHit
 from app.domain.catalog.product import Product
 from app.infrastructure.tracing import set_span_attributes, text_digest, trace_span
+from app.infrastructure.transient import retry_dependency_once
 
 
 class OpenSearchProductIndex(ProductVectorIndex):
@@ -62,8 +63,16 @@ class OpenSearchProductIndex(ProductVectorIndex):
             raise ValueError(
                 f"OpenSearch Product vector dimension must be {VECTOR_DIMENSION}, got {vector_dim}"
             )
-        response = await self._client.get(f"/{self._index_name}/_mapping")
-        response.raise_for_status()
+
+        async def _request_mapping() -> httpx.Response:
+            response = await self._client.get(f"/{self._index_name}/_mapping")
+            response.raise_for_status()
+            return response
+
+        response = await retry_dependency_once(
+            _request_mapping,
+            dependency="opensearch",
+        )
         mapping = response.json()[self._index_name]["mappings"]["properties"]
         actual_dimension = mapping["content_vector"]["dimension"]
         if actual_dimension != VECTOR_DIMENSION:
@@ -108,17 +117,27 @@ class OpenSearchProductIndex(ProductVectorIndex):
                 "globex.opensearch.pipeline": RRF_PIPELINE_NAME,
             },
         ) as span:
-            response = await self._client.post(
-                f"/{self._index_name}/_search",
-                params={"search_pipeline": RRF_PIPELINE_NAME},
-                json=hybrid_query(
-                    query,
-                    embedding,
-                    size=top_n,
-                    site_locale=self._site_locale,
-                ),
+            request_body = hybrid_query(
+                query,
+                embedding,
+                size=top_n,
+                site_locale=self._site_locale,
             )
-            response.raise_for_status()
+
+            async def _request_search() -> httpx.Response:
+                response = await self._client.post(
+                    f"/{self._index_name}/_search",
+                    params={"search_pipeline": RRF_PIPELINE_NAME},
+                    json=request_body,
+                )
+                response.raise_for_status()
+                return response
+
+            response = await retry_dependency_once(
+                _request_search,
+                dependency="opensearch",
+                span=span,
+            )
 
             hits: list[VectorHit] = []
             seen_product_ids: set[str] = set()

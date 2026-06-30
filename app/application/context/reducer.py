@@ -34,7 +34,22 @@ _ORDER_ITEM_FIELDS = {
 _MAX_ITEMS = 10
 _MAX_REFS = 20
 _MAX_STRING = 512
+_MAX_DISPLAYED_PRODUCTS = 5
+_MAX_DISPLAYED_SKUS = 5
+_MAX_HIGHLIGHTS = 8
 _PLATFORM_ORDER = {"globex_reference": 0, "taobao": 1, "amazon": 2}
+_SKU_FIELDS = {"sku_id", "spec", "price_major", "currency", "stock"}
+_LANDED_PRICE_FIELDS = {
+    "ship_to",
+    "subtotal_major",
+    "freight_major",
+    "tariff_major",
+    "tariff_rate",
+    "de_minimis_applied",
+    "landed_total_major",
+    "currency",
+    "unavailable_reason",
+}
 
 
 def _event_parts(event: Any) -> tuple[str, Mapping[str, Any], str]:
@@ -115,6 +130,51 @@ def _compact_items(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _compact_display_card(value: Any) -> dict[str, Any]:
+    """Bound a verified hit before storing it in always-injected L4 context."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    card: dict[str, Any] = {}
+    for key in (
+        "product_id",
+        "title",
+        "brand",
+        "category",
+        "origin_country",
+        "price_major",
+        "currency",
+        "score",
+    ):
+        if key in value:
+            bounded = _bounded(value[key])
+            if bounded is not None:
+                card[key] = bounded
+    highlights = value.get("highlights")
+    card["highlights"] = (
+        [_bounded(item) for item in highlights[:_MAX_HIGHLIGHTS]]
+        if isinstance(highlights, list)
+        else []
+    )
+    skus = value.get("skus")
+    card["skus"] = (
+        [
+            _compact_mapping(item, _SKU_FIELDS)
+            for item in skus[:_MAX_DISPLAYED_SKUS]
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(skus, list)
+        else []
+    )
+    landed_price = _compact_mapping(
+        value.get("landed_price"),
+        _LANDED_PRICE_FIELDS,
+    )
+    if landed_price:
+        card["landed_price"] = landed_price
+    return card
+
+
 def _output(payload: Mapping[str, Any]) -> Any:
     for key in ("raw_output", "result", "model_output"):
         if key in payload:
@@ -151,6 +211,27 @@ def reduce_l4(
     normalized = [_event_parts(event) for event in events]
     invokes: dict[str, tuple[str, dict[str, Any]]] = {}
     dispatch_searches: list[dict[str, Any]] = []
+    candidate_cards: dict[tuple[str, str], tuple[str | None, dict[str, Any]]] = {}
+    prior_recommendation = state.get("last_recommendation") or {}
+    for displayed in prior_recommendation.get("displayed_products", []):
+        if not isinstance(displayed, Mapping):
+            continue
+        card = displayed.get("card")
+        if not isinstance(card, Mapping):
+            continue
+        platform = str(displayed.get("platform") or "")
+        site_locale = (
+            str(displayed["site_locale"])
+            if displayed.get("site_locale") is not None
+            else None
+        )
+        product_id = str(card.get("product_id") or "")
+        if platform and product_id:
+            candidate_cards[(platform, product_id)] = (
+                site_locale,
+                _compact_display_card(card),
+            )
+    current_search_seen = False
     for kind, payload, _occurred_at in normalized:
         if kind != "tool.invoke":
             continue
@@ -175,6 +256,7 @@ def reduce_l4(
         if not isinstance(output, Mapping) or output.get("error"):
             continue
         if tool == "product_search_tool" and isinstance(output.get("hits"), list):
+            current_search_seen = True
             hits = output["hits"]
             refs = [
                 str(hit["product_id"])
@@ -188,6 +270,21 @@ def reduce_l4(
                 "returned_count": len(hits),
                 "product_refs": refs,
             }
+            platform = str(args.get("platform") or "")
+            site_locale = (
+                str(args["site_locale"])
+                if args.get("site_locale") is not None
+                else None
+            )
+            for hit in hits:
+                if not isinstance(hit, Mapping):
+                    continue
+                product_id = str(hit.get("product_id") or "")
+                if platform and product_id:
+                    candidate_cards[(platform, product_id)] = (
+                        site_locale,
+                        _compact_display_card(hit),
+                    )
         elif (
             tool == "task_dispatch"
             and output.get("agent") == "search_agent"
@@ -195,6 +292,7 @@ def reduce_l4(
             and isinstance(output.get("hits"), list)
             and isinstance(output.get("filtered_out"), list)
         ):
+            current_search_seen = True
             hits = output["hits"]
             filtered_out = output["filtered_out"]
             refs = [
@@ -224,6 +322,21 @@ def reduce_l4(
                     "filtered_product_refs": filtered_refs,
                 },
             )
+            platform = str(output.get("platform") or "")
+            site_locale = (
+                str(output["site_locale"])
+                if output.get("site_locale") is not None
+                else None
+            )
+            for hit in hits:
+                if not isinstance(hit, Mapping):
+                    continue
+                product_id = str(hit.get("product_id") or "")
+                if platform and product_id:
+                    candidate_cards[(platform, product_id)] = (
+                        site_locale,
+                        _compact_display_card(hit),
+                    )
         elif tool in {"create_order_tool", "query_order_tool", "cancel_order_tool"}:
             order = copy.deepcopy(state.get("order") or {})
             for key in (
@@ -276,8 +389,49 @@ def reduce_l4(
             "platform_results": dispatch_searches,
         }
 
-    # V2 has no authoritative structured selected-product result. Natural
-    # language final text is deliberately not parsed into last_recommendation.
+    # The MainAgent now returns an AgentScope-native structured selection.
+    # Validate exact references against successful current hits or the prior
+    # verified recommendation.  Natural-language prose is still never parsed.
+    final_structured: Mapping[str, Any] | None = None
+    for kind, payload, _occurred_at in reversed(normalized):
+        structured = payload.get("structured_output")
+        if kind == "final.result" and isinstance(structured, Mapping):
+            final_structured = structured
+            break
+    if final_structured is not None:
+        selected = final_structured.get("selected_products")
+        displayed_products: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        if isinstance(selected, list):
+            for reference in selected[:_MAX_DISPLAYED_PRODUCTS]:
+                if not isinstance(reference, Mapping):
+                    continue
+                platform = str(reference.get("platform") or "")
+                product_id = str(reference.get("product_id") or "")
+                key = (platform, product_id)
+                resolved = candidate_cards.get(key)
+                if resolved is None or key in seen:
+                    continue
+                actual_site_locale, card = resolved
+                seen.add(key)
+                displayed_products.append(
+                    {
+                        "rank": len(displayed_products) + 1,
+                        "platform": platform,
+                        "site_locale": actual_site_locale,
+                        "card": card,
+                    },
+                )
+        if displayed_products or current_search_seen:
+            state["last_recommendation"] = {
+                "status": "succeeded",
+                "displayed_count": len(displayed_products),
+                "product_refs": [
+                    item["card"]["product_id"] for item in displayed_products
+                ],
+                "displayed_products": displayed_products,
+            }
+
     candidate = L4Context.from_dict(state)
     if candidate.semantic_dict() == prior.semantic_dict():
         return prior

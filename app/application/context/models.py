@@ -44,9 +44,9 @@ def canonical_json(value: Any) -> str:
 class L4Context:
     """Bounded, traceable projection of session/request/search/order facts.
 
-    ``last_recommendation`` intentionally remains optional. V2 H4 returns a
-    natural-language final answer and has no authoritative structured selected
-    product protocol; H5 must not reconstruct it by parsing prose.
+    ``last_recommendation`` remains optional and is populated only from the
+    authoritative structured selection after its product references are
+    validated against real hits. Natural-language prose is never parsed.
     """
 
     schema_version: str = SCHEMA_VERSION

@@ -14,6 +14,7 @@ import httpx
 from app.domain.catalog.ports.retrieval_ports import EmbeddingClient
 from app.infrastructure.settings import Settings
 from app.infrastructure.tracing import set_span_attributes, text_digest, trace_span
+from app.infrastructure.transient import retry_dependency_once
 
 # 单次请求最多带多少条文本。
 #
@@ -53,7 +54,7 @@ class OpenAIEmbeddingClient(EmbeddingClient):
                 # 分片串行请求：批量上限是网关侧约束，超限不会报错只会返回空 body
                 for start in range(0, len(texts), _MAX_BATCH):
                     chunk = texts[start : start + _MAX_BATCH]
-                    vectors.extend(await self._embed_chunk(client, chunk))
+                    vectors.extend(await self._embed_chunk(client, chunk, span=span))
             set_span_attributes(
                 span,
                 {
@@ -67,13 +68,25 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         self,
         client: httpx.AsyncClient,
         chunk: list[str],
+        *,
+        span: object | None = None,
     ) -> list[list[float]]:
-        response = await client.post(
-            f"{self._base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={"model": self._model, "input": chunk},
+        request_body = {"model": self._model, "input": chunk}
+
+        async def _request() -> httpx.Response:
+            response = await client.post(
+                f"{self._base_url}/embeddings",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=request_body,
+            )
+            response.raise_for_status()
+            return response
+
+        response = await retry_dependency_once(
+            _request,
+            dependency="embedding",
+            span=span,
         )
-        response.raise_for_status()
         if not response.content:
             # 明确指向批量上限，不要让调用方对着 JSONDecodeError 猜
             raise RuntimeError(

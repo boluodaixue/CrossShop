@@ -9,6 +9,7 @@
 商品种子库原本恰好 10 个 SPU（正好卡在上限内），所以问题一直没暴露，
 直到为召回评测把商品库扩到 60 个才被发现。这几条用例把它钉死。
 """
+
 from types import SimpleNamespace
 
 import httpx
@@ -113,7 +114,9 @@ class TestEmptyBodyDiagnostics:
 
     async def test_missing_data_field_raises(self, monkeypatch):
         monkeypatch.setattr(mod, "_MAX_BATCH", 10)
-        _install(monkeypatch, lambda request: httpx.Response(200, json={"error": "boom"}))
+        _install(
+            monkeypatch, lambda request: httpx.Response(200, json={"error": "boom"})
+        )
 
         with pytest.raises(RuntimeError, match="embedding 响应异常"):
             await OpenAIEmbeddingClient(_settings()).embed_batch(["a"])
@@ -124,3 +127,73 @@ class TestEmptyBodyDiagnostics:
 
         with pytest.raises(httpx.HTTPStatusError):
             await OpenAIEmbeddingClient(_settings()).embed_batch(["a"])
+
+
+class TestApprovedDependencyRetry:
+    async def test_503_retries_once_with_identical_body(self, monkeypatch):
+        monkeypatch.setattr("app.infrastructure.transient._RETRY_DELAY_SECONDS", 0)
+        bodies: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(request.content)
+            if len(bodies) == 1:
+                return httpx.Response(503, content=b"busy")
+            return httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [1.0]}]}
+            )
+
+        _install(monkeypatch, handler)
+        assert await OpenAIEmbeddingClient(_settings()).embed("same query") == [1.0]
+        assert len(bodies) == 2
+        assert bodies[0] == bodies[1]
+
+    async def test_connect_error_retries_once(self, monkeypatch):
+        monkeypatch.setattr("app.infrastructure.transient._RETRY_DELAY_SECONDS", 0)
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ConnectError("reset", request=request)
+            return httpx.Response(
+                200, json={"data": [{"index": 0, "embedding": [2.0]}]}
+            )
+
+        _install(monkeypatch, handler)
+        assert await OpenAIEmbeddingClient(_settings()).embed("same query") == [2.0]
+        assert attempts == 2
+
+    async def test_500_is_not_retried(self, monkeypatch):
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(500, content=b"boom")
+
+        _install(monkeypatch, handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            await OpenAIEmbeddingClient(_settings()).embed("same query")
+        assert attempts == 1
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [httpx.ReadError, httpx.RemoteProtocolError],
+    )
+    async def test_unapproved_transport_errors_are_not_retried(
+        self,
+        monkeypatch,
+        error_type,
+    ):
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            raise error_type("injected non-retryable transport error", request=request)
+
+        _install(monkeypatch, handler)
+        with pytest.raises(error_type):
+            await OpenAIEmbeddingClient(_settings()).embed("same query")
+        assert attempts == 1

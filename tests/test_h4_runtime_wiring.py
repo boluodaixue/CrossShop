@@ -1,9 +1,11 @@
 """H4 online Product OpenSearch composition wiring tests."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.catalog.opensearch_product_h1 import INDEX_NAMES, VECTOR_DIMENSION
 from app.infrastructure.settings import Settings, load_settings
+from app.composition import Container
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -71,6 +73,27 @@ class _FakeOpenSearchProductIndex:
         self.closed = True
 
 
+async def test_opensearch_startup_failure_is_a_non_blocking_capability_state() -> None:
+    class Unavailable:
+        async def ensure_ready(self, vector_dim: int) -> None:
+            del vector_dim
+            raise RuntimeError("dependency down")
+
+    container = SimpleNamespace(
+        db_engine=None,
+        task_queue=None,
+        product_indexes={"taobao": Unavailable()},
+        product_search_startup_check={},
+        knowledge_base=None,
+    )
+
+    await Container.startup(container)
+
+    assert container.product_search_startup_check == {
+        "taobao": "unavailable:RuntimeError",
+    }
+
+
 async def test_build_container_wires_three_read_only_product_indexes(
     monkeypatch,
     tmp_path: Path,
@@ -128,6 +151,8 @@ async def test_build_container_wires_three_read_only_product_indexes(
         INDEX_NAMES.values()
     )
     assert container.product_embedder._model == "BAAI/bge-m3"
+    assert container.preference_embedder._model == "BAAI/bge-m3"
+    assert container.preference_embedder._base_url == "http://bge-query.invalid/v1"
     assert container.embedder._model == "text-embedding-v4"
 
     async def _skip_knowledge_bootstrap(_knowledge_base) -> int:
@@ -174,6 +199,9 @@ def test_load_settings_separates_product_query_embedding(
     assert settings.product_embedding_dim == VECTOR_DIMENSION
     assert settings.product_embedding_base_url == "http://127.0.0.1:8002/v1"
     assert settings.product_embedding_api_key == "product-key"
+    assert settings.preference_embedding_model == "BAAI/bge-m3"
+    assert settings.preference_embedding_base_url == "http://127.0.0.1:8002/v1"
+    assert settings.preference_embedding_api_key == "product-key"
     assert settings.product_catalog_root == tmp_path / "catalogs-v2"
     assert settings.opensearch_endpoint == "http://127.0.0.1:9200"
     assert settings.opensearch_timeout_seconds == 19.0

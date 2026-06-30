@@ -53,8 +53,14 @@ class SearchAgentFactory:
         # 闸门由组装根下发，三个工厂必须共用同一个，否则各限一份等于没限
         self._throttle = throttle
 
-    def _resilience(self) -> list:
-        return [ToolResilienceMiddleware(self._circuit_registry, self._bus)]
+    def _resilience(self, *, platform: str | None = None) -> list:
+        return [
+            ToolResilienceMiddleware(
+                self._circuit_registry,
+                self._bus,
+                fixed_product_platform=platform,
+            ),
+        ]
 
     def build_tools(
         self,
@@ -75,7 +81,7 @@ class SearchAgentFactory:
                     fixed_site_locale=site_locale,
                 ),
                 is_read_only=True,
-                middlewares=self._resilience(),
+                middlewares=self._resilience(platform=platform),
             ),
             FunctionTool(
                 build_category_insight_tool(self._knowledge_base, self._bus),

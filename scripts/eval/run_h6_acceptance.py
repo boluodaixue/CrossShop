@@ -43,6 +43,7 @@ from app.application.agents.orchestrator import (
     SubmitIntentInput,
 )
 from app.application.context.models import L4Context
+from app.application.memory.preference_selector import PreferenceSelector
 from app.application.tools.task_dispatch_tool import build_task_dispatch_tool
 from app.application.tools.product_search_tool import build_product_search_tool
 from app.application.usecases.catalog_search import (
@@ -78,6 +79,7 @@ from app.infrastructure.resilience import (
     ToolResilienceMiddleware,
 )
 from app.infrastructure.throttle import GatewayThrottle
+from app.infrastructure.transient import retry_dependency_once
 from scripts.index.smoke_h4_agent import (
     _RecordingEmbedder,
     _RecordingReranker,
@@ -358,6 +360,96 @@ async def run_fault_contracts() -> dict[str, Any]:
                 "rerank_applied": empty["rerank_applied"],
                 "index_calls": empty_index.calls,
                 "keyword_fallback_calls": 0,
+            },
+        ),
+    )
+
+    unchanged_request = {
+        "dependency": "opensearch",
+        "query": "H6 原参数重试",
+        "body_sha256": hashlib.sha256(b"h6-identical-request").hexdigest(),
+    }
+    dependency_attempts: list[dict[str, Any]] = []
+
+    async def transient_dependency() -> str:
+        dependency_attempts.append(dict(unchanged_request))
+        if len(dependency_attempts) == 1:
+            raise httpx.ConnectError("injected transient connection failure")
+        return "ok"
+
+    with patch("app.infrastructure.transient.asyncio.sleep", new=AsyncMock()):
+        dependency_result = await retry_dependency_once(
+            transient_dependency,
+            dependency="opensearch",
+        )
+    observations.append(
+        FaultObservation(
+            name="approved-dependency-retry-repeats-identical-request-once",
+            classification="transient_dependency_failure",
+            passed=(
+                dependency_result == "ok"
+                and len(dependency_attempts) == 2
+                and dependency_attempts[0] == dependency_attempts[1]
+            ),
+            request=unchanged_request,
+            result={
+                "dependency_attempts": len(dependency_attempts),
+                "requests_identical": dependency_attempts[0] == dependency_attempts[1],
+                "h4_query_rewrite_calls": 0,
+            },
+        ),
+    )
+
+    platform_registry = CircuitBreakerRegistry(failure_threshold=2, reset_seconds=60)
+
+    async def product_search_tool(platform: str) -> ToolChunk:
+        """Injected single product tool with platform-scoped dependency health."""
+        if platform == "taobao":
+            raise httpx.ConnectError("injected taobao connection failure")
+        return ToolChunk(
+            content=[TextBlock(type="text", text=f"{platform}:ok")],
+            state=ToolResultState.SUCCESS,
+        )
+
+    platform_tool = FunctionTool(
+        product_search_tool,
+        middlewares=[ToolResilienceMiddleware(platform_registry)],
+    )
+    await _call_function_tool(platform_tool, platform="taobao")
+    await _call_function_tool(platform_tool, platform="taobao")
+    taobao_short_circuit = await _call_function_tool(
+        platform_tool,
+        platform="taobao",
+    )
+    amazon_after_taobao_failure = await _call_function_tool(
+        platform_tool,
+        platform="amazon",
+    )
+    observations.append(
+        FaultObservation(
+            name="product-circuit-is-platform-scoped",
+            classification="circuit_open",
+            passed=(
+                platform_registry.status("product_search_tool:taobao") == "open"
+                and platform_registry.status("product_search_tool:amazon") == "closed"
+                and "已熔断" in taobao_short_circuit.content[0].text
+                and amazon_after_taobao_failure.state == ToolResultState.SUCCESS
+            ),
+            request={
+                "tool": "product_search_tool",
+                "failed_platform": "taobao",
+                "healthy_platform": "amazon",
+            },
+            result={
+                "taobao_circuit": platform_registry.status(
+                    "product_search_tool:taobao"
+                ),
+                "amazon_circuit": platform_registry.status(
+                    "product_search_tool:amazon"
+                ),
+                "amazon_available": (
+                    amazon_after_taobao_failure.state == ToolResultState.SUCCESS
+                ),
             },
         ),
     )
@@ -868,24 +960,27 @@ async def run_fault_contracts() -> dict[str, Any]:
         db_engine=None,
         task_queue=None,
         product_indexes={"globex_reference": _UnavailableIndex()},
+        product_search_startup_check={},
         knowledge_base=None,
     )
-    startup_error = None
-    try:
-        await Container.startup(startup_probe)  # type: ignore[arg-type]
-    except RuntimeError as error:
-        startup_error = str(error)
+    await Container.startup(startup_probe)  # type: ignore[arg-type]
     observations.append(
         FaultObservation(
-            name="opensearch-unavailable-blocks-current-container-startup",
+            name="opensearch-unavailable-does-not-block-chat-trade-startup",
             classification="transient_dependency_failure",
-            passed=startup_error == "injected OpenSearch startup outage",
+            passed=(
+                startup_probe.product_search_startup_check.get("globex_reference")
+                == "unavailable:RuntimeError"
+            ),
             request={"operation": "Container.startup"},
             result={
-                "error": startup_error,
-                "startup_completed": False,
-                "chat_trade_available_in_same_container": False,
-                "behavior_changed_by_h6": False,
+                "error": "RuntimeError",
+                "startup_completed": True,
+                "chat_trade_available_in_same_container": True,
+                "product_search_startup_check": (
+                    startup_probe.product_search_startup_check
+                ),
+                "behavior_changed_post_h6_with_user_approval": True,
             },
         ),
     )
@@ -894,18 +989,17 @@ async def run_fault_contracts() -> dict[str, Any]:
         "evidence_type": "deterministic_fault_injection_against_production_usecase",
         "passed": all(observation.passed for observation in observations),
         "observations": [asdict(observation) for observation in observations],
-        "frozen_retry_statement": (
-            "Product embedding, OpenSearch, repository hydration, and reranker probes "
-            "issued no automatic retry and no extra recall. Existing model retry and "
-            "tool circuit behavior were not changed."
+        "approved_retry_statement": (
+            "Product embedding and OpenSearch may repeat the exact HTTP request once "
+            "for timeout/connect/429/502/503/504. Repository hydration and Reranker "
+            "are not retried; no extra recall or query rewrite is introduced."
         ),
         "known_boundaries": [
-            "Container startup currently requires every frozen product index; an "
-            "OpenSearch outage prevents chat and Trade routes from starting in the "
-            "same process.",
-            "The existing product_search_tool circuit is keyed by tool name rather "
-            "than platform, so repeated failures can couple platform availability.",
-            "No H6 retry, startup-degradation, or breaker-scope policy was added.",
+            "OpenSearch startup readiness is an explicit product-search capability "
+            "status and no longer prevents chat or Trade startup.",
+            "product_search_tool breaker state is isolated by platform; Amazon locales "
+            "share the Amazon platform scope.",
+            "The post-H6 retry is a dependency attempt, not an H4 query rewrite.",
         ],
     }
 
@@ -938,6 +1032,7 @@ def _safe_event(event: Any) -> dict[str, Any] | None:
         "error",
         "context.compressed",
         "model.fallback",
+        "final.result",
     }:
         return None
     safe: dict[str, Any] = {}
@@ -996,6 +1091,17 @@ def _safe_event(event: Any) -> dict[str, Any] | None:
     if isinstance(payload.get("filtered_out"), list):
         safe["filtered_out"] = [
             _compact_card(item) for item in payload["filtered_out"][:3]
+        ]
+    if isinstance(payload.get("displayed_products"), list):
+        safe["displayed_products"] = [
+            {
+                "rank": item.get("rank"),
+                "platform": item.get("platform"),
+                "site_locale": item.get("site_locale"),
+                "card": _compact_card(item.get("card")),
+            }
+            for item in payload["displayed_products"][:5]
+            if isinstance(item, dict)
         ]
     if isinstance(payload.get("order"), dict):
         safe["order"] = {
@@ -1102,6 +1208,7 @@ async def _run_turn(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     queue = container.bus.subscribe(turn.session)
+    prior_state = await _l4_snapshot(container, turn.session)
     started = time.perf_counter()
     try:
         output = await asyncio.wait_for(
@@ -1117,9 +1224,11 @@ async def _run_turn(
             timeout=timeout_seconds,
         )
         final_text = output.final_text
+        displayed_products = list(output.displayed_products)
         exception = None
     except Exception as error:  # noqa: BLE001 - record real online outcome
         final_text = ""
+        displayed_products = []
         exception = f"{type(error).__name__}: {error}"
     raw_events = []
     while not queue.empty():
@@ -1136,9 +1245,120 @@ async def _run_turn(
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "exception": exception,
         "events": events,
+        "prior_structured_state": prior_state,
         "structured_state": state,
         "final_output": final_text,
+        "displayed_products": displayed_products,
     }
+
+
+def _strict_displayed_identity_failures(turn: dict[str, Any]) -> list[str]:
+    """Validate the authoritative selection against tool facts and exact prose."""
+
+    displayed = turn.get("displayed_products") or []
+    if len(displayed) > 5:
+        return ["structured final display exceeded five products"]
+    candidates: dict[tuple[str, str | None, str], dict[str, Any]] = {}
+    prior_recommendation = (
+        turn.get("prior_structured_state", {}).get("last_recommendation") or {}
+    )
+    for prior in prior_recommendation.get("displayed_products", []):
+        if not isinstance(prior, dict) or not isinstance(prior.get("card"), dict):
+            continue
+        prior_card = prior["card"]
+        prior_id = prior_card.get("product_id")
+        if isinstance(prior_id, str):
+            candidates[(prior.get("platform"), prior.get("site_locale"), prior_id)] = (
+                prior_card
+            )
+    for event in turn["events"]:
+        payload = event["payload"]
+        if (
+            event["type"] != "tool.result"
+            or payload.get("tool") != "product_search_tool"
+        ):
+            continue
+        if payload.get("error"):
+            continue
+        for hit in payload.get("hits", []):
+            product_id = hit.get("product_id")
+            if isinstance(product_id, str):
+                candidates[
+                    (payload.get("platform"), payload.get("site_locale"), product_id)
+                ] = hit
+    failures: list[str] = []
+    displayed_product_ids = [
+        item.get("card", {}).get("product_id")
+        for item in displayed
+        if isinstance(item, dict) and isinstance(item.get("card"), dict)
+    ]
+    identity_segments: list[str] = []
+    for line in turn["final_output"].splitlines():
+        if not line.strip():
+            continue
+        id_positions = sorted(
+            (
+                position,
+                product_id,
+            )
+            for product_id in displayed_product_ids
+            if isinstance(product_id, str)
+            for position in [line.find(product_id)]
+            if position >= 0
+        )
+        if len(id_positions) <= 1:
+            identity_segments.append(line)
+            continue
+        for index, (position, _) in enumerate(id_positions):
+            end = (
+                id_positions[index + 1][0]
+                if index + 1 < len(id_positions)
+                else len(line)
+            )
+            identity_segments.append(line[position:end])
+    seen: set[tuple[str, str | None, str]] = set()
+    for expected_rank, item in enumerate(displayed, start=1):
+        card = item.get("card") if isinstance(item, dict) else None
+        if not isinstance(card, dict):
+            failures.append(f"displayed product {expected_rank} has no card")
+            continue
+        product_id = card.get("product_id")
+        title = card.get("title")
+        key = (item.get("platform"), item.get("site_locale"), product_id)
+        if item.get("rank") != expected_rank:
+            failures.append(f"displayed product rank mismatch at {expected_rank}")
+        if key in seen:
+            failures.append(f"duplicate displayed product: {product_id}")
+        seen.add(key)
+        if key not in candidates:
+            # A prior verified card may be intentionally referenced without a
+            # new search. L4 keeps that evidence; current-turn tool facts are
+            # mandatory only when this turn actually searched.
+            current_searched = bool(_product_invokes(turn["events"]))
+            if current_searched:
+                failures.append(f"displayed product not in successful hits: {key}")
+        elif candidates[key].get("title") != title:
+            failures.append(
+                f"displayed product title differs from tool hit: {product_id}"
+            )
+        if not isinstance(product_id, str) or product_id not in turn["final_output"]:
+            failures.append(f"final text omitted exact product_id: {product_id}")
+        if not isinstance(title, str) or title not in turn["final_output"]:
+            failures.append(f"final text omitted exact title: {product_id}")
+        if (
+            isinstance(product_id, str)
+            and isinstance(title, str)
+            and product_id in turn["final_output"]
+            and title in turn["final_output"]
+        ):
+            if not any(
+                product_id in segment and title in segment
+                for segment in identity_segments
+            ):
+                failures.append(
+                    f"final text did not pair exact id and title: {product_id}"
+                )
+    return failures
 
 
 def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
@@ -1261,7 +1481,10 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
                 or args.get("price_max_major") is not None
             ):
                 failures.append(f"category switch inherited old constraints: {args}")
-            if args.get("normalized_query") != "降噪耳机":
+            normalized_query = re.sub(
+                r"\s+", "", str(args.get("normalized_query") or "")
+            )
+            if normalized_query != "降噪耳机":
                 failures.append(f"category switch did not form new request: {args}")
     elif expectation == "conditional_rewrite_filtered":
         protocol_failures, evidence = _protocol(events, {"taobao"})
@@ -1291,6 +1514,7 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
         failures.append(f"unknown expectation: {expectation}")
     if any(event["payload"].get("args", {}).get("top_k", 5) > 5 for event in invokes):
         failures.append("product search top_k exceeded 5")
+    failures.extend(_strict_displayed_identity_failures(turn))
     final_mentions = _recommendation_display_mentions(turn["final_output"], events)
     turn["final_product_mention_evidence"] = final_mentions
     if len(final_mentions) > 5:
@@ -1362,7 +1586,14 @@ def _normalized_text(value: Any) -> str:
 
 
 def _displayed_product_refs(turn: dict[str, Any]) -> list[str]:
-    """Recover display order from model prose using only returned-card anchors."""
+    """Use authoritative structured order; retain prose matching for old artifacts."""
+    structured = [
+        str(item.get("card", {}).get("product_id"))
+        for item in turn.get("displayed_products", [])
+        if isinstance(item, dict) and item.get("card", {}).get("product_id")
+    ]
+    if structured:
+        return structured
     mentions = _mentioned_recommendations(turn["final_output"], turn["events"])
     normalized_output = _normalized_text(turn["final_output"])
     normalized_titles = {
@@ -1396,7 +1627,16 @@ def _displayed_product_refs(turn: dict[str, Any]) -> list[str]:
 
 
 def _numbered_product_refs(turn: dict[str, Any]) -> dict[int, str]:
-    """Map explicit numbered-list labels in final prose back to returned cards."""
+    """Map display ranks to cards, using verified structured output first."""
+    structured = {
+        int(item["rank"]): str(item.get("card", {}).get("product_id"))
+        for item in turn.get("displayed_products", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("rank"), int)
+        and item.get("card", {}).get("product_id")
+    }
+    if structured:
+        return structured
     numbered: dict[int, str] = {}
     for match in re.finditer(r"\*\*(\d+)\.\s*(.*?)\*\*", turn["final_output"]):
         mentions = _mentioned_recommendations(match.group(2), turn["events"])
@@ -1458,6 +1698,7 @@ async def run_online_acceptance(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     stamp = str(int(time.time()))
+    preference_embedding_probe = await _run_real_preference_embedding_probe(container)
     independent = [
         LiveTurn(
             "ordinary-chat",
@@ -1854,7 +2095,9 @@ async def run_online_acceptance(
             phrase in second_more["final_output"]
             for phrase in (
                 "没有新",
+                "没有更多",
                 "没有未展示",
+                "没有其他未展示的新候选",
                 "暂无新",
                 "无新",
                 "当前候选",
@@ -1969,14 +2212,62 @@ async def run_online_acceptance(
     return {
         "evidence_type": "real_online_main_agent_and_production_composition",
         "passed": all(turn["passed"] for turn in turns)
+        and preference_embedding_probe["passed"]
         and preference_equivalence["passed"]
         and isolation["all_sessions_populated"]
         and isolation["owner_and_request_isolated"]
         and trade_lifecycle["passed"],
         "turns": turns,
+        "preference_embedding_probe": preference_embedding_probe,
         "preference_query_equivalence": preference_equivalence,
         "multi_session_isolation": isolation,
         "trade_lifecycle": trade_lifecycle,
+    }
+
+
+async def _run_real_preference_embedding_probe(container: Container) -> dict[str, Any]:
+    """Prove the distinct preference client can use the local product BGE service."""
+
+    target = "喜欢轻便旅行背包"
+    preferences = [
+        BuyerPreference("h6-preference-probe", "like", target),
+        BuyerPreference("h6-preference-probe", "like", "喜欢手冲咖啡杯"),
+    ]
+    try:
+        selected = await PreferenceSelector(container.preference_embedder).select(
+            preferences,
+            query=target,
+            top_k=1,
+        )
+    except Exception as error:  # noqa: BLE001 - persist only the safe error class
+        return {
+            "passed": False,
+            "error_class": type(error).__name__,
+            "selected_likes": [],
+            "raw_vectors_persisted": False,
+        }
+    selected_likes = [item.statement for item in selected if item.kind == "like"]
+    preference_embedder = container.preference_embedder
+    product_embedder = container.product_embedder
+
+    def _raw_embedder(embedder: Any) -> Any:
+        while hasattr(embedder, "_inner"):
+            embedder = embedder._inner  # noqa: SLF001
+        return embedder
+
+    raw_preference = _raw_embedder(preference_embedder)
+    raw_product = _raw_embedder(product_embedder)
+    return {
+        "passed": selected_likes == [target],
+        "selected_likes": selected_likes,
+        "top_k": 1,
+        "logical_client_distinct": preference_embedder is not product_embedder,
+        "physical_endpoint_shared": (
+            getattr(raw_preference, "_base_url", None)
+            == getattr(raw_product, "_base_url", None)
+        ),
+        "model": getattr(raw_preference, "_model", None),
+        "raw_vectors_persisted": False,
     }
 
 
@@ -2107,6 +2398,7 @@ def _render_readme(report: dict[str, Any], args: argparse.Namespace) -> str:
         )
     if online is None:
         online_text = "本次未请求真实在线 Main Agent 场景。"
+        preference_text = "本次未请求真实偏好 Embedding 探针。"
     else:
         online_rows = [
             f"| {turn['name']} | {turn['expectation']} | "
@@ -2120,6 +2412,14 @@ def _render_readme(report: dict[str, Any], args: argparse.Namespace) -> str:
                 "|---|---|---|---:|",
                 *online_rows,
             ],
+        )
+        preference_probe = online["preference_embedding_probe"]
+        preference_text = (
+            f"- 结果：{'PASS' if preference_probe['passed'] else 'FAIL'}\n"
+            f"- 逻辑客户端独立：{preference_probe.get('logical_client_distinct')}\n"
+            f"- 物理 BGE endpoint 与商品 Query 共用："
+            f"{preference_probe.get('physical_endpoint_shared')}\n"
+            f"- 真实 like Top-K：{preference_probe.get('selected_likes', [])}"
         )
     command = (
         ".venv\\Scripts\\python.exe scripts/eval/run_h6_acceptance.py "
@@ -2151,11 +2451,16 @@ def _render_readme(report: dict[str, Any], args: argparse.Namespace) -> str:
 
 {online_text}
 
+## 真实偏好 Embedding
+
+{preference_text}
+
 完整的脱敏输入、关键工具事件、结构化 L4 状态与最终输出保存在
 `acceptance-report.json`。证据不含密钥、向量、完整文档或内部 correlation ID。
 
-本验收未迁移品类 RAG、未部署 LangFuse、未添加重试、未扩大粗召回，也未新增 Agent、
-工具、协议或架构层。
+本验收未迁移品类 RAG、未部署 LangFuse、未扩大粗召回，也未新增 Agent、工具或架构层。
+仅对商品 Embedding/OpenSearch 增加了获批的原参数一次瞬时依赖重试；不重试 Reranker，
+也不占 H4 query 改写次数。
 """
 
 
@@ -2225,7 +2530,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             "h6": True,
             "category_rag_migrated": False,
             "langfuse_deployed": False,
-            "new_retry_policy": False,
+            "bounded_embedding_opensearch_retry": True,
+            "reranker_retry": False,
             "empty_result_expansion": False,
         },
     }

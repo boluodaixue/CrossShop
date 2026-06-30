@@ -148,6 +148,92 @@ def test_phase_a_l4_is_idempotent_and_ignores_orphan_and_failed_results() -> Non
     }
 
 
+def test_l4_accepts_verified_structured_selection_without_parsing_prose() -> None:
+    intent = {
+        "shopping_session_id": "session-selection",
+        "buyer_id": "buyer-selection",
+        "locale": "zh-CN",
+        "currency": "CNY",
+        "raw_query": "找一个背包",
+    }
+    events = [
+        {
+            "type": "tool.invoke",
+            "payload": {
+                "tool": "product_search_tool",
+                "tool_call_id": "search-1",
+                "args": {
+                    "normalized_query": "背包",
+                    "platform": "taobao",
+                    "top_k": 5,
+                },
+            },
+        },
+        {
+            "type": "tool.result",
+            "payload": {
+                "tool": "product_search_tool",
+                "tool_call_id": "search-1",
+                "raw_output": {
+                    "hits": [
+                        {"product_id": "P-1", "title": "完整原标题一"},
+                        {
+                            "product_id": "P-2",
+                            "title": "完整原标题二",
+                            "highlights": [f"亮点-{index}" for index in range(12)],
+                            "skus": [
+                                {
+                                    "sku_id": f"SKU-{index}",
+                                    "spec": f"规格-{index}",
+                                    "price_major": index,
+                                    "currency": "CNY",
+                                    "stock": 1,
+                                    "internal": "drop",
+                                }
+                                for index in range(9)
+                            ],
+                            "internal_blob": "drop",
+                        },
+                    ],
+                },
+                "error": False,
+            },
+        },
+        {
+            "type": "final.result",
+            "payload": {
+                "text": "这段自然语言故意不含商品名",
+                "structured_output": {
+                    "final_text": "推荐 P-2 完整原标题二",
+                    "selected_products": [
+                        {
+                            "platform": "taobao",
+                            "product_id": "P-2",
+                        },
+                        {
+                            "platform": "taobao",
+                            "product_id": "UNKNOWN",
+                        },
+                    ],
+                },
+            },
+        },
+    ]
+
+    state = reduce_l4(intent, events)
+
+    assert state.last_recommendation is not None
+    assert state.last_recommendation["product_refs"] == ["P-2"]
+    assert state.last_recommendation["displayed_products"][0]["card"]["title"] == (
+        "完整原标题二"
+    )
+    card = state.last_recommendation["displayed_products"][0]["card"]
+    assert len(card["highlights"]) == 8
+    assert len(card["skus"]) == 5
+    assert "internal_blob" not in card
+    assert "internal" not in card["skus"][0]
+
+
 @pytest.mark.asyncio
 async def test_phase_b_request_start_persists_on_model_failure() -> None:
     middleware = _middleware()

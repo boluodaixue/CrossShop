@@ -160,7 +160,10 @@ class ContextLifecycleMiddleware(MiddlewareBase):
                 events.append(
                     {
                         "type": "final.result",
-                        "payload": {"text": final_msg.get_text_content() or ""},
+                        "payload": {
+                            "text": final_msg.get_text_content() or "",
+                            "structured_output": final_msg.structured_output,
+                        },
                         "occurred_at": _now(),
                     },
                 )

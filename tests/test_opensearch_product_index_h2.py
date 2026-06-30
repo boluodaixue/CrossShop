@@ -159,6 +159,52 @@ async def test_adapter_rejects_duplicate_product_id_hits() -> None:
             await index.search(query="耳机", embedding=_vector(), top_n=2)
 
 
+async def test_adapter_retries_503_once_with_identical_hybrid_request() -> None:
+    failure = httpx.Response(
+        503,
+        content=b"busy",
+        request=httpx.Request("POST", "http://127.0.0.1:9200/_search"),
+    )
+    client = AsyncMock()
+    client.post.side_effect = [failure, _response(_hits("p1"))]
+    with (
+        patch(
+            "app.infrastructure.vector.opensearch_product_index.httpx.AsyncClient",
+            return_value=client,
+        ),
+        patch("app.infrastructure.transient._RETRY_DELAY_SECONDS", 0),
+    ):
+        index = OpenSearchProductIndex(
+            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+        )
+        hits = await index.search(query="耳机", embedding=_vector(), top_n=1)
+
+    assert hits == [VectorHit("p1", 1.0)]
+    assert client.post.await_count == 2
+    assert client.post.await_args_list[0] == client.post.await_args_list[1]
+
+
+async def test_adapter_does_not_retry_http_500() -> None:
+    failure = httpx.Response(
+        500,
+        content=b"boom",
+        request=httpx.Request("POST", "http://127.0.0.1:9200/_search"),
+    )
+    client = AsyncMock()
+    client.post.return_value = failure
+    with patch(
+        "app.infrastructure.vector.opensearch_product_index.httpx.AsyncClient",
+        return_value=client,
+    ):
+        index = OpenSearchProductIndex(
+            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await index.search(query="耳机", embedding=_vector(), top_n=1)
+
+    assert client.post.await_count == 1
+
+
 async def test_adapter_verifies_mapping_and_forbids_online_upsert() -> None:
     index_name = INDEX_NAMES["globex_reference"]
     client = AsyncMock()

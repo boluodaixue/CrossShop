@@ -123,6 +123,12 @@ class Settings:
     product_embedding_api_key: str = ""
     product_embedding_model: str = "BAAI/bge-m3"
     product_embedding_dim: int = 1024
+    # 偏好相关性默认物理复用商品 BGE 服务，但保持独立配置/缓存命名空间；
+    # 它只服务 Main 的 like Top-K，绝不进入商品召回或 Reranker。
+    preference_embedding_base_url: str = ""
+    preference_embedding_api_key: str = ""
+    preference_embedding_model: str = "BAAI/bge-m3"
+    preference_embedding_dim: int = 1024
     # ---- H5：LangFuse / OpenTelemetry（默认关闭、fail-open）----
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
@@ -149,6 +155,19 @@ def load_settings() -> Settings:
     data_dir.mkdir(parents=True, exist_ok=True)  # SQLite 默认落在此目录，建库前必须存在
     embedding_base_url = os.getenv("EMBEDDING_BASE_URL", llm_base_url)
     embedding_api_key = os.getenv("EMBEDDING_API_KEY", llm_api_key)
+    product_embedding_base_url = os.getenv(
+        "PRODUCT_EMBEDDING_BASE_URL",
+        embedding_base_url,
+    )
+    product_embedding_api_key = os.getenv(
+        "PRODUCT_EMBEDDING_API_KEY",
+        embedding_api_key,
+    )
+    product_embedding_model = os.getenv(
+        "PRODUCT_EMBEDDING_MODEL",
+        "BAAI/bge-m3",
+    )
+    product_embedding_dim = int(os.getenv("PRODUCT_EMBEDDING_DIM", "1024"))
     return Settings(
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
@@ -228,19 +247,25 @@ def load_settings() -> Settings:
         opensearch_timeout_seconds=float(
             os.getenv("OPENSEARCH_TIMEOUT_SECONDS", "30"),
         ),
-        product_embedding_base_url=os.getenv(
-            "PRODUCT_EMBEDDING_BASE_URL",
-            embedding_base_url,
+        product_embedding_base_url=product_embedding_base_url,
+        product_embedding_api_key=product_embedding_api_key,
+        product_embedding_model=product_embedding_model,
+        product_embedding_dim=product_embedding_dim,
+        preference_embedding_base_url=os.getenv(
+            "PREFERENCE_EMBEDDING_BASE_URL",
+            product_embedding_base_url,
         ),
-        product_embedding_api_key=os.getenv(
-            "PRODUCT_EMBEDDING_API_KEY",
-            embedding_api_key,
+        preference_embedding_api_key=os.getenv(
+            "PREFERENCE_EMBEDDING_API_KEY",
+            product_embedding_api_key,
         ),
-        product_embedding_model=os.getenv(
-            "PRODUCT_EMBEDDING_MODEL",
-            "BAAI/bge-m3",
+        preference_embedding_model=os.getenv(
+            "PREFERENCE_EMBEDDING_MODEL",
+            product_embedding_model,
         ),
-        product_embedding_dim=int(os.getenv("PRODUCT_EMBEDDING_DIM", "1024")),
+        preference_embedding_dim=int(
+            os.getenv("PREFERENCE_EMBEDDING_DIM", str(product_embedding_dim)),
+        ),
         langfuse_enabled=_env_flag("LANGFUSE_ENABLED"),
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", "").strip(),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", "").strip(),

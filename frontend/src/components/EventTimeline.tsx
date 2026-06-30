@@ -39,7 +39,7 @@ function summarize(event: TradeEvent): string {
     case "model.fallback":
       return `${p.from} 限流，已改用 ${p.to}（${String(p.reason ?? "").slice(0, 40)}）`;
     case "final.result":
-      return String(p.text ?? "").slice(0, 60);
+      return `${String(p.text ?? "").slice(0, 60)}（展示 ${(p.displayed_products ?? []).length} 件）`;
     case "error":
       return String(p.message ?? "");
     default:

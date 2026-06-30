@@ -17,6 +17,7 @@
 同步接口为什么保留：13 case 评测脚本与前端都依赖它直接返回 final_text，
 改成纯异步会一次性搞挂回归与前端。削峰由 worker 并发度保证，与接口形态无关。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +42,9 @@ from app.presentation.dto import (
     SubmitIntentResponse,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +127,13 @@ def build_app() -> FastAPI:
             "redis": redis_state,
             "semantic_cache": c.semantic_cache.enabled,
             "queue": "enabled" if c.task_queue is not None else "disabled",
-            "queue_depth": await c.task_queue.depth() if c.task_queue is not None else 0,
+            "queue_depth": await c.task_queue.depth()
+            if c.task_queue is not None
+            else 0,
+            "product_search": {
+                "startup_check": dict(c.product_search_startup_check),
+                "note": "启动时检查；每次真实搜索仍会直接验证当前依赖",
+            },
         }
 
     @api.post("/commerce/intents", response_model=SubmitIntentResponse)
@@ -141,12 +150,18 @@ def build_app() -> FastAPI:
         if c.task_queue is None:
             result = await c.orchestrator.handle_intent(intent)
             return SubmitIntentResponse(
-                shopping_session_id=result.shopping_session_id, final_text=result.final_text,
+                shopping_session_id=result.shopping_session_id,
+                final_text=result.final_text,
+                displayed_products=list(result.displayed_products),
             )
 
         task_id = await _enqueue(c, intent)
-        final_text = await _await_result(c, task_id, session_id)
-        return SubmitIntentResponse(shopping_session_id=session_id, final_text=final_text)
+        final_text, displayed_products = await _await_result(c, task_id, session_id)
+        return SubmitIntentResponse(
+            shopping_session_id=session_id,
+            final_text=final_text,
+            displayed_products=displayed_products,
+        )
 
     @api.post("/commerce/intents/async")
     async def submit_intent_async(body: SubmitIntentRequest) -> dict:
@@ -160,9 +175,15 @@ def build_app() -> FastAPI:
             raw_query=body.raw_query,
         )
         if c.task_queue is None:
-            raise HTTPException(status_code=503, detail="队列未启用，请使用 /commerce/intents")
+            raise HTTPException(
+                status_code=503, detail="队列未启用，请使用 /commerce/intents"
+            )
         task_id = await _enqueue(c, intent)
-        return {"shopping_session_id": session_id, "task_id": task_id, "state": "queued"}
+        return {
+            "shopping_session_id": session_id,
+            "task_id": task_id,
+            "state": "queued",
+        }
 
     @api.get("/commerce/tasks/{task_id}")
     async def get_task(task_id: str) -> dict:
@@ -171,13 +192,16 @@ def build_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="队列未启用")
         status = await c.task_queue.get_status(task_id)
         if status is None:
-            raise HTTPException(status_code=404, detail=f"任务不存在或已过期：{task_id}")
+            raise HTTPException(
+                status_code=404, detail=f"任务不存在或已过期：{task_id}"
+            )
         return {
             "task_id": status.task_id,
             "state": status.state,
             "final_text": status.final_text,
             "error": status.error,
             "queue_position": status.queue_position,
+            "displayed_products": list(status.displayed_products),
         }
 
     @api.websocket("/commerce/events")
@@ -255,7 +279,11 @@ async def _enqueue(c: Container, intent: SubmitIntentInput) -> str:
     return task_id
 
 
-async def _await_result(c: Container, task_id: str, session_id: str) -> str:
+async def _await_result(
+    c: Container,
+    task_id: str,
+    session_id: str,
+) -> tuple[str, list[dict]]:
     """等 worker 跑完。
 
     优先等 final.result 事件（实时）；同时定期查任务状态兜底——
@@ -270,13 +298,16 @@ async def _await_result(c: Container, task_id: str, session_id: str) -> str:
             except asyncio.TimeoutError:
                 status = await c.task_queue.get_status(task_id)  # type: ignore[union-attr]
                 if status is not None and status.state == "done":
-                    return status.final_text
+                    return status.final_text, list(status.displayed_products)
                 if status is not None and status.state == "failed":
-                    return f"[error] {status.error}"
+                    return f"[error] {status.error}", []
                 continue
             if event.type == "final.result":
-                return str(event.payload.get("text", ""))
-        return "[error] 处理超时，请稍后重试或改用异步接口查询任务状态"
+                return (
+                    str(event.payload.get("text", "")),
+                    list(event.payload.get("displayed_products") or []),
+                )
+        return "[error] 处理超时，请稍后重试或改用异步接口查询任务状态", []
     finally:
         c.bus.unsubscribe(session_id, queue)
 

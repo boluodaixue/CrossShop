@@ -104,7 +104,9 @@ class Container:
     product_repo: JsonlProductRepository
     embedder: Any
     product_embedder: Any
+    preference_embedder: Any
     product_indexes: dict[str, OpenSearchProductIndex]
+    product_search_startup_check: dict[str, str]
     catalog_searches: dict[str, CatalogSearchUseCase]
     knowledge_base: Any
     db_engine: Any
@@ -122,8 +124,26 @@ class Container:
             except Exception as err:  # noqa: BLE001
                 logger.warning("队列消费者组创建失败：%s", err)
         # H1 商品索引由离线构建流程维护；在线进程只验证冻结 mapping，绝不 upsert。
+        # 商品检索是一个能力，不是 chat/Trade 的进程启动前提。失败只标记该
+        # 平台的启动检查；真实搜索仍会直连依赖，因此服务恢复后无需重启即可恢复。
+        if not hasattr(self, "product_search_startup_check"):
+            self.product_search_startup_check = {}
         for platform in INDEX_NAMES:
-            await self.product_indexes[platform].ensure_ready(VECTOR_DIMENSION)
+            if platform not in self.product_indexes:
+                continue
+            try:
+                await self.product_indexes[platform].ensure_ready(VECTOR_DIMENSION)
+            except Exception as err:  # noqa: BLE001
+                self.product_search_startup_check[platform] = (
+                    f"unavailable:{type(err).__name__}"
+                )
+                logger.warning(
+                    "商品搜索启动检查失败，chat/Trade 继续可用（%s）：%s",
+                    platform,
+                    type(err).__name__,
+                )
+            else:
+                self.product_search_startup_check[platform] = "ready"
         await bootstrap_category_knowledge(self.knowledge_base)
 
     async def shutdown(self) -> None:
@@ -178,8 +198,9 @@ async def build_container() -> Container:
         if cache.enabled
         else raw_embedder
     )
-    # Product Query Tower 使用与离线 Item Tower 一致的 BGE-M3；品类 RAG、语义缓存和
-    # 偏好相关性继续使用原 EMBEDDING_*，避免无意迁移已有 Qdrant collection。
+    # Product Query Tower 使用与离线 Item Tower 一致的 BGE-M3；品类 RAG 与语义缓存
+    # 继续使用原 EMBEDDING_*。偏好相关性默认物理复用商品 BGE，但保持独立客户端和
+    # cache namespace，避免污染 Product Query 或迁移既有 Qdrant collection。
     product_embedding_settings = replace(
         settings,
         embedding_base_url=settings.product_embedding_base_url,
@@ -196,6 +217,28 @@ async def build_container() -> Container:
         )
         if cache.enabled
         else raw_product_embedder
+    )
+    preference_embedding_settings = replace(
+        settings,
+        embedding_base_url=(
+            settings.preference_embedding_base_url
+            or settings.product_embedding_base_url
+        ),
+        embedding_api_key=(
+            settings.preference_embedding_api_key or settings.product_embedding_api_key
+        ),
+        embedding_model=settings.preference_embedding_model,
+        embedding_dim=settings.preference_embedding_dim,
+    )
+    raw_preference_embedder = OpenAIEmbeddingClient(preference_embedding_settings)
+    preference_embedder = (
+        CachedEmbeddingClient(
+            raw_preference_embedder,
+            cache,
+            f"preference:{settings.preference_embedding_model}",
+        )
+        if cache.enabled
+        else raw_preference_embedder
     )
     semantic_cache = SemanticCache(
         cache,
@@ -293,9 +336,10 @@ async def build_container() -> Container:
         throttle,
     )
     # H5：偏好只由 Main Agent 编排入口读取；SearchAgent 始终保持中性检索。
-    # 相关 like Top-K 使用通用、带缓存的 EMBEDDING_*，绝不复用商品 Query Tower。
+    # 相关 like Top-K 使用逻辑独立的偏好 BGE 客户端。它可以物理复用商品
+    # BGE endpoint，但不会进入 ProductSearchSpec、商品 Query 或 Reranker。
     preference_selector = PreferenceSelector(
-        embedder=embedder,
+        embedder=preference_embedder,
         relevance_enabled=settings.preference_relevance_enabled,
     )
     main_factory = MainAgentFactory(
@@ -337,7 +381,11 @@ async def build_container() -> Container:
         product_repo=product_repo,
         embedder=embedder,
         product_embedder=product_embedder,
+        preference_embedder=preference_embedder,
         product_indexes=product_indexes,
+        product_search_startup_check={
+            platform: "not_checked" for platform in INDEX_NAMES
+        },
         catalog_searches=catalog_searches,
         knowledge_base=knowledge_base,
         db_engine=db_engine,

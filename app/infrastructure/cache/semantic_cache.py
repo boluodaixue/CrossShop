@@ -20,6 +20,7 @@
 评测注意：跑回归时应关掉语义缓存（SEMANTIC_CACHE_ENABLED=0），
 否则评的是缓存而不是 Agent 行为。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -27,7 +28,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from app.domain.catalog.ports.retrieval_ports import EmbeddingClient
 from app.infrastructure.cache.redis_cache import RedisCache
@@ -40,10 +41,25 @@ _BUCKET_LIMIT = 30
 
 # 写操作/上下文依赖意图，命中任一则整条不进缓存也不查缓存
 _UNSAFE_PATTERNS = (
-    r"下单", r"买了", r"购买", r"付款", r"支付",
-    r"取消", r"退单", r"退款", r"改地址",
-    r"刚才", r"刚刚", r"上面", r"前面", r"那个", r"这个", r"它",
-    r"我的订单", r"订单号", r"GBX-",
+    r"下单",
+    r"买了",
+    r"购买",
+    r"付款",
+    r"支付",
+    r"取消",
+    r"退单",
+    r"退款",
+    r"改地址",
+    r"刚才",
+    r"刚刚",
+    r"上面",
+    r"前面",
+    r"那个",
+    r"这个",
+    r"它",
+    r"我的订单",
+    r"订单号",
+    r"GBX-",
 )
 _UNSAFE_RE = re.compile("|".join(_UNSAFE_PATTERNS))
 
@@ -53,6 +69,7 @@ class SemanticHit:
     reply: str
     similarity: float
     matched_query: str
+    displayed_products: tuple[dict[str, Any], ...] = ()
 
 
 def _cosine(left: list[float], right: list[float]) -> float:
@@ -122,7 +139,11 @@ class SemanticCache:
         return entries if isinstance(entries, list) else []
 
     async def lookup(
-        self, buyer_id: str, query: str, has_history: bool, scope: str = "",
+        self,
+        buyer_id: str,
+        query: str,
+        has_history: bool,
+        scope: str = "",
     ) -> Optional[SemanticHit]:
         if not self._enabled or has_history or not is_cacheable_query(query):
             return None
@@ -139,16 +160,29 @@ class SemanticCache:
         best: Optional[SemanticHit] = None
         for entry in entries:
             similarity = _cosine(vector, entry.get("vector", []))
-            if similarity >= self._threshold and (best is None or similarity > best.similarity):
+            if similarity >= self._threshold and (
+                best is None or similarity > best.similarity
+            ):
                 best = SemanticHit(
                     reply=entry.get("reply", ""),
                     similarity=round(similarity, 4),
                     matched_query=entry.get("query", ""),
+                    displayed_products=tuple(
+                        item
+                        for item in entry.get("displayed_products", [])
+                        if isinstance(item, dict)
+                    )[:5],
                 )
         return best if best and best.reply else None
 
     async def remember(
-        self, buyer_id: str, query: str, reply: str, has_history: bool, scope: str = "",
+        self,
+        buyer_id: str,
+        query: str,
+        reply: str,
+        has_history: bool,
+        scope: str = "",
+        displayed_products: tuple[dict[str, Any], ...] = (),
     ) -> None:
         if not self._enabled or has_history or not is_cacheable_query(query):
             return
@@ -162,7 +196,14 @@ class SemanticCache:
 
         key = self._bucket_key(buyer_id, scope)
         entries = await self._load_entries(buyer_id, scope)
-        entries.append({"query": _normalize(query), "reply": reply, "vector": vector})
+        entries.append(
+            {
+                "query": _normalize(query),
+                "reply": reply,
+                "vector": vector,
+                "displayed_products": list(displayed_products[:5]),
+            },
+        )
         try:
             await self._cache.set_json(key, entries[-_BUCKET_LIMIT:], _TTL_SECONDS)
         except Exception as err:  # noqa: BLE001

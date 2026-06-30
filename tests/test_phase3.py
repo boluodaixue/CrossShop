@@ -3,9 +3,11 @@
 
 全部不依赖真实 LLM 与外部服务：embedding 用确定性桩，向量库用 Qdrant 本地嵌入模式。
 """
+
 import asyncio
 import json
 
+import httpx
 import pytest
 from agentscope.credential import OpenAICredential
 from agentscope.embedding import EmbeddingModelBase, EmbeddingResponse
@@ -43,7 +45,9 @@ class TermAxisEmbedding(EmbeddingModelBase):
 
     async def __call__(self, inputs, **kwargs) -> EmbeddingResponse:
         texts = inputs if isinstance(inputs, list) else [inputs]
-        embeddings = [[1.0 if term in str(t) else 0.0 for term in _TERMS] for t in texts]
+        embeddings = [
+            [1.0 if term in str(t) else 0.0 for term in _TERMS] for t in texts
+        ]
         return EmbeddingResponse(embeddings=embeddings)
 
 
@@ -59,10 +63,12 @@ async def knowledge_base(tmp_path):
     docs = tmp_path / "knowledge"
     docs.mkdir()
     (docs / "outdoor.md").write_text(
-        "# 户外\n露营灯看防水等级与续航，登山杖优先钛合金。", encoding="utf-8",
+        "# 户外\n露营灯看防水等级与续航，登山杖优先钛合金。",
+        encoding="utf-8",
     )
     (docs / "guide.md").write_text(
-        "# 通则\n美国免税额度约 800 美元，运费按首件全价加续件折价计。", encoding="utf-8",
+        "# 通则\n美国免税额度约 800 美元，运费按首件全价加续件折价计。",
+        encoding="utf-8",
     )
     inserted = await bootstrap_category_knowledge(kb, knowledge_dir=docs)
     assert inserted == 2
@@ -72,7 +78,9 @@ async def knowledge_base(tmp_path):
 class TestCategoryKnowledge:
     async def test_bootstrap_is_idempotent(self, knowledge_base, tmp_path):
         # 第二次灌同一目录不应重复插入
-        again = await bootstrap_category_knowledge(knowledge_base, knowledge_dir=tmp_path / "knowledge")
+        again = await bootstrap_category_knowledge(
+            knowledge_base, knowledge_dir=tmp_path / "knowledge"
+        )
         assert again == 0
         assert len(await knowledge_base.list_documents()) == 2
 
@@ -192,7 +200,9 @@ class TestToolResilience:
     async def test_timeout_returns_error_chunk(self):
         registry = CircuitBreakerRegistry(failure_threshold=3, reset_seconds=60)
         middleware = ToolResilienceMiddleware(registry, timeouts={"slow_tool": 0.05})
-        tool = FunctionTool(_ok_tool_factory("slow_tool", delay=0.5), middlewares=[middleware])
+        tool = FunctionTool(
+            _ok_tool_factory("slow_tool", delay=0.5), middlewares=[middleware]
+        )
 
         result = await _call(tool)
         assert result.state == ToolResultState.ERROR
@@ -202,7 +212,9 @@ class TestToolResilience:
     async def test_circuit_opens_after_threshold(self):
         registry = CircuitBreakerRegistry(failure_threshold=2, reset_seconds=60)
         middleware = ToolResilienceMiddleware(registry)
-        tool = FunctionTool(_ok_tool_factory("flaky_tool", fail=True), middlewares=[middleware])
+        tool = FunctionTool(
+            _ok_tool_factory("flaky_tool", fail=True), middlewares=[middleware]
+        )
 
         assert (await _call(tool)).state == ToolResultState.ERROR
         assert (await _call(tool)).state == ToolResultState.ERROR
@@ -215,22 +227,80 @@ class TestToolResilience:
     async def test_half_open_probe_recovers(self):
         registry = CircuitBreakerRegistry(failure_threshold=1, reset_seconds=0)
         middleware = ToolResilienceMiddleware(registry)
-        failing = FunctionTool(_ok_tool_factory("recover_tool", fail=True), middlewares=[middleware])
+        failing = FunctionTool(
+            _ok_tool_factory("recover_tool", fail=True), middlewares=[middleware]
+        )
         assert (await _call(failing)).state == ToolResultState.ERROR
         assert registry.status("recover_tool") == "open"
 
         # reset_seconds=0 → 立即可转半开；探测成功后闭合
-        healthy = FunctionTool(_ok_tool_factory("recover_tool"), middlewares=[middleware])
+        healthy = FunctionTool(
+            _ok_tool_factory("recover_tool"), middlewares=[middleware]
+        )
         assert (await _call(healthy)).state == ToolResultState.SUCCESS
         assert registry.status("recover_tool") == "closed"
 
     async def test_success_resets_failure_counter(self):
         registry = CircuitBreakerRegistry(failure_threshold=2, reset_seconds=60)
         middleware = ToolResilienceMiddleware(registry)
-        failing = FunctionTool(_ok_tool_factory("mixed_tool", fail=True), middlewares=[middleware])
+        failing = FunctionTool(
+            _ok_tool_factory("mixed_tool", fail=True), middlewares=[middleware]
+        )
         healthy = FunctionTool(_ok_tool_factory("mixed_tool"), middlewares=[middleware])
 
         await _call(failing)  # 1 次失败
         await _call(healthy)  # 成功清零
         await _call(failing)  # 再 1 次失败，仍未达阈值
         assert registry.status("mixed_tool") == "closed"
+
+    async def test_product_breaker_is_isolated_by_platform(self):
+        registry = CircuitBreakerRegistry(failure_threshold=1, reset_seconds=60)
+        middleware = ToolResilienceMiddleware(registry)
+
+        async def product_search_tool(platform: str) -> ToolChunk:
+            del platform
+            request = httpx.Request("POST", "http://opensearch.invalid/_search")
+            raise httpx.ConnectError("connection reset", request=request)
+
+        tool = FunctionTool(product_search_tool, middlewares=[middleware])
+        result = await tool(platform="taobao")
+        if hasattr(result, "__aiter__"):
+            _ = [chunk async for chunk in result]
+
+        assert registry.status("product_search_tool:taobao") == "open"
+        assert registry.status("product_search_tool:globex_reference") == "closed"
+        assert registry.status("product_search_tool:amazon") == "closed"
+
+    def test_fixed_search_agent_scope_and_amazon_locales_share_platform_key(self):
+        amazon = ToolResilienceMiddleware(
+            CircuitBreakerRegistry(),
+            fixed_product_platform="amazon",
+        )
+        assert amazon._circuit_key("product_search_tool", {}) == (
+            "product_search_tool:amazon"
+        )
+        assert (
+            amazon._circuit_key(
+                "product_search_tool",
+                {"site_locale": "jp"},
+            )
+            == "product_search_tool:amazon"
+        )
+
+    async def test_product_validation_error_does_not_open_breaker(self):
+        registry = CircuitBreakerRegistry(failure_threshold=1, reset_seconds=60)
+        middleware = ToolResilienceMiddleware(registry)
+
+        async def product_search_tool(platform: str) -> ToolChunk:
+            del platform
+            return ToolChunk(
+                content=[TextBlock(type="text", text="[error] 参数错误")],
+                state=ToolResultState.ERROR,
+            )
+
+        tool = FunctionTool(product_search_tool, middlewares=[middleware])
+        result = await tool(platform="taobao")
+        if hasattr(result, "__aiter__"):
+            _ = [chunk async for chunk in result]
+
+        assert registry.status("product_search_tool:taobao") == "closed"

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import EventTimeline from "./components/EventTimeline";
 import ProductCards from "./components/ProductCards";
-import type { TradeEvent } from "./types";
+import type { DisplayedProduct, SubmitIntentResponse, TradeEvent } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const WS_BASE = API_BASE.replace(/^http/, "ws");
@@ -29,6 +29,18 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const finalSignatureRef = useRef("");
+  const requestCompletedRef = useRef(false);
+
+  const applyFinal = useCallback((text: string, displayed: DisplayedProduct[]): boolean => {
+    const signature = JSON.stringify([text, displayed.map((item) => item.card.product_id)]);
+    if (signature === finalSignatureRef.current) return false;
+    finalSignatureRef.current = signature;
+    requestCompletedRef.current = true;
+    setStreaming("");
+    setTurns((prev) => [...prev, { role: "agent", text }]);
+    return true;
+  }, []);
 
   // WS 订阅：按会话接收 Agent 过程事件（StrictMode 下会双次挂载，用 closed 标记避免早关告警）
   useEffect(() => {
@@ -60,11 +72,15 @@ export default function App() {
           setStreaming((prev) => prev + (event.payload.token ?? ""));
           return;
         }
-        setEvents((prev) => [...prev, event]);
         if (event.type === "final.result") {
-          setStreaming("");
-          setTurns((prev) => [...prev, { role: "agent", text: event.payload.text ?? "" }]);
+          const displayed =
+            (event.payload.displayed_products as DisplayedProduct[] | undefined) ?? [];
+          if (applyFinal(event.payload.text ?? "", displayed)) {
+            setEvents((prev) => [...prev, event]);
+          }
+          return;
         }
+        setEvents((prev) => [...prev, event]);
       };
     };
 
@@ -74,16 +90,18 @@ export default function App() {
       if (retryTimer) window.clearTimeout(retryTimer);
       wsRef.current?.close();
     };
-  }, [sessionId]);
+  }, [applyFinal, sessionId]);
 
   const submit = async () => {
     const query = input.trim();
     if (!query || busy) return;
     setInput("");
     setBusy(true);
+    finalSignatureRef.current = "";
+    requestCompletedRef.current = false;
     setTurns((prev) => [...prev, { role: "buyer", text: query }]);
     try {
-      await fetch(`${API_BASE}/commerce/intents`, {
+      const response = await fetch(`${API_BASE}/commerce/intents`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -94,8 +112,35 @@ export default function App() {
           raw_query: query,
         }),
       });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = (await response.json()) as SubmitIntentResponse;
+      const displayed = result.displayed_products ?? [];
+      if (applyFinal(result.final_text, displayed)) {
+        setEvents((prev) => [
+          ...prev,
+          {
+            type: "final.result",
+            payload: { text: result.final_text, displayed_products: displayed },
+            occurred_at: new Date().toISOString(),
+          },
+        ]);
+      }
     } catch (error) {
-      setTurns((prev) => [...prev, { role: "agent", text: `[error] 请求失败：${error}` }]);
+      // The WebSocket may have delivered the successful final event before the
+      // HTTP connection reports a late network failure. Do not replace that
+      // completed turn with a contradictory error reply.
+      if (requestCompletedRef.current) return;
+      const text = `[error] 请求失败：${error}`;
+      if (applyFinal(text, [])) {
+        setEvents((prev) => [
+          ...prev,
+          {
+            type: "final.result",
+            payload: { text, displayed_products: [] },
+            occurred_at: new Date().toISOString(),
+          },
+        ]);
+      }
     } finally {
       setBusy(false);
     }

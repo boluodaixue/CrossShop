@@ -21,11 +21,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from agentscope.agent import Agent
 from agentscope.event import (
@@ -34,6 +35,7 @@ from agentscope.event import (
     ToolResultEndEvent,
 )
 from agentscope.message import Msg, UserMsg
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.application.agents.main_agent import SessionRegistry
 from app.application.harness.drift_detector import DriftDetector
@@ -53,7 +55,7 @@ from app.domain.session.ports.session_store import (
     SessionStore,  # noqa: F401 —— 保留类型引用
 )
 from app.infrastructure.budget import init_budget
-from app.infrastructure.cache.semantic_cache import SemanticCache
+from app.infrastructure.cache.semantic_cache import SemanticCache, SemanticHit
 from app.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.security.output_guard import audit_output
@@ -86,6 +88,120 @@ class SubmitIntentInput:
 class SubmitIntentOutput:
     shopping_session_id: str
     final_text: str
+    displayed_products: tuple[dict[str, Any], ...] = ()
+
+
+class SelectedProductRef(BaseModel):
+    """A model-selected reference; product facts never come from this object."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    platform: Literal["globex_reference", "taobao", "amazon"]
+    product_id: str = Field(min_length=1)
+
+
+class MainAgentStructuredOutput(BaseModel):
+    """AgentScope-native final contract for every MainAgent turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    final_text: str = Field(min_length=1)
+    selected_products: list[SelectedProductRef] = Field(
+        default_factory=list,
+        max_length=5,
+    )
+
+
+@dataclass(frozen=True)
+class _MainTurnReply:
+    final_text: str
+    selected_products: tuple[SelectedProductRef, ...] = ()
+
+
+def _resolve_displayed_products(
+    selected: tuple[SelectedProductRef, ...],
+    events: list[Any],
+    prior_displayed: tuple[dict[str, Any], ...] = (),
+) -> tuple[dict[str, Any], ...]:
+    """Resolve exact model references against this turn's successful hits only."""
+
+    cards: dict[tuple[str, str], tuple[str | None, dict[str, Any]]] = {}
+    for displayed in prior_displayed:
+        card = displayed.get("card")
+        if not isinstance(card, dict):
+            continue
+        platform = displayed.get("platform")
+        site_locale = displayed.get("site_locale")
+        product_id = card.get("product_id")
+        if isinstance(platform, str) and isinstance(product_id, str):
+            cards[(platform, product_id)] = (site_locale, copy.deepcopy(card))
+    for event in events:
+        if getattr(event, "type", "") != "tool.result":
+            continue
+        payload = getattr(event, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("tool") != "product_search_tool" or payload.get("error"):
+            continue
+        platform = payload.get("platform")
+        site_locale = payload.get("site_locale")
+        hits = payload.get("hits")
+        if platform not in {"globex_reference", "taobao", "amazon"}:
+            continue
+        if not isinstance(hits, list):
+            continue
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            product_id = hit.get("product_id")
+            if isinstance(product_id, str) and product_id:
+                cards[(platform, product_id)] = (site_locale, copy.deepcopy(hit))
+
+    displayed: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for reference in selected:
+        key = (reference.platform, reference.product_id)
+        if key in seen:
+            continue
+        resolved = cards.get(key)
+        if resolved is None:
+            logger.warning(
+                "结构化最终选择引用不在本轮真实 hits 中，已拒绝：%s/%s",
+                reference.platform,
+                reference.product_id,
+            )
+            continue
+        actual_site_locale, card = resolved
+        seen.add(key)
+        displayed.append(
+            {
+                "rank": len(displayed) + 1,
+                "platform": reference.platform,
+                "site_locale": actual_site_locale,
+                "card": card,
+            },
+        )
+        if len(displayed) == 5:
+            break
+    return tuple(displayed)
+
+
+def _prior_displayed_products(agent: Agent) -> tuple[dict[str, Any], ...]:
+    namespace = agent.state.middle_context.get("globex_context_v1")
+    if not isinstance(namespace, dict):
+        return ()
+    context = namespace.get("session_context")
+    if not isinstance(context, dict):
+        return ()
+    recommendation = context.get("last_recommendation")
+    if not isinstance(recommendation, dict):
+        return ()
+    displayed = recommendation.get("displayed_products")
+    if not isinstance(displayed, list):
+        return ()
+    return tuple(copy.deepcopy(item) for item in displayed if isinstance(item, dict))[
+        :5
+    ]
 
 
 def _tasks_snapshot(agent: Agent) -> dict:
@@ -182,7 +298,9 @@ class MainAgentOrchestrator:
             self._drift_detector.start_turn(session_id, intent.raw_query)
         # 开始录事件轨迹（本轮结束后批量入库）
         trace = self._bus.subscribe(session_id) if self._conversation_store else None
+        selection_trace = self._bus.subscribe(session_id)
         final_text = ""
+        displayed_products: tuple[dict[str, Any], ...] = ()
         try:
             agent = await self._sessions.get_or_create(session_id)
             summary_before = agent.state.summary
@@ -190,23 +308,56 @@ class MainAgentOrchestrator:
             has_history = bool(agent.state.context)
             cached = await self._lookup_cache(intent, has_history)
             if cached is not None:
-                final_text = self._guard_final_text(session_id, cached)
-                self._bus.publish(session_id, "final.result", {"text": final_text})
+                final_text = self._guard_final_text(session_id, cached.reply)
+                displayed_products = cached.displayed_products
+                self._bus.publish(
+                    session_id,
+                    "final.result",
+                    {
+                        "text": final_text,
+                        "displayed_products": list(displayed_products),
+                    },
+                )
                 return SubmitIntentOutput(
-                    shopping_session_id=session_id, final_text=final_text
+                    shopping_session_id=session_id,
+                    final_text=final_text,
+                    displayed_products=displayed_products,
                 )
 
             inputs = await self._build_inputs(intent)
+            prior_displayed = _prior_displayed_products(agent)
 
-            final_text = await self._reply_with_retry(session_id, agent, inputs)
-            final_text = self._guard_final_text(session_id, final_text)
+            reply = await self._reply_with_retry(session_id, agent, inputs)
+            final_text = self._guard_final_text(session_id, reply.final_text)
+            turn_events = []
+            while not selection_trace.empty():
+                turn_events.append(selection_trace.get_nowait())
+            displayed_products = _resolve_displayed_products(
+                reply.selected_products,
+                turn_events,
+                prior_displayed,
+            )
             await self._check_drift(session_id)
 
             self._publish_compression(session_id, agent, summary_before)
-            self._bus.publish(session_id, "final.result", {"text": final_text})
-            await self._remember_cache(intent, final_text, has_history)
+            self._bus.publish(
+                session_id,
+                "final.result",
+                {
+                    "text": final_text,
+                    "displayed_products": list(displayed_products),
+                },
+            )
+            await self._remember_cache(
+                intent,
+                final_text,
+                has_history,
+                displayed_products,
+            )
             return SubmitIntentOutput(
-                shopping_session_id=session_id, final_text=final_text
+                shopping_session_id=session_id,
+                final_text=final_text,
+                displayed_products=displayed_products,
             )
         except Exception as err:  # noqa: BLE001 —— 兜底转事件，避免长任务静默失败
             logger.exception("MainAgent 异常")
@@ -239,6 +390,7 @@ class MainAgentOrchestrator:
                 int((time.monotonic() - started_at) * 1000),
                 trace,
             )
+            self._bus.unsubscribe(session_id, selection_trace)
             # 循环检测是"本轮内是不是在打转"的判定，轮末必须清零；
             # 阶段无关的顺序记录（SequencingTracker）则按会话保留，
             # 否则第 1 轮检索、第 3 轮下单会被误判为"未检索就下单"。
@@ -266,7 +418,7 @@ class MainAgentOrchestrator:
 
     async def _lookup_cache(
         self, intent: SubmitIntentInput, has_history: bool
-    ) -> Optional[str]:
+    ) -> Optional[SemanticHit]:
         """语义缓存查询；命中时发 cache.hit 事件让过程可见（不静默复用）。"""
         if self._semantic_cache is None:
             return None
@@ -278,21 +430,29 @@ class MainAgentOrchestrator:
         )
         if hit is None:
             return None
+        # 商品推荐必须经过真实 Agent 轮次写入 AgentState/L4，才能安全支持
+        # “刚才第 N 个/更多推荐”。只复用不含商品卡的普通咨询回复。
+        if hit.displayed_products:
+            logger.info("商品推荐语义缓存命中已旁路：%s", intent.raw_query)
+            return None
         logger.info("语义缓存命中（%.4f）：%s", hit.similarity, intent.raw_query)
         self._bus.publish(
             intent.shopping_session_id,
             "cache.hit",
             {"similarity": hit.similarity, "matched_query": hit.matched_query},
         )
-        return hit.reply
+        return hit
 
     async def _remember_cache(
         self,
         intent: SubmitIntentInput,
         final_text: str,
         has_history: bool,
+        displayed_products: tuple[dict[str, Any], ...] = (),
     ) -> None:
         if self._semantic_cache is None:
+            return
+        if displayed_products:
             return
         await self._semantic_cache.remember(
             intent.buyer_id,
@@ -300,6 +460,7 @@ class MainAgentOrchestrator:
             final_text,
             has_history,
             scope=await self._preference_scope(intent.buyer_id),
+            displayed_products=displayed_products,
         )
 
     async def _record_conversation(
@@ -361,7 +522,7 @@ class MainAgentOrchestrator:
 
     async def _reply_with_retry(
         self, session_id: str, agent: Agent, inputs: list[Msg]
-    ) -> str:
+    ) -> _MainTurnReply:
         """跑一轮 Agent 并映射事件流；上游瞬时错误按指数退避重试。"""
         last_error: Exception | None = None
         for attempt in range(_MAX_TURN_RETRIES + 1):
@@ -396,13 +557,25 @@ class MainAgentOrchestrator:
 
     async def _consume_reply(
         self, session_id: str, agent: Agent, inputs: list[Msg]
-    ) -> str:
+    ) -> _MainTurnReply:
         final_text = ""
+        selected_products: tuple[SelectedProductRef, ...] = ()
         # tool_call_id → 工具名，用于把 ToolResultEndEvent 关联回 Task 工具
         call_names: dict[str, str] = {}
-        async for event in agent.reply_stream(inputs or None, yield_final_msg=True):
+        async for event in agent.reply_stream(
+            inputs or None,
+            structured_schema=MainAgentStructuredOutput,
+            yield_final_msg=True,
+        ):
             if isinstance(event, Msg):
-                final_text = event.get_text_content() or ""
+                if event.structured_output is not None:
+                    structured = MainAgentStructuredOutput.model_validate(
+                        event.structured_output,
+                    )
+                    final_text = structured.final_text
+                    selected_products = tuple(structured.selected_products)
+                else:
+                    final_text = event.get_text_content() or ""
             elif isinstance(event, TextBlockDeltaEvent):
                 if event.delta:
                     self._bus.publish(
@@ -417,7 +590,10 @@ class MainAgentOrchestrator:
                 if tool_name in _TASK_TOOL_NAMES:
                     self._bus.publish(session_id, "plan.update", _tasks_snapshot(agent))
                 self._observe_for_drift(session_id, tool_name, event)
-        return final_text
+        return _MainTurnReply(
+            final_text=final_text,
+            selected_products=selected_products,
+        )
 
     def _observe_for_drift(
         self, session_id: str, tool_name: Optional[str], event: Any

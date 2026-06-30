@@ -13,6 +13,7 @@
 import asyncio
 import json
 
+import httpx
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import FunctionTool, ToolChunk
 
@@ -251,19 +252,26 @@ class TestHarnessMiddleware:
         registry = CircuitBreakerRegistry(failure_threshold=1, reset_seconds=60)
         chain = [
             _harness(),
-            ToolResilienceMiddleware(registry),
-        ]
-        failing = FunctionTool(
-            _tool_factory(
-                "product_search_tool", "[error] 下游报错", state=ToolResultState.ERROR
+            ToolResilienceMiddleware(
+                registry,
+                fixed_product_platform="taobao",
             ),
+        ]
+
+        async def product_search_tool() -> ToolChunk:
+            """Injected transient product-search failure."""
+            request = httpx.Request("POST", "http://opensearch.invalid/_search")
+            raise httpx.ConnectError("connection reset", request=request)
+
+        failing = FunctionTool(
+            product_search_tool,
             middlewares=chain,
         )
         token = ShoppingContext.set(SNAPSHOT)
         try:
             first = await _call(failing)
             assert first.state == ToolResultState.ERROR
-            assert registry.status("product_search_tool") == "open"
+            assert registry.status("product_search_tool:taobao") == "open"
 
             second = await _call(failing)
         finally:

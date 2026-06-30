@@ -469,7 +469,7 @@ def _record_business_event(event_type: str, payload: Any) -> None:
     if event_type == "error" or "error" in source:
         attributes["globex.error"] = True
     if event_type == "final.result":
-        cards = source.get("recommended_cards")
+        cards = source.get("displayed_products")
         if isinstance(cards, list):
             attributes["globex.recommended_count"] = len(cards)
     span.add_event(f"globex.{event_type}", attributes=attributes)

@@ -313,7 +313,7 @@ def test_intent_business_events_and_product_stages_share_one_trace(
         bus.publish(
             "session-private",
             "final.result",
-            {"text": "完整回复不应进入 trace", "recommended_cards": [{"id": "p1"}]},
+            {"text": "完整回复不应进入 trace", "displayed_products": [{"rank": 1}]},
         )
         assert root.is_recording()
     provider.shutdown()

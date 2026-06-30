@@ -8,12 +8,13 @@
 同一任务被消费两次），因此调用方必须自己保证幂等——create_order 是写操作，
 重复消费等于重复下单。
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 
 def _now_iso() -> str:
@@ -67,20 +68,18 @@ class TaskStatus:
     final_text: str = ""
     error: str = ""
     queue_position: int = 0
+    displayed_products: tuple[dict[str, Any], ...] = ()
 
 
 class TaskQueue(ABC):
     @abstractmethod
-    async def enqueue(self, task: IntentTask) -> None:
-        ...
+    async def enqueue(self, task: IntentTask) -> None: ...
 
     @abstractmethod
-    async def set_status(self, status: TaskStatus) -> None:
-        ...
+    async def set_status(self, status: TaskStatus) -> None: ...
 
     @abstractmethod
-    async def get_status(self, task_id: str) -> Optional[TaskStatus]:
-        ...
+    async def get_status(self, task_id: str) -> Optional[TaskStatus]: ...
 
     @abstractmethod
     async def depth(self) -> int:

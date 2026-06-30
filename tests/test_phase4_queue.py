@@ -6,6 +6,7 @@
     2. 重投超限进死信，坏消息不能无限重放阻塞队列；
     3. 事件总线接上背板后能跨进程送达，且远端事件不回环广播。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -111,11 +112,25 @@ class TestEnqueueAndStatus:
 
     async def test_done_status_carries_final_text(self):
         queue = RedisStreamTaskQueue(FakeStreamClient())
+        displayed = (
+            {
+                "rank": 1,
+                "platform": "taobao",
+                "site_locale": None,
+                "card": {"product_id": "P1", "title": "完整原标题"},
+            },
+        )
         await queue.set_status(
-            TaskStatus(task_id="task-1", state="done", final_text="推荐 LumenGo 89 元"),
+            TaskStatus(
+                task_id="task-1",
+                state="done",
+                final_text="推荐 LumenGo 89 元",
+                displayed_products=displayed,
+            ),
         )
         status = await queue.get_status("task-1")
         assert status.state == "done" and status.final_text == "推荐 LumenGo 89 元"
+        assert status.displayed_products == displayed
 
     async def test_missing_status_returns_none(self):
         assert await RedisStreamTaskQueue(FakeStreamClient()).get_status("nope") is None
@@ -152,7 +167,8 @@ class TestConsumeSemantics:
         client = FakeStreamClient()
         queue = RedisStreamTaskQueue(client)
         message_id = await client.xadd(
-            "globex:intents", {"payload": json.dumps(_task().to_dict())},
+            "globex:intents",
+            {"payload": json.dumps(_task().to_dict())},
         )
         client.pending[message_id] = 3  # 已投递 3 次
 
@@ -177,7 +193,11 @@ class TestConsumeSemantics:
             raise AssertionError("解析失败时不应调用 handler")
 
         await queue._handle_one(
-            _STREAM, "9-0", {"payload": "{不是 json"}, handler, max_deliveries=3,
+            _STREAM,
+            "9-0",
+            {"payload": "{不是 json"},
+            handler,
+            max_deliveries=3,
         )
         assert len(client.dead) == 1
         assert "9-0" in client.acked
@@ -204,7 +224,9 @@ class TestEventBackplane:
         await asyncio.sleep(0)  # 让 fire-and-forget 广播任务跑一轮
         await asyncio.sleep(0)
 
-        assert client.published, "接了背板后事件必须广播出去，否则 worker 的事件到不了 API 进程"
+        assert client.published, (
+            "接了背板后事件必须广播出去，否则 worker 的事件到不了 API 进程"
+        )
         channel, data = client.published[0]
         assert channel == "globex:events:s1"
         envelope = json.loads(data)
@@ -219,7 +241,9 @@ class TestEventBackplane:
         client = FakeStreamClient()
         backplane = RedisEventBackplane(client, origin="api-1")
         event = TradeEvent(
-            shopping_session_id="s1", type="task.queued", payload={"task_id": "t1"},
+            shopping_session_id="s1",
+            type="task.queued",
+            payload={"task_id": "t1"},
             occurred_at="2026-01-01T00:00:00Z",
         )
         await backplane.publish(event)
@@ -248,8 +272,12 @@ class TestEventBackplane:
         queue = bus.subscribe("s1")
 
         bus.deliver_local(
-            TradeEvent(shopping_session_id="s1", type="token.delta", payload={"token": "露"},
-                       occurred_at="2026-01-01T00:00:00Z"),
+            TradeEvent(
+                shopping_session_id="s1",
+                type="token.delta",
+                payload={"token": "露"},
+                occurred_at="2026-01-01T00:00:00Z",
+            ),
         )
         await asyncio.sleep(0)
 

@@ -4,12 +4,13 @@
 工具韧性中间件（复用 2.0 ToolMiddlewareBase 的洋葱式拦截）：
 
     超时：单次工具执行超过阈值即中断，返回结构化 error chunk，不把异常抛穿到 Agent 循环
-    熔断：按工具名统计连续失败，达阈值后打开熔断，reset_seconds 内直接短路返回降级提示；
+    熔断：普通工具按工具名、商品工具按平台统计连续失败；达到阈值后打开熔断，
+          reset_seconds 内直接短路返回降级提示；
           冷却期满转半开，放一次探测请求，成功即闭合、失败即重新打开
 
-设计取舍：熔断状态按 (工具名) 维度进程内共享（CircuitBreakerRegistry），
-让同一工具在不同 Agent 实例间共享故障视图；降级返回始终是 ToolChunk(ERROR)，
-Agent 能看到失败原因并如实告知买家，不会误以为工具成功。
+设计取舍：熔断状态在进程内共享；商品工具使用
+``product_search_tool:<platform>``，Amazon locale 共用 Amazon key，其他工具仍按名称。
+降级返回始终是 ToolChunk(ERROR)，Agent 能看到失败原因并如实告知买家。
 """
 
 from __future__ import annotations
@@ -24,13 +25,17 @@ from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolBase, ToolChunk, ToolMiddlewareBase
 
 from app.infrastructure.context import ShoppingContext
+from app.infrastructure.transient import is_retryable_dependency_error
 from app.infrastructure.eventbus import TradeEventBus
 
 logger = logging.getLogger(__name__)
 
 # 工具超时分级（秒）：检索/知识库偏长，订单要快，子代理调度最宽松
 DEFAULT_TIMEOUTS: dict[str, float] = {
-    "product_search_tool": 15.0,
+    # Covers at most two unchanged Embedding attempts + two unchanged
+    # OpenSearch attempts + one non-retried Reranker attempt.  A shorter outer
+    # timeout would cancel the approved dependency retry before it can run.
+    "product_search_tool": 130.0,
     "category_insight_tool": 15.0,
     "web_search_tool": 20.0,
     "create_order_tool": 10.0,
@@ -109,21 +114,48 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
         registry: CircuitBreakerRegistry,
         bus: Optional[TradeEventBus] = None,
         timeouts: Optional[dict[str, float]] = None,
+        fixed_product_platform: str | None = None,
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._timeouts = timeouts or DEFAULT_TIMEOUTS
+        self._fixed_product_platform = fixed_product_platform
+
+    def _circuit_key(self, tool_name: str, input_kwargs: dict[str, Any]) -> str:
+        if tool_name != "product_search_tool":
+            return tool_name
+        platform = self._fixed_product_platform or input_kwargs.get("platform")
+        return f"{tool_name}:{platform or 'unbound'}"
+
+    @staticmethod
+    def _counts_as_failure(tool_name: str, error: BaseException | None = None) -> bool:
+        if tool_name != "product_search_tool":
+            return True
+        if isinstance(error, asyncio.TimeoutError):
+            return True
+        return error is not None and is_retryable_dependency_error(error)
 
     def _timeout_for(self, tool_name: str) -> float:
         return self._timeouts.get(tool_name, _FALLBACK_TIMEOUT)
 
-    def _publish_circuit(self, tool_name: str, circuit: str, detail: str) -> None:
+    def _publish_circuit(
+        self,
+        tool_name: str,
+        circuit_key: str,
+        circuit: str,
+        detail: str,
+    ) -> None:
         if self._bus is None:
             return
         self._bus.publish(
             ShoppingContext.current_session_id(),
             "tool.result",
-            {"tool": tool_name, "circuit": circuit, "error": detail},
+            {
+                "tool": tool_name,
+                "circuit_key": circuit_key,
+                "circuit": circuit,
+                "error": detail,
+            },
         )
 
     async def on_tool_call(
@@ -133,11 +165,12 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
         next_handler: Callable[..., AsyncGenerator[ToolChunk, None]],
     ) -> AsyncGenerator[ToolChunk, None]:
         tool_name = tool.name
+        circuit_key = self._circuit_key(tool_name, input_kwargs)
 
-        if not await _allow(self._registry, tool_name):
+        if not await _allow(self._registry, circuit_key):
             detail = f"{tool_name} 连续失败已熔断，暂不可用，请稍后再试或改用其他方式"
             logger.warning("工具熔断短路：%s", tool_name)
-            self._publish_circuit(tool_name, "open", detail)
+            self._publish_circuit(tool_name, circuit_key, "open", detail)
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {detail}")],
                 state=ToolResultState.ERROR,
@@ -156,12 +189,16 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
                 return collected
 
             chunks = await asyncio.wait_for(_collect(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await _record_failure(self._registry, tool_name)
+        except asyncio.TimeoutError as err:
+            if self._counts_as_failure(tool_name, err):
+                await _record_failure(self._registry, circuit_key)
             detail = f"{tool_name} 执行超过 {timeout:.0f} 秒已中断"
             logger.warning("工具超时：%s（%.0fs）", tool_name, timeout)
             self._publish_circuit(
-                tool_name, await _status(self._registry, tool_name), detail
+                tool_name,
+                circuit_key,
+                await _status(self._registry, circuit_key),
+                detail,
             )
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {detail}")],
@@ -169,13 +206,17 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
             )
             return
         except Exception as err:  # noqa: BLE001 —— 未捕获异常也计入失败并降级
-            await _record_failure(self._registry, tool_name)
+            if self._counts_as_failure(tool_name, err):
+                await _record_failure(self._registry, circuit_key)
             detail = f"{tool_name} 执行异常，请稍后重试"
             # 完整异常只保留在服务端日志；EventBus 与 ToolChunk 不回显
             # URL、令牌或依赖内部细节。
             logger.exception("工具异常：%s", tool_name)
             self._publish_circuit(
-                tool_name, await _status(self._registry, tool_name), detail
+                tool_name,
+                circuit_key,
+                await _status(self._registry, circuit_key),
+                detail,
             )
             yield ToolChunk(
                 content=[TextBlock(type="text", text=f"[error] {detail}")],
@@ -183,11 +224,13 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
             )
             return
 
-        # 工具自身返回 ERROR 也计入连续失败（如下游 5xx 持续报错）
+        # 非商品工具保留既有 ERROR 计数；商品工具只有携带已分类瞬时异常
+        # 或发生外层超时才计数，真实空结果/参数错误不会打开平台熔断。
         if chunks and chunks[-1].state == ToolResultState.ERROR:
-            await _record_failure(self._registry, tool_name)
+            if self._counts_as_failure(tool_name):
+                await _record_failure(self._registry, circuit_key)
         else:
-            await _record_success(self._registry, tool_name)
+            await _record_success(self._registry, circuit_key)
 
         for chunk in chunks:
             yield chunk

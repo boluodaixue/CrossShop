@@ -5,6 +5,7 @@
     1. Redis 故障必须旁路，不能把缓存变成新的单点；
     2. 写操作意图（下单/取消）与上下文依赖问句绝不能进语义缓存。
 """
+
 from __future__ import annotations
 
 import pytest
@@ -145,7 +146,9 @@ class TestSemanticCacheSafety:
     async def test_order_intent_never_written_to_cache(self):
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.9)
-        await sem.remember("b1", "帮我下单这款露营灯", "已为你创建订单 GBX-000001", has_history=False)
+        await sem.remember(
+            "b1", "帮我下单这款露营灯", "已为你创建订单 GBX-000001", has_history=False
+        )
         assert await sem.lookup("b1", "帮我下单这款露营灯", has_history=False) is None
 
 
@@ -153,25 +156,59 @@ class TestSemanticCacheHit:
     async def test_same_query_hits(self):
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.95)
-        await sem.remember("b1", "300 元以内的露营灯推荐", "推荐 LumenGo 露营灯，89 元", has_history=False)
+        await sem.remember(
+            "b1",
+            "300 元以内的露营灯推荐",
+            "推荐 LumenGo 露营灯，89 元",
+            has_history=False,
+        )
 
         hit = await sem.lookup("b1", "300 元以内的露营灯推荐", has_history=False)
         assert hit is not None
         assert hit.reply == "推荐 LumenGo 露营灯，89 元"
         assert hit.similarity >= 0.95
 
+    async def test_hit_restores_verified_displayed_products(self):
+        cache = InMemoryCache()
+        sem = SemanticCache(cache, CountingEmbedder(), threshold=0.95)
+        displayed = (
+            {
+                "rank": 1,
+                "platform": "taobao",
+                "site_locale": None,
+                "card": {"product_id": "P1", "title": "完整原标题"},
+            },
+        )
+        await sem.remember(
+            "b1",
+            "露营灯推荐",
+            "推荐 P1 完整原标题",
+            has_history=False,
+            displayed_products=displayed,
+        )
+
+        hit = await sem.lookup("b1", "露营灯推荐", has_history=False)
+
+        assert hit is not None
+        assert hit.displayed_products == displayed
+
     async def test_punctuation_variant_hits(self):
         """归一化后"多少钱?"与"多少钱"应共享缓存。"""
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.95)
         await sem.remember("b1", "美国免税额度是多少", "800 美元", has_history=False)
-        assert await sem.lookup("b1", "美国免税额度是多少？", has_history=False) is not None
+        assert (
+            await sem.lookup("b1", "美国免税额度是多少？", has_history=False)
+            is not None
+        )
 
     async def test_buyers_are_isolated(self):
         """回复里可能含买家偏好与地址，不能跨买家复用。"""
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.9)
-        await sem.remember("b1", "露营灯推荐", "按你不要塑料的偏好推荐 X", has_history=False)
+        await sem.remember(
+            "b1", "露营灯推荐", "按你不要塑料的偏好推荐 X", has_history=False
+        )
         assert await sem.lookup("b2", "露营灯推荐", has_history=False) is None
 
     async def test_no_hit_when_session_has_history(self):
@@ -204,23 +241,39 @@ class TestPreferenceScopedCache:
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.9)
         await sem.remember(
-            "b1", "旅行三件套推荐", "按你不要塑料的偏好推荐 X",
-            has_history=False, scope="pref-v1",
+            "b1",
+            "旅行三件套推荐",
+            "按你不要塑料的偏好推荐 X",
+            has_history=False,
+            scope="pref-v1",
         )
 
         # 偏好撤回后指纹变了，旧回复不得命中
-        assert await sem.lookup(
-            "b1", "旅行三件套推荐", has_history=False, scope="pref-v2",
-        ) is None
+        assert (
+            await sem.lookup(
+                "b1",
+                "旅行三件套推荐",
+                has_history=False,
+                scope="pref-v2",
+            )
+            is None
+        )
 
     async def test_same_scope_still_hits(self):
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.9)
         await sem.remember(
-            "b1", "旅行三件套推荐", "推荐 X", has_history=False, scope="pref-v1",
+            "b1",
+            "旅行三件套推荐",
+            "推荐 X",
+            has_history=False,
+            scope="pref-v1",
         )
         hit = await sem.lookup(
-            "b1", "旅行三件套推荐", has_history=False, scope="pref-v1",
+            "b1",
+            "旅行三件套推荐",
+            has_history=False,
+            scope="pref-v1",
         )
         assert hit is not None and hit.reply == "推荐 X"
 
@@ -229,9 +282,15 @@ class TestPreferenceScopedCache:
         cache = InMemoryCache()
         sem = SemanticCache(cache, CountingEmbedder(), threshold=0.9)
         await sem.remember("b1", "旅行三件套推荐", "无偏好时的推荐", has_history=False)
-        assert await sem.lookup(
-            "b1", "旅行三件套推荐", has_history=False, scope="pref-v1",
-        ) is None
+        assert (
+            await sem.lookup(
+                "b1",
+                "旅行三件套推荐",
+                has_history=False,
+                scope="pref-v1",
+            )
+            is None
+        )
 
 
 class TestIdempotencyKey:
