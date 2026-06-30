@@ -46,7 +46,9 @@ class L4Context:
 
     ``last_recommendation`` remains optional and is populated only from the
     authoritative structured selection after its product references are
-    validated against real hits. Natural-language prose is never parsed.
+    validated against real hits. Its current display and bounded verified
+    display history share the same record; natural-language prose is never
+    parsed.
     """
 
     schema_version: str = SCHEMA_VERSION

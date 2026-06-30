@@ -123,7 +123,7 @@ def _resolve_displayed_products(
     events: list[Any],
     prior_displayed: tuple[dict[str, Any], ...] = (),
 ) -> tuple[dict[str, Any], ...]:
-    """Resolve exact model references against this turn's successful hits only."""
+    """Resolve exact refs against current hits or bounded verified session history."""
 
     cards: dict[tuple[str, str], tuple[str | None, dict[str, Any]]] = {}
     for displayed in prior_displayed:
@@ -166,7 +166,7 @@ def _resolve_displayed_products(
         resolved = cards.get(key)
         if resolved is None:
             logger.warning(
-                "结构化最终选择引用不在本轮真实 hits 中，已拒绝：%s/%s",
+                "结构化最终选择引用不在本轮真实 hits 或已验证历史中，已拒绝：%s/%s",
                 reference.platform,
                 reference.product_id,
             )
@@ -196,11 +196,14 @@ def _prior_displayed_products(agent: Agent) -> tuple[dict[str, Any], ...]:
     recommendation = context.get("last_recommendation")
     if not isinstance(recommendation, dict):
         return ()
-    displayed = recommendation.get("displayed_products")
+    displayed = recommendation.get("displayed_history")
+    if not isinstance(displayed, list):
+        # Restore older session-context-v1 snapshots without a migration step.
+        displayed = recommendation.get("displayed_products")
     if not isinstance(displayed, list):
         return ()
     return tuple(copy.deepcopy(item) for item in displayed if isinstance(item, dict))[
-        :5
+        :20
     ]
 
 

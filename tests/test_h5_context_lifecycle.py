@@ -232,6 +232,103 @@ def test_l4_accepts_verified_structured_selection_without_parsing_prose() -> Non
     assert len(card["skus"]) == 5
     assert "internal_blob" not in card
     assert "internal" not in card["skus"][0]
+    assert (
+        state.last_recommendation["displayed_history"]
+        == (state.last_recommendation["displayed_products"])
+    )
+
+
+def test_l4_keeps_verified_display_history_across_category_switches() -> None:
+    first = reduce_l4(
+        {"shopping_session_id": "session-1", "raw_query": "找露营灯"},
+        [
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-1",
+                    "args": {
+                        "normalized_query": "露营灯",
+                        "category": "户外照明",
+                        "platform": "globex_reference",
+                    },
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-1",
+                    "raw_output": {
+                        "hits": [{"product_id": "P1008", "title": "露营灯"}],
+                    },
+                },
+            },
+            {
+                "type": "final.result",
+                "payload": {
+                    "structured_output": {
+                        "final_text": "推荐露营灯",
+                        "selected_products": [
+                            {
+                                "platform": "globex_reference",
+                                "product_id": "P1008",
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+    )
+    switched = reduce_l4(
+        {"shopping_session_id": "session-1", "raw_query": "改找毛巾"},
+        [
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-2",
+                    "args": {
+                        "normalized_query": "速干毛巾",
+                        "category": "旅行装备",
+                        "platform": "globex_reference",
+                    },
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-2",
+                    "raw_output": {
+                        "hits": [{"product_id": "P1007", "title": "速干毛巾"}],
+                    },
+                },
+            },
+            {
+                "type": "final.result",
+                "payload": {
+                    "structured_output": {
+                        "final_text": "推荐毛巾",
+                        "selected_products": [
+                            {
+                                "platform": "globex_reference",
+                                "product_id": "P1007",
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+        first,
+    )
+
+    assert switched.last_recommendation is not None
+    assert switched.last_recommendation["product_refs"] == ["P1007"]
+    assert [
+        item["card"]["product_id"]
+        for item in switched.last_recommendation["displayed_history"]
+    ] == ["P1007", "P1008"]
 
 
 @pytest.mark.asyncio

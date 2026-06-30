@@ -176,11 +176,20 @@ uv run ruff check .                    # 统一静态检查；规则由 pyprojec
 uv run pytest                          # 完整单测回归
 uv run python scripts/smoke_e2e.py    # 端到端冒烟：WS 订阅 + 提交意图，实时打印事件流
 uv run python scripts/verify_parallel.py   # 并行验证：同轮多派 vs 串行的墙钟耗时与事件重叠数对比
-uv run python scripts/eval_regression.py   # 评测回归：13 条 case，LLM judge 按 P0/P1/P2 Rubric 打分出报告
+SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.rubric_runner  # V2 Rubric：本地轨迹 + 当前商品事实 + P0/P1/P2 分栏报告
 ```
 
-评测 case 支持 `prior_context` 字段：把跨会话已成立的事实（如上一 case 写入的长期偏好）告知 judge，
-否则 judge 只看本会话记录，会把"正确应用历史偏好"误判为"无据添加"。
+V2 用例位于 `eval/rubric_cases_v2.yaml`。P1 使用本地 EventBus/OTel 执行证据，
+商品事实来自当前 `ProductRepository`；LangFuse 只用于外部观察，不是评分依赖。
+运行器按 run scope 隔离买家身份，依赖用例只有在前置 P0 全过且 P1 零失败时才执行；
+每轮保存脱敏输入、工具/Trace、L4 状态投影与偏好前后指纹，并在根目录写源码、用例和
+catalog manifest 哈希。报告分别给出 P0 红线、P1 违规扣分与 P2 质量分，不计算未经
+人工校准的加权总分；`SCORED` 只表示协议完成且未触发 P0，不自动等同于发布 `PASS`。
+
+完整运行证据默认写入被 Git 忽略的 `artifacts/`，只保存在当前受控本机，避免把完整对话和
+知识正文提交到仓库；因此 Git clone 只能复跑评测，不能还原某次本地报告。品类知识正文不
+发送给外部 Judge，Judge 只检查路由、回答边界和表达；知识数字的真实性由正式卡发布审核及
+独立的品类 Recall/MRR/NDCG 评测负责，运行 manifest 通过 release/cards 哈希锚定知识版本。
 
 ## Docker 部署
 

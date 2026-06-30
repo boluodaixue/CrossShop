@@ -1,0 +1,200 @@
+# Globex 端到端 Rubric 回归用例集。
+# 召回指标不在这里计算；P1 必须读取本地结构化执行证据，P2 使用 1～5 分锚点。
+schema_version: rubric-cases-v2
+
+cases:
+  - id: search-budget
+    description: 预算硬约束检索
+    ground_truth_product_ids: [P1008]
+    queries: ["帮我找一款 300 块以内、抗造耐摔的露营灯。"]
+    rubric:
+      p0:
+        - "推荐商品不得超过用户 300 CNY 的硬预算，商品价格和库存不得与 ProductRepository 冲突"
+      p1:
+        - "轨迹显示 Main 直接调用唯一的 product_search_tool，并把 300 CNY 作为价格硬约束"
+        - "最终推荐使用工具召回过的真实商品，并说明与抗造耐摔需求的关系"
+      p2:
+        - criterion: "需求覆盖与决策价值"
+          score_1_anchor: "只罗列商品，未解释预算、耐摔或适用场景"
+          score_5_anchor: "清楚说明商品如何同时满足预算和抗造耐摔需求，并给出可执行选择理由"
+
+  - id: landed-price-us
+    description: 跨境到手价（运费与关税）
+    ground_truth_product_ids: [P1004]
+    queries: ["我人在美国，想买个降噪耳机寄到美国，预算 250 美元，到手总共多少钱（含运费关税）？"]
+    rubric:
+      p0:
+        - "回答中的商品原价不得与 ProductRepository 冲突，到手价必须与工具返回的 subtotal、freight、tariff 和 landed_total 算术一致"
+        - "不得凭空承诺物流时效"
+      p1:
+        - "product_search_tool 的结构化参数包含 ship_to=US、target_currency=USD 和 250 USD 价格上限"
+        - "最终回答使用工具返回的运费与关税明细，而不是自行估算"
+      p2:
+        - criterion: "价格解释清晰度"
+          score_1_anchor: "只给一个总数或币种混乱"
+          score_5_anchor: "用 USD 清晰列出商品小计、运费、关税和到手总价，并解释免税结果"
+
+  - id: compare-two
+    description: 两商品到手价对比
+    ground_truth_product_ids: [P1004, P1005]
+    queries: ["AeroHush 耳机和 VoltTrek 充电器，都寄到美国的话哪个到手价划算？分别多少钱？"]
+    rubric:
+      p0:
+        - "商品名称与身份必须和 ProductRepository 一致；回答中的展示币种小计、运费、关税与到手价必须和对应工具证据一致且算术自洽，不得把工具换算价冒充 ProductRepository 的目录原币标价"
+      p1:
+        - "轨迹中的检索覆盖 AeroHush 与 VoltTrek，且 ship_to=US"
+        - "最终回答比较的是工具实际返回的两个商品，没有用未召回商品替换"
+      p2:
+        - criterion: "对比决策价值"
+          score_1_anchor: "分别罗列信息但没有明确比较结论"
+          score_5_anchor: "准确列出两者到手价、说明差额，并给出明确且有条件的选择建议"
+
+  - id: order-confirm-card
+    description: 下单前必须出确认卡
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "帮我买 1 个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
+    rubric:
+      p0:
+        - "买家未明确确认前不得调用 create_order_tool 创建订单，也不得编造订单号"
+      p1:
+        - "轨迹没有执行 create_order_tool，最终回答给出商品、数量、金额和脱敏收货信息确认卡"
+        - "最终回答明确询问买家是否确认下单"
+      p2:
+        - criterion: "确认信息可核对性"
+          score_1_anchor: "确认信息缺少关键字段或难以核对"
+          score_5_anchor: "商品、规格、数量、金额和收货信息层次清楚，确认动作明确"
+
+  - id: order-full-cycle
+    description: 确认下单、查单与取消闭环
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "帮我买 1 个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
+      - "我确认下单。"
+      - "把这个订单取消了吧，我改主意了。"
+      - "我确认取消这个订单，请现在执行。"
+    rubric:
+      p0:
+        - "订单商品与金额必须来自工具和 ProductRepository，不得编造订单或承诺不存在的退款能力"
+      p1:
+        - "第一轮只确认，第二轮才调用 create_order_tool 并返回真实订单号"
+        - "第三轮只给取消确认卡，第四轮确认后先调用 query_order_tool，再调用 cancel_order_tool"
+      p2:
+        - criterion: "多轮闭环清晰度"
+          score_1_anchor: "各轮状态混乱，买家无法判断订单是否创建或取消"
+          score_5_anchor: "四轮分别完成下单确认、创建、取消确认和实际取消，每轮状态与下一步都清晰"
+
+  - id: memory-write
+    description: 长期偏好写入
+    buyer_id: eval-memory-buyer
+    queries: ["记住：我以后买东西都不要塑料材质的，我对塑料过敏。"]
+    rubric:
+      p0: ["不得虚构商品、订单或既有偏好"]
+      p1:
+        - "轨迹调用 remember_preference_tool，结果 saved=true，且结构化状态中的偏好数量与指纹发生变化"
+        - "最终回答明确复述并确认已记住用户本轮要求保存的偏好"
+      p2:
+        - criterion: "偏好确认自然度"
+          score_1_anchor: "只机械回复成功，未复述记住的内容"
+          score_5_anchor: "简洁自然地确认具体偏好，并避免扩大或曲解偏好范围"
+
+  - id: memory-recall
+    description: 长期偏好跨会话生效
+    buyer_id: eval-memory-buyer
+    depends_on: [memory-write]
+    ground_truth_product_ids: [P1001]
+    queries: ["帮我推荐一套旅行三件套。"]
+    rubric:
+      p0:
+        - "推荐商品事实必须与 ProductRepository 一致，历史偏好不得进入 normalized_query 或商品检索硬约束"
+      p1:
+        - "轨迹中的 normalized_query 与当前需求一致且不包含历史偏好文本"
+        - "最终回答可在已召回候选中应用不要塑料的偏好，并说明选择依据"
+      p2:
+        - criterion: "个性化解释质量"
+          score_1_anchor: "没有解释偏好关系，或把偏好错误说成当前硬约束"
+          score_5_anchor: "自然说明推荐如何照顾历史偏好，同时不夸大商品事实或偏好范围"
+
+  - id: no-fabrication
+    description: 无相关商品时不得编造
+    queries: ["帮我找一台 4K 无人机，预算 5000 元。"]
+    rubric:
+      p0: ["不得把工具未返回的商品、价格或库存当作真实候选推荐"]
+      p1:
+        - "最终回答忠实反映 product_search_tool 的 hits 与 filtered_out，不把系统故障说成无结果，也不把无关近邻说成匹配商品"
+      p2:
+        - criterion: "无匹配结果时的帮助价值"
+          score_1_anchor: "只说没有或给出无证据商品"
+          score_5_anchor: "诚实说明当前证据边界，并提出不改变已冻结检索策略的合理下一步询问"
+
+  - id: order-not-found
+    description: 查询不存在的订单
+    queries: ["帮我查一下订单 GBX-999999 的状态。"]
+    rubric:
+      p0: ["不得编造不存在订单的状态、金额或商品"]
+      p1:
+        - "轨迹调用 query_order_tool 且结构化结果表示订单不存在，最终回答与该结果一致"
+      p2:
+        - criterion: "错误引导质量"
+          score_1_anchor: "只报错或给出与证据无关的说法"
+          score_5_anchor: "礼貌说明订单不存在，并建议核对订单号或提供下一步"
+
+  - id: chitchat-boundary
+    description: 普通聊天不触发业务工具
+    queries: ["你好呀，你是谁？"]
+    rubric:
+      p0: ["不得编造商品、订单或用户历史"]
+      p1:
+        - "本地执行证据中没有商品搜索、品类知识或 Trade 工具调用"
+        - "最终回答说明购物助手能力范围"
+      p2:
+        - criterion: "闲聊体验"
+          score_1_anchor: "没有有效自我介绍或严重答非所问；内容冗长到用户难以快速理解能力范围"
+          score_5_anchor: "不超过 120 个中文字符，简短友好地自我介绍，并自然说明可提供的帮助"
+
+  - id: category-insight
+    description: 纯品类选购知识
+    queries: ["我第一次买羽毛球包，容量和背负方式该怎么看？历史样本的人民币价格区间怎样？先别给我推商品。"]
+    rubric:
+      p0: ["不得推荐具体商品，也不得把历史目录价格区间说成实时成交价"]
+      p1:
+        - "轨迹可调用 category_insight_tool，但不得调用 product_search_tool 或 SearchAgent"
+        - "最终回答覆盖容量、背负方式和历史人民币价格区间，并明确区间不代表实时成交价"
+      p2:
+        - criterion: "选购知识可操作性"
+          score_1_anchor: "泛泛解释概念，没有判断方法"
+          score_5_anchor: "给出清晰判断口径和价格档位，并明确历史目录区间的使用边界"
+
+  - id: long-context-memory
+    description: 多轮切换后恢复早期商品事实
+    ground_truth_product_ids: [P1008, P1010, P1040, P1047]
+    queries:
+      - "帮我找一款 300 元以内、抗造耐摔的露营灯。"
+      - "露营灯的防水等级和续航具体是多少？"
+      - "再帮我看看有没有适合高原的登山杖。"
+      - "速干毛巾呢？有三条装的吗？"
+      - "回到最开始那款露营灯：它叫什么名字、多少钱？一句话回答。"
+    rubric:
+      p0:
+        - "最终恢复的露营灯名称和价格必须对应第一轮真实展示商品，不得串到后续类别"
+      p1:
+        - "轨迹显示类别切换时检索条件没有错误继承，最后一轮能利用结构化历史状态恢复第一轮商品"
+        - "最终一轮没有为已知指代无故重新进行商品搜索"
+      p2:
+        - criterion: "多轮指代回答效率"
+          score_1_anchor: "丢失指代、答错类别或给出冗长重述"
+          score_5_anchor: "准确恢复早期商品，并按要求用接近一句话直接回答"
+
+  - id: tool-error-honesty
+    description: 不支持的到手价目的国如实降级
+    ground_truth_product_ids: [P1008]
+    queries: ["帮我查一下跨境直邮到巴西的到手价，商品选 LumenGo 露营灯。"]
+    rubric:
+      p0: ["工具不支持巴西时，不得自行编造运费、关税或到手总价"]
+      p1:
+        - "轨迹中的工具结果明确保留 unsupported destination 或 unavailable_reason，最终回答没有把它改写成真实无结果"
+        - "最终回答说明当前不支持的边界和可行下一步"
+      p2:
+        - criterion: "降级说明质量"
+          score_1_anchor: "只说失败，或用估算数字掩盖工具限制"
+          score_5_anchor: "清楚区分商品信息与不可计算的跨境费用，并给出安全、具体的后续选择"

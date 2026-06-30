@@ -35,6 +35,7 @@ _MAX_ITEMS = 10
 _MAX_REFS = 20
 _MAX_STRING = 512
 _MAX_DISPLAYED_PRODUCTS = 5
+_MAX_DISPLAYED_HISTORY = 20
 _MAX_DISPLAYED_SKUS = 5
 _MAX_HIGHLIGHTS = 8
 _PLATFORM_ORDER = {"globex_reference": 0, "taobao": 1, "amazon": 2}
@@ -213,7 +214,12 @@ def reduce_l4(
     dispatch_searches: list[dict[str, Any]] = []
     candidate_cards: dict[tuple[str, str], tuple[str | None, dict[str, Any]]] = {}
     prior_recommendation = state.get("last_recommendation") or {}
-    for displayed in prior_recommendation.get("displayed_products", []):
+    prior_history = prior_recommendation.get("displayed_history")
+    if not isinstance(prior_history, list):
+        # Backward-compatible restore for session-context-v1 snapshots written
+        # before verified display history was retained.
+        prior_history = prior_recommendation.get("displayed_products", [])
+    for displayed in prior_history:
         if not isinstance(displayed, Mapping):
             continue
         card = displayed.get("card")
@@ -390,8 +396,8 @@ def reduce_l4(
         }
 
     # The MainAgent now returns an AgentScope-native structured selection.
-    # Validate exact references against successful current hits or the prior
-    # verified recommendation.  Natural-language prose is still never parsed.
+    # Validate exact references against successful current hits or bounded
+    # verified display history. Natural-language prose is still never parsed.
     final_structured: Mapping[str, Any] | None = None
     for kind, payload, _occurred_at in reversed(normalized):
         structured = payload.get("structured_output")
@@ -423,6 +429,23 @@ def reduce_l4(
                     },
                 )
         if displayed_products or current_search_seen:
+            displayed_history: list[dict[str, Any]] = []
+            history_seen: set[tuple[str, str]] = set()
+            for displayed in [*displayed_products, *prior_history]:
+                if not isinstance(displayed, Mapping):
+                    continue
+                card = displayed.get("card")
+                if not isinstance(card, Mapping):
+                    continue
+                platform = str(displayed.get("platform") or "")
+                product_id = str(card.get("product_id") or "")
+                key = (platform, product_id)
+                if not platform or not product_id or key in history_seen:
+                    continue
+                history_seen.add(key)
+                displayed_history.append(copy.deepcopy(dict(displayed)))
+                if len(displayed_history) == _MAX_DISPLAYED_HISTORY:
+                    break
             state["last_recommendation"] = {
                 "status": "succeeded",
                 "displayed_count": len(displayed_products),
@@ -430,6 +453,10 @@ def reduce_l4(
                     item["card"]["product_id"] for item in displayed_products
                 ],
                 "displayed_products": displayed_products,
+                # Current-turn semantics stay in ``displayed_products``.  This
+                # bounded, verified window only lets a later turn return a card
+                # that the same session actually displayed before.
+                "displayed_history": displayed_history,
             }
 
     candidate = L4Context.from_dict(state)

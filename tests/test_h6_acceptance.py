@@ -24,6 +24,7 @@ from app.application.agents.orchestrator import (
     MainAgentOrchestrator,
     SelectedProductRef,
     SubmitIntentInput,
+    _prior_displayed_products,
     _resolve_displayed_products,
 )
 from app.infrastructure.cache.semantic_cache import SemanticHit
@@ -121,6 +122,9 @@ def test_h6_prompt_covers_multi_turn_route_and_reference_boundaries() -> None:
         "product_id 必须逐字符复制完整值",
         "身份行数量和顺序必须与 selected_products 完全一致",
         "最终清单与 selected_products 必须恰好 N 件",
+        "本会话此前已展示商品",
+        "必须先调用 query_order_tool 验证订单仍为 CONFIRMED",
+        "即使 MainAgent 单干也必须遵守这个顺序",
     )
     for fragment in required:
         assert fragment in prompt
@@ -221,6 +225,57 @@ def test_structured_selection_uses_only_exact_successful_hits_in_model_order() -
     assert [item["card"]["product_id"] for item in displayed] == ["P2", "P1"]
     assert [item["rank"] for item in displayed] == [1, 2]
     assert displayed[0]["card"]["title"] == "完整原标题二"
+
+
+def test_prior_displayed_products_prefers_bounded_verified_history() -> None:
+    agent = SimpleNamespace(
+        state=SimpleNamespace(
+            middle_context={
+                "globex_context_v1": {
+                    "session_context": {
+                        "last_recommendation": {
+                            "displayed_products": [
+                                {
+                                    "platform": "globex_reference",
+                                    "card": {"product_id": "CURRENT"},
+                                },
+                            ],
+                            "displayed_history": [
+                                {
+                                    "platform": "globex_reference",
+                                    "card": {"product_id": f"P-{index}"},
+                                }
+                                for index in range(25)
+                            ],
+                        },
+                    },
+                },
+            },
+        ),
+    )
+
+    displayed = _prior_displayed_products(agent)
+
+    assert len(displayed) == 20
+    assert displayed[0]["card"]["product_id"] == "P-0"
+    assert displayed[-1]["card"]["product_id"] == "P-19"
+
+
+def test_structured_selection_can_return_verified_earlier_product() -> None:
+    prior = (
+        {
+            "rank": 1,
+            "platform": "globex_reference",
+            "site_locale": None,
+            "card": {"product_id": "P1008", "title": "LumenGo 便携露营灯"},
+        },
+    )
+    selected = (SelectedProductRef(platform="globex_reference", product_id="P1008"),)
+
+    displayed = _resolve_displayed_products(selected, [], prior)
+
+    assert displayed[0]["card"]["product_id"] == "P1008"
+    assert displayed[0]["rank"] == 1
 
 
 def test_structured_selection_derives_unscoped_amazon_locale_from_tool() -> None:
