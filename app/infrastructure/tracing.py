@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _initialized = False
 _provider: Any | None = None
-_flush_timeout_seconds = 2.0
+_flush_timeout_seconds = 20.0
 
 _BUDGET_HINT = (
     "<system-reminder>本次会话已达到 Token 预算上限。请立即停止调用工具，"
@@ -296,7 +296,13 @@ def _trace_endpoint(settings: Settings) -> tuple[str, dict[str, str] | None]:
         token = base64.b64encode(
             f"{settings.langfuse_public_key}:{settings.langfuse_secret_key}".encode(),
         ).decode()
-        return endpoint, {"Authorization": f"Basic {token}"}
+        return endpoint, {
+            "Authorization": f"Basic {token}",
+            # LangFuse Cloud v4 accepts plain OTLP too, but without this
+            # header newly ingested spans may only appear after migration
+            # processing. Opt into the native v4 path for real-time traces.
+            "x-langfuse-ingestion-version": "4",
+        }
     return settings.otlp_endpoint.strip(), None
 
 

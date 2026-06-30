@@ -144,12 +144,22 @@ manifest/approved cards 哈希、预期与实际文档数以及本次新增数�
 设置 `LANGFUSE_ENABLED=1` 并在本地环境提供 `LANGFUSE_PUBLIC_KEY`、
 `LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST` 后，AgentScope 的 Main/Search/Trade、模型与
 工具 span 会通过 OTLP 导出。商品链路另记录 BGE Query、OpenSearch Hybrid、硬约束摘要
-与 Reranker 子 span。未配置时不会创建 exporter 或发送网络请求。
+与 Reranker 子 span。LangFuse 直连会自动携带 v4 实时 ingestion 标头；未配置时不会创建
+exporter 或发送网络请求。
 
 `LANGFUSE_CAPTURE_INPUT` 与 `LANGFUSE_CAPTURE_OUTPUT` 默认均为 `0`；常规验收只保留
 模型名、token、平台、索引、候选数量、耗时和错误状态。`.env` 已被 Git 忽略，禁止把
 LangFuse 或模型密钥写入受跟踪文件。即使显式开启 capture，也只导出内容摘要指纹和
 JSON 顶层结构，不导出完整 query、模型回复、商品卡、地址或凭据。
+
+配置完成后可执行真实 OTLP 连通检查；脚本只发送固定测试标签和哈希身份，不发送用户内容：
+
+```powershell
+.venv\Scripts\python.exe -m scripts.observability.smoke_langfuse_otlp
+```
+
+中国大陆连接日本区时建议保留 `LANGFUSE_FLUSH_TIMEOUT_SECONDS=20`；该超时只约束后台
+Trace 导出和退出 flush，导出失败仍为 fail-open，不会把观测平台升级成业务依赖。
 
 ## API 概览
 

@@ -137,7 +137,7 @@ class Settings:
     langfuse_sample_rate: float = 1.0
     langfuse_capture_input: bool = False
     langfuse_capture_output: bool = False
-    langfuse_flush_timeout_seconds: float = 2.0
+    langfuse_flush_timeout_seconds: float = 20.0
 
 
 def load_settings() -> Settings:
@@ -278,6 +278,6 @@ def load_settings() -> Settings:
         langfuse_capture_output=_env_flag("LANGFUSE_CAPTURE_OUTPUT"),
         langfuse_flush_timeout_seconds=_env_positive_float(
             "LANGFUSE_FLUSH_TIMEOUT_SECONDS",
-            2.0,
+            20.0,
         ),
     )

@@ -13,6 +13,7 @@ from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.settings import load_settings
 from app.infrastructure.tracing import (
     PrivacySafeSpanExporter,
+    _trace_endpoint,
     record_business_event,
     set_span_attributes,
     text_digest,
@@ -357,6 +358,7 @@ def test_langfuse_settings_keep_old_opt_in_and_privacy_defaults(
     monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "2")
     monkeypatch.delenv("LANGFUSE_CAPTURE_INPUT", raising=False)
     monkeypatch.delenv("LANGFUSE_CAPTURE_OUTPUT", raising=False)
+    monkeypatch.delenv("LANGFUSE_FLUSH_TIMEOUT_SECONDS", raising=False)
 
     settings = load_settings()
 
@@ -367,3 +369,11 @@ def test_langfuse_settings_keep_old_opt_in_and_privacy_defaults(
     assert settings.langfuse_sample_rate == 1.0
     assert settings.langfuse_capture_input is False
     assert settings.langfuse_capture_output is False
+    assert settings.langfuse_flush_timeout_seconds == 20.0
+
+    endpoint, headers = _trace_endpoint(settings)
+
+    assert endpoint == "https://langfuse.example/api/public/otel"
+    assert headers is not None
+    assert headers["Authorization"].startswith("Basic ")
+    assert headers["x-langfuse-ingestion-version"] == "4"
