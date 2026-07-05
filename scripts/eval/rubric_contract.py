@@ -8,8 +8,9 @@ scorecard described by the V2 course:
 * P1 records important process violations at two deduction points each.
 * P2 scores answer quality from one to five per dimension.
 
-The three sections remain separate.  A weighted total is intentionally not
-invented before a human calibration run establishes a defensible policy.
+The judge returns the three sections separately.  The deterministic report
+layer applies the versioned, user-approved 25/35/40 policy and keeps the P0
+red-line gate non-compensating.
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ def _duplicates(values: list[str]) -> list[str]:
 class P2CriterionSpec(BaseModel):
     """One scored quality dimension with explicit one/five-point anchors."""
 
+    model_config = ConfigDict(extra="forbid")
+
     criterion: str = Field(min_length=1)
     score_1_anchor: str = Field(min_length=1)
     score_5_anchor: str = Field(min_length=1)
@@ -41,9 +44,11 @@ class P2CriterionSpec(BaseModel):
 class RubricSpec(BaseModel):
     """Human-reviewed rubric sent to the offline judge for one eval case."""
 
-    p0: list[str] = Field(default_factory=list)
-    p1: list[str] = Field(default_factory=list)
-    p2: list[P2CriterionSpec] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    p0: list[str] = Field(min_length=1)
+    p1: list[str] = Field(min_length=1)
+    p2: list[P2CriterionSpec] = Field(min_length=1)
 
     @model_validator(mode="after")
     def reject_duplicate_criteria(self) -> RubricSpec:
@@ -60,8 +65,97 @@ class RubricSpec(BaseModel):
         return self
 
 
+class QualityWeightPolicy(BaseModel):
+    """Versioned weights for the human-readable quality score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    p0: float = Field(gt=0, le=100)
+    p1: float = Field(gt=0, le=100)
+    p2: float = Field(gt=0, le=100)
+
+    @model_validator(mode="after")
+    def require_one_hundred_percent(self) -> QualityWeightPolicy:
+        if abs((self.p0 + self.p1 + self.p2) - 100.0) > 1e-9:
+            raise ValueError("quality weights must sum to 100")
+        return self
+
+
+class ScenarioFamilyPolicy(BaseModel):
+    """One user-journey family and its non-gameable required coverage points."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1)
+    weight: float = Field(gt=0, le=100)
+    required_points: dict[str, str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_point_ids(self) -> ScenarioFamilyPolicy:
+        invalid = sorted(
+            point_id
+            for point_id in self.required_points
+            if not point_id
+            or any(
+                char not in "abcdefghijklmnopqrstuvwxyz0123456789-" for char in point_id
+            )
+        )
+        if invalid:
+            raise ValueError(
+                "coverage point ids must use lowercase letters, numbers, and hyphens: "
+                + ", ".join(invalid),
+            )
+        if any(not label.strip() for label in self.required_points.values()):
+            raise ValueError("coverage point labels must be non-empty")
+        return self
+
+
+class EvaluationPolicy(BaseModel):
+    """Frozen score and scenario-coverage policy for one case suite."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quality_policy_id: str = Field(
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    coverage_policy_id: str = Field(
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    quality_weights: QualityWeightPolicy
+    scenario_families: dict[str, ScenarioFamilyPolicy] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_family_weights(self) -> EvaluationPolicy:
+        invalid = sorted(
+            family_id
+            for family_id in self.scenario_families
+            if not family_id
+            or any(
+                char not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+                for char in family_id
+            )
+        )
+        if invalid:
+            raise ValueError(
+                "scenario family ids must use lowercase letters, numbers, and hyphens: "
+                + ", ".join(invalid),
+            )
+        total = sum(family.weight for family in self.scenario_families.values())
+        if abs(total - 100.0) > 1e-9:
+            raise ValueError("scenario family weights must sum to 100")
+        if self.quality_policy_id == "globex-quality-v1" and (
+            self.quality_weights.model_dump() != {"p0": 25.0, "p1": 35.0, "p2": 40.0}
+        ):
+            raise ValueError("globex-quality-v1 requires P0/P1/P2=25/35/40")
+        return self
+
+
 class RubricCaseSpec(BaseModel):
     """One versioned, human-reviewed end-to-end regression case."""
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
     description: str = Field(min_length=1)
@@ -70,6 +164,11 @@ class RubricCaseSpec(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     prior_context: str = ""
     ground_truth_product_ids: list[str] = Field(default_factory=list)
+    scenario_family: str = Field(
+        min_length=1,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    coverage_points: list[str] = Field(min_length=1)
     rubric: RubricSpec
 
     @model_validator(mode="after")
@@ -82,13 +181,21 @@ class RubricCaseSpec(BaseModel):
             raise ValueError("ground_truth_product_ids must be unique")
         if self.id in self.depends_on:
             raise ValueError("case cannot depend on itself")
+        duplicates = _duplicates(self.coverage_points)
+        if duplicates:
+            raise ValueError(
+                "coverage_points contains duplicates: " + ", ".join(duplicates),
+            )
         return self
 
 
 class RubricCaseSuite(BaseModel):
     """The versioned case-file contract loaded by the regression runner."""
 
-    schema_version: Literal["rubric-cases-v2"]
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["rubric-cases-v3"]
+    evaluation_policy: EvaluationPolicy
     cases: list[RubricCaseSpec] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -112,6 +219,22 @@ class RubricCaseSuite(BaseModel):
                     f"{', '.join(not_earlier)}",
                 )
             known.add(case.id)
+            family = self.evaluation_policy.scenario_families.get(
+                case.scenario_family,
+            )
+            if family is None:
+                raise ValueError(
+                    f"case {case.id} has unknown scenario family: "
+                    f"{case.scenario_family}",
+                )
+            unknown_points = sorted(
+                set(case.coverage_points) - set(family.required_points),
+            )
+            if unknown_points:
+                raise ValueError(
+                    f"case {case.id} has unknown coverage points for "
+                    f"{case.scenario_family}: {', '.join(unknown_points)}",
+                )
         return self
 
 

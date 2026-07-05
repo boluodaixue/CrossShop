@@ -1,4 +1,4 @@
-"""Run V2 Rubric cases against the real in-process Globex composition.
+"""Run Rubric v3 cases against the real in-process Globex composition.
 
 The runner subscribes to the same local EventBus used by the application and
 installs a privacy-safe local OTel exporter before the container is built.
@@ -32,6 +32,7 @@ from app.infrastructure.tracing import setup_tracing
 from app.infrastructure.transient import is_transient_error
 from scripts.eval.rubric_cases import load_case_suite
 from scripts.eval.rubric_contract import (
+    EvaluationPolicy,
     EvaluationEvidence,
     PreferenceStateEvidence,
     RubricCaseSpec,
@@ -57,13 +58,14 @@ from scripts.eval.rubric_judge import (
 from scripts.eval.rubric_report import (
     CaseEvaluationResult,
     EvaluationFailure,
+    build_evaluation_summary,
     completed_result,
     error_result,
     render_markdown_report,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CASES_PATH = PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml"
+DEFAULT_CASES_PATH = PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml"
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "rubric"
 _JUDGE_MAX_ATTEMPTS = 2
 
@@ -529,6 +531,7 @@ def build_run_manifest(
     judge_model: str,
     run_scope: str,
     startup_checks: dict[str, str],
+    evaluation_policy: EvaluationPolicy,
 ) -> dict[str, Any]:
     catalog_manifest = settings.product_catalog_root / "manifest.json"
     category_release = (
@@ -536,12 +539,24 @@ def build_run_manifest(
     )
     category_manifest = category_release / "manifest.json"
     category_cards = category_release / "approved_cards.jsonl"
+    policy_json = json.dumps(
+        evaluation_policy.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return {
-        "schema_version": "rubric-run-manifest-v1",
+        "schema_version": "rubric-run-manifest-v2",
         "generated_at": datetime.now().astimezone().isoformat(),
         "git_head": _git_value("rev-parse", "HEAD"),
         "source_tree_sha256": _source_tree_sha256(cases_path),
         "case_file_sha256": _file_sha256(cases_path),
+        "quality_policy_id": evaluation_policy.quality_policy_id,
+        "coverage_policy_id": evaluation_policy.coverage_policy_id,
+        "evaluation_policy_sha256": hashlib.sha256(policy_json).hexdigest(),
+        "quality_weights": evaluation_policy.quality_weights.model_dump(
+            mode="json",
+        ),
         "catalog_manifest_sha256": (
             _file_sha256(catalog_manifest) if catalog_manifest.is_file() else None
         ),
@@ -601,6 +616,7 @@ async def run(args: argparse.Namespace) -> int:
             judge_model=judge_model,
             run_scope=run_scope,
             startup_checks=container.product_search_startup_check,
+            evaluation_policy=suite.evaluation_policy,
         ),
     )
     try:
@@ -677,8 +693,21 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         await container.shutdown()
 
-    report = render_markdown_report(results, generated_at=datetime.now())
+    summary = build_evaluation_summary(
+        results,
+        design_cases=suite.cases,
+        run_cases=cases,
+        policy=suite.evaluation_policy,
+    )
+    report = render_markdown_report(
+        results,
+        design_cases=suite.cases,
+        run_cases=cases,
+        policy=suite.evaluation_policy,
+        generated_at=datetime.now(),
+    )
     (run_dir / "report.md").write_text(report, encoding="utf-8")
+    _write_json(run_dir / "summary.json", summary.model_dump(mode="json"))
     _write_json(
         run_dir / "results.json",
         [item.model_dump(mode="json", by_alias=True) for item in results],
@@ -688,7 +717,7 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Globex V2 Rubric evaluation")
+    parser = argparse.ArgumentParser(description="Globex Rubric v3 evaluation")
     parser.add_argument("--cases", default=str(DEFAULT_CASES_PATH))
     parser.add_argument("--only", action="append", default=[])
     parser.add_argument("--judge-model", default="")

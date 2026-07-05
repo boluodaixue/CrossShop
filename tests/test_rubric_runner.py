@@ -1,4 +1,4 @@
-"""Tests for V2 Rubric runner selection, retry, and safe failures."""
+"""Tests for Rubric v3 runner selection, retry, and safe failures."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import pytest
 from scripts.eval.rubric_cases import load_case_suite
 from scripts.eval.rubric_contract import (
     EvaluationEvidence,
+    P2CriterionSpec,
     PreferenceStateEvidence,
     RubricSpec,
     StructuredStateEvidence,
@@ -53,7 +54,17 @@ def _request():
         case_id="chat",
         description="普通聊天",
         prior_context="",
-        rubric=RubricSpec(),
+        rubric=RubricSpec(
+            p0=["不得编造"],
+            p1=["不得调用业务工具"],
+            p2=[
+                P2CriterionSpec(
+                    criterion="闲聊体验",
+                    score_1_anchor="答非所问",
+                    score_5_anchor="简洁友好",
+                ),
+            ],
+        ),
         evidence=EvaluationEvidence(
             case_id="chat",
             session_id_hash="0123456789abcdef",
@@ -77,7 +88,7 @@ def _request():
 
 
 def test_case_selection_includes_declared_dependency_in_file_order() -> None:
-    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml")
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
 
     selected = select_cases(suite.cases, ["memory-recall"])
 
@@ -151,14 +162,20 @@ def test_run_manifest_has_source_identity_but_no_endpoint_or_secret(
 
     manifest = build_run_manifest(
         settings=settings,
-        cases_path=PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml",
+        cases_path=PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml",
         judge_model="judge-model",
         run_scope="private-run-scope",
         startup_checks={"taobao": "ready"},
+        evaluation_policy=load_case_suite(
+            PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml",
+        ).evaluation_policy,
     )
     serialized = json.dumps(manifest)
 
-    assert manifest["schema_version"] == "rubric-run-manifest-v1"
+    assert manifest["schema_version"] == "rubric-run-manifest-v2"
+    assert manifest["quality_policy_id"] == "globex-quality-v1"
+    assert manifest["coverage_policy_id"] == "globex-scenario-coverage-v1"
+    assert len(manifest["evaluation_policy_sha256"]) == 64
     assert len(manifest["source_tree_sha256"]) == 64
     assert len(manifest["category_release_manifest_sha256"]) == 64
     assert len(manifest["category_approved_cards_sha256"]) == 64
@@ -201,7 +218,7 @@ async def test_judge_retries_one_transient_response_with_identical_payload() -> 
 
 def test_failure_report_does_not_copy_exception_message() -> None:
     case = load_case_suite(
-        PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml",
+        PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml",
     ).cases[0]
 
     result = _safe_failure(
@@ -218,7 +235,7 @@ def test_failure_report_does_not_copy_exception_message() -> None:
 
 def test_protocol_error_keeps_safe_intermediate_artifacts(tmp_path: Path) -> None:
     case = load_case_suite(
-        PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml",
+        PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml",
     ).cases[0]
     request = _request()
     result = _safe_failure(case, "judge_protocol", ValueError("bad schema"))

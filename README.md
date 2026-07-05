@@ -176,15 +176,17 @@ uv run ruff check .                    # 统一静态检查；规则由 pyprojec
 uv run pytest                          # 完整单测回归
 uv run python scripts/smoke_e2e.py    # 端到端冒烟：WS 订阅 + 提交意图，实时打印事件流
 uv run python scripts/verify_parallel.py   # 并行验证：同轮多派 vs 串行的墙钟耗时与事件重叠数对比
-SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.rubric_runner  # V2 Rubric：本地轨迹 + 当前商品事实 + P0/P1/P2 分栏报告
+SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.rubric_runner  # Rubric v3：质量总分、P0 门禁与用户场景覆盖
 ```
 
-V2 用例位于 `eval/rubric_cases_v2.yaml`。P1 使用本地 EventBus/OTel 执行证据，
+当前用例和版本化评分/覆盖协议位于 `eval/rubric_cases_v3.yaml`。P1 使用本地 EventBus/OTel 执行证据，
 商品事实来自当前 `ProductRepository`；LangFuse 只用于外部观察，不是评分依赖。
 运行器按 run scope 隔离买家身份，依赖用例只有在前置 P0 全过且 P1 零失败时才执行；
 每轮保存脱敏输入、工具/Trace、L4 状态投影与偏好前后指纹，并在根目录写源码、用例和
-catalog manifest 哈希。报告分别给出 P0 红线、P1 违规扣分与 P2 质量分，不计算未经
-人工校准的加权总分；`SCORED` 只表示协议完成且未触发 P0，不自动等同于发布 `PASS`。
+catalog manifest 哈希。汇总器按已批准的 P0/P1/P2=`25/35/40` 确定性计算质量总分，
+同时保留 P0 一票否决；场景覆盖按闲聊、品类、单轮、短多轮、长上下文、订单和异常七个
+用户旅程族的必要场景点去重计算，重复堆相似题不能刷分。`SCORED` 只表示协议完成且未触发
+P0，不自动等同于发布 `PASS`；任一 `ERROR` 会使批次质量总分标记为不完整。
 
 完整运行证据默认写入被 Git 忽略的 `artifacts/`，只保存在当前受控本机，避免把完整对话和
 知识正文提交到仓库；因此 Git clone 只能复跑评测，不能还原某次本地报告。品类知识正文不

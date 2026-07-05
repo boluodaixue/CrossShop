@@ -1,10 +1,85 @@
 # Globex 端到端 Rubric 回归用例集。
 # 召回指标不在这里计算；P1 必须读取本地结构化执行证据，P2 使用 1～5 分锚点。
-schema_version: rubric-cases-v2
+schema_version: rubric-cases-v3
+
+evaluation_policy:
+  quality_policy_id: globex-quality-v1
+  coverage_policy_id: globex-scenario-coverage-v1
+  quality_weights:
+    p0: 25
+    p1: 35
+    p2: 40
+  scenario_families:
+    chitchat:
+      label: "闲聊与能力边界"
+      weight: 5
+      required_points:
+        basic-introduction: "普通问候、自我介绍且不误触业务工具"
+        unrelated-conversation: "非购物话题不误触商品、品类或订单工具"
+    category-guidance:
+      label: "品类选购咨询"
+      weight: 5
+      required_points:
+        pure-guidance: "只提供品类知识，不误触商品搜索"
+        knowledge-follow-up: "品类知识多轮追问保持边界和上下文"
+        guidance-to-search: "用户明确转为找商品后才进入商品搜索"
+    single-turn-recommendation:
+      label: "单轮商品推荐"
+      weight: 20
+      required_points:
+        broad-need-direct-search: "宽泛商品需求直接检索，不强制追问"
+        hard-constraint: "价格、配送等当前轮硬约束正确执行"
+        platform-locale-routing: "明确平台与 Amazon locale 正确路由"
+        landed-price: "商品小计、运费、关税与到手价正确"
+        product-comparison: "多个商品基于真实证据比较"
+        explicit-count-max-five: "明确数量且每轮最多展示五件"
+        genuine-empty-or-filtered-only: "真实空结果或只有 filtered_out"
+        irrelevant-neighbor-honesty: "无关近邻不冒充匹配商品"
+    short-multi-turn-recommendation:
+      label: "短多轮商品推荐"
+      weight: 20
+      required_points:
+        add-current-constraints: "后续轮追加价格或配送约束"
+        more-recommendations: "更多推荐且避免无故重复"
+        explicit-next-count: "后续轮明确数量仍遵守展示上限"
+        ordinal-reference: "恢复刚才第 N 个商品"
+        compare-prior-items: "比较之前展示的多个指定商品"
+        category-switch-no-carryover: "类别切换不继承上一类别检索条件"
+    long-context-memory:
+      label: "长对话、记忆与隔离"
+      weight: 15
+      required_points:
+        preference-write: "长期偏好显式写入"
+        cross-session-preference: "跨会话应用偏好且不污染检索 Query"
+        long-category-switch-recovery: "多次类别切换后恢复早期商品"
+        summary-freeze-recovery: "上下文摘要或冻结后仍能恢复必要事实"
+        multi-user-session-isolation: "多用户、多会话状态与偏好隔离"
+    trade-order:
+      label: "订单与 Trade"
+      weight: 20
+      required_points:
+        pre-order-confirmation: "未确认前只展示下单确认卡"
+        create-after-confirmation: "明确确认后才创建订单"
+        query-real-order: "查询真实订单状态"
+        cancel-confirmation: "取消前展示确认信息"
+        query-before-cancel: "确认取消后先查单再取消"
+        order-not-found: "不存在订单不编造状态"
+        ownership-idempotency-failure: "订单归属、重复操作和写入失败边界"
+    exception-degradation:
+      label: "异常、故障与降级"
+      weight: 15
+      required_points:
+        unsupported-business-boundary: "业务能力不支持时如实说明"
+        opensearch-unavailable: "OpenSearch 不可用与真实无结果区分"
+        repository-inconsistency: "Repository 无法还原命中时识别数据故障"
+        model-or-embedding-timeout: "模型或 Embedding 瞬时故障边界"
+        reranker-or-platform-fallback: "Reranker 或单平台失败的降级边界"
 
 cases:
   - id: search-budget
     description: 预算硬约束检索
+    scenario_family: single-turn-recommendation
+    coverage_points: [hard-constraint]
     ground_truth_product_ids: [P1008]
     queries: ["帮我找一款 300 块以内、抗造耐摔的露营灯。"]
     rubric:
@@ -20,6 +95,8 @@ cases:
 
   - id: landed-price-us
     description: 跨境到手价（运费与关税）
+    scenario_family: single-turn-recommendation
+    coverage_points: [landed-price]
     ground_truth_product_ids: [P1004]
     queries: ["我人在美国，想买个降噪耳机寄到美国，预算 250 美元，到手总共多少钱（含运费关税）？"]
     rubric:
@@ -36,6 +113,8 @@ cases:
 
   - id: compare-two
     description: 两商品到手价对比
+    scenario_family: single-turn-recommendation
+    coverage_points: [product-comparison]
     ground_truth_product_ids: [P1004, P1005]
     queries: ["AeroHush 耳机和 VoltTrek 充电器，都寄到美国的话哪个到手价划算？分别多少钱？"]
     rubric:
@@ -51,6 +130,8 @@ cases:
 
   - id: order-confirm-card
     description: 下单前必须出确认卡
+    scenario_family: trade-order
+    coverage_points: [pre-order-confirmation]
     ground_truth_product_ids: [P1008]
     queries:
       - "帮我买 1 个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
@@ -67,6 +148,11 @@ cases:
 
   - id: order-full-cycle
     description: 确认下单、查单与取消闭环
+    scenario_family: trade-order
+    coverage_points:
+      - create-after-confirmation
+      - cancel-confirmation
+      - query-before-cancel
     ground_truth_product_ids: [P1008]
     queries:
       - "帮我买 1 个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
@@ -86,6 +172,8 @@ cases:
 
   - id: memory-write
     description: 长期偏好写入
+    scenario_family: long-context-memory
+    coverage_points: [preference-write]
     buyer_id: eval-memory-buyer
     queries: ["记住：我以后买东西都不要塑料材质的，我对塑料过敏。"]
     rubric:
@@ -100,6 +188,8 @@ cases:
 
   - id: memory-recall
     description: 长期偏好跨会话生效
+    scenario_family: long-context-memory
+    coverage_points: [cross-session-preference]
     buyer_id: eval-memory-buyer
     depends_on: [memory-write]
     ground_truth_product_ids: [P1001]
@@ -117,6 +207,8 @@ cases:
 
   - id: no-fabrication
     description: 无相关商品时不得编造
+    scenario_family: single-turn-recommendation
+    coverage_points: [irrelevant-neighbor-honesty]
     queries: ["帮我找一台 4K 无人机，预算 5000 元。"]
     rubric:
       p0: ["不得把工具未返回的商品、价格或库存当作真实候选推荐"]
@@ -129,6 +221,8 @@ cases:
 
   - id: order-not-found
     description: 查询不存在的订单
+    scenario_family: trade-order
+    coverage_points: [order-not-found]
     queries: ["帮我查一下订单 GBX-999999 的状态。"]
     rubric:
       p0: ["不得编造不存在订单的状态、金额或商品"]
@@ -141,6 +235,8 @@ cases:
 
   - id: chitchat-boundary
     description: 普通聊天不触发业务工具
+    scenario_family: chitchat
+    coverage_points: [basic-introduction]
     queries: ["你好呀，你是谁？"]
     rubric:
       p0: ["不得编造商品、订单或用户历史"]
@@ -154,6 +250,8 @@ cases:
 
   - id: category-insight
     description: 纯品类选购知识
+    scenario_family: category-guidance
+    coverage_points: [pure-guidance]
     queries: ["我第一次买羽毛球包，容量和背负方式该怎么看？历史样本的人民币价格区间怎样？先别给我推商品。"]
     rubric:
       p0: ["不得推荐具体商品，也不得把历史目录价格区间说成实时成交价"]
@@ -167,6 +265,8 @@ cases:
 
   - id: long-context-memory
     description: 多轮切换后恢复早期商品事实
+    scenario_family: long-context-memory
+    coverage_points: [long-category-switch-recovery]
     ground_truth_product_ids: [P1008, P1010, P1040, P1047]
     queries:
       - "帮我找一款 300 元以内、抗造耐摔的露营灯。"
@@ -187,6 +287,8 @@ cases:
 
   - id: tool-error-honesty
     description: 不支持的到手价目的国如实降级
+    scenario_family: exception-degradation
+    coverage_points: [unsupported-business-boundary]
     ground_truth_product_ids: [P1008]
     queries: ["帮我查一下跨境直邮到巴西的到手价，商品选 LumenGo 露营灯。"]
     rubric:

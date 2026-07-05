@@ -128,10 +128,15 @@ def _valid_output() -> dict:
     }
 
 
-def test_v2_case_file_validates_and_dependencies_are_ordered() -> None:
-    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v2.yaml")
+def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
 
-    assert suite.schema_version == "rubric-cases-v2"
+    assert suite.schema_version == "rubric-cases-v3"
+    assert suite.evaluation_policy.quality_weights.model_dump() == {
+        "p0": 25.0,
+        "p1": 35.0,
+        "p2": 40.0,
+    }
     assert len(suite.cases) == 13
     memory_recall = next(case for case in suite.cases if case.id == "memory-recall")
     assert memory_recall.depends_on == ["memory-write"]

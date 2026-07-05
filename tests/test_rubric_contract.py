@@ -1,6 +1,8 @@
-"""Offline tests for the Rubric V1 contract and scorecard."""
+"""Offline tests for the Rubric v3 contract and criterion scorecard."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -11,7 +13,9 @@ from scripts.eval.rubric_contract import (
     EvaluationEvidence,
     P2CriterionSpec,
     PreferenceStateEvidence,
+    QualityWeightPolicy,
     QualityCriterionJudgement,
+    RubricCaseSuite,
     RubricJudgement,
     RubricProtocolError,
     RubricSpec,
@@ -20,6 +24,9 @@ from scripts.eval.rubric_contract import (
     TurnEvidence,
     score_rubric,
 )
+from scripts.eval.rubric_cases import load_case_suite
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _state() -> StructuredStateEvidence:
@@ -151,7 +158,83 @@ def test_missing_or_extra_judge_criteria_is_protocol_error() -> None:
 
 def test_duplicate_rubric_criterion_is_rejected() -> None:
     with pytest.raises(ValidationError, match="duplicate criteria"):
-        RubricSpec(p0=["不得编造", "不得编造"])
+        RubricSpec(
+            p0=["不得编造", "不得编造"],
+            p1=["工具正确"],
+            p2=[
+                P2CriterionSpec(
+                    criterion="回答质量",
+                    score_1_anchor="差",
+                    score_5_anchor="好",
+                ),
+            ],
+        )
+
+
+@pytest.mark.parametrize("empty_level", ["p0", "p1", "p2"])
+def test_rubric_requires_all_three_non_empty_levels(empty_level: str) -> None:
+    values = _spec().model_dump()
+    values[empty_level] = []
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        RubricSpec.model_validate(values)
+
+
+def test_quality_weights_must_sum_to_one_hundred() -> None:
+    with pytest.raises(ValidationError, match="sum to 100"):
+        QualityWeightPolicy(p0=30, p1=30, p2=30)
+
+
+def test_official_quality_policy_id_is_bound_to_approved_weights() -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
+    payload = suite.evaluation_policy.model_dump(mode="json")
+    payload["quality_weights"] = {"p0": 20, "p1": 40, "p2": 40}
+
+    with pytest.raises(ValidationError, match="requires P0/P1/P2=25/35/40"):
+        type(suite.evaluation_policy).model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("scenario_family", "missing-family", "unknown scenario family"),
+        ("coverage_points", ["missing-point"], "unknown coverage points"),
+    ],
+)
+def test_suite_rejects_unknown_coverage_contract(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
+    payload = suite.model_dump(mode="json")
+    payload["cases"][0][field] = value
+
+    with pytest.raises(ValidationError, match=message):
+        RubricCaseSuite.model_validate(payload)
+
+
+def test_suite_rejects_non_hundred_family_weights_and_duplicate_points() -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
+    bad_weight = suite.model_dump(mode="json")
+    bad_weight["evaluation_policy"]["scenario_families"]["chitchat"]["weight"] = 6
+    with pytest.raises(ValidationError, match="family weights must sum to 100"):
+        RubricCaseSuite.model_validate(bad_weight)
+
+    duplicate = suite.model_dump(mode="json")
+    point = duplicate["cases"][0]["coverage_points"][0]
+    duplicate["cases"][0]["coverage_points"].append(point)
+    with pytest.raises(ValidationError, match="contains duplicates"):
+        RubricCaseSuite.model_validate(duplicate)
+
+
+def test_suite_rejects_unknown_top_level_fields() -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
+    payload = suite.model_dump(mode="json")
+    payload["unexpected"] = "must fail"
+
+    with pytest.raises(ValidationError, match="unexpected"):
+        RubricCaseSuite.model_validate(payload)
 
 
 def test_evidence_requires_contiguous_turns_and_unique_tool_order() -> None:
