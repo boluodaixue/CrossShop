@@ -137,13 +137,18 @@ def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
         "p1": 35.0,
         "p2": 40.0,
     }
-    assert len(suite.cases) == 13
+    assert len(suite.cases) == 27
     memory_recall = next(case for case in suite.cases if case.id == "memory-recall")
     assert memory_recall.depends_on == ["memory-write"]
     assert memory_recall.rubric.p2[0].score_1_anchor
     compare = next(case for case in suite.cases if case.id == "compare-two")
     assert "展示币种小计" in compare.rubric.p0[0]
     assert "目录原币标价" in compare.rubric.p0[0]
+    isolation = next(
+        case for case in suite.cases if case.id == "memory-other-buyer-isolation"
+    )
+    assert isolation.depends_on == ["memory-write"]
+    assert isolation.buyer_id == "eval-isolation-buyer"
 
 
 def test_judge_prompt_contains_refs_schema_and_no_weighted_score_instruction() -> None:

@@ -101,6 +101,7 @@ def test_run_scoped_buyer_is_stable_within_run_and_isolated_between_runs() -> No
     first = _scoped_buyer_id("run-one", "logical-buyer")
 
     assert first == _scoped_buyer_id("run-one", "logical-buyer")
+    assert first != _scoped_buyer_id("run-one", "other-buyer")
     assert first != _scoped_buyer_id("run-two", "logical-buyer")
     assert "logical-buyer" not in first
 

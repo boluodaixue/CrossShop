@@ -29,10 +29,14 @@ evaluation_policy:
       required_points:
         broad-need-direct-search: "宽泛商品需求直接检索，不强制追问"
         hard-constraint: "价格、配送等当前轮硬约束正确执行"
-        platform-locale-routing: "明确平台与 Amazon locale 正确路由"
+        explicit-taobao-routing: "明确只看淘宝时由 Main 直调淘宝"
+        explicit-globex-routing: "明确只看 Globex 时由 Main 直调 Globex"
+        amazon-unscoped-routing: "只看 Amazon 但未指定站点时不擅自限定 locale"
+        amazon-explicit-locale-routing: "明确 Amazon 站点时正确限定 site_locale"
         landed-price: "商品小计、运费、关税与到手价正确"
         product-comparison: "多个商品基于真实证据比较"
-        explicit-count-max-five: "明确数量且每轮最多展示五件"
+        explicit-count-within-limit: "明确要求五件以内时遵守展示数量"
+        display-cap-over-requested-five: "明确要求超过五件时仍最多展示五件"
         genuine-empty-or-filtered-only: "真实空结果或只有 filtered_out"
         irrelevant-neighbor-honesty: "无关近邻不冒充匹配商品"
     short-multi-turn-recommendation:
@@ -53,7 +57,8 @@ evaluation_policy:
         cross-session-preference: "跨会话应用偏好且不污染检索 Query"
         long-category-switch-recovery: "多次类别切换后恢复早期商品"
         summary-freeze-recovery: "上下文摘要或冻结后仍能恢复必要事实"
-        multi-user-session-isolation: "多用户、多会话状态与偏好隔离"
+        multi-buyer-preference-isolation: "不同买家的长期偏好互不串线"
+        multi-session-search-state-isolation: "同一买家的不同会话不共享商品搜索状态"
     trade-order:
       label: "订单与 Trade"
       weight: 20
@@ -300,3 +305,252 @@ cases:
         - criterion: "降级说明质量"
           score_1_anchor: "只说失败，或用估算数字掩盖工具限制"
           score_5_anchor: "清楚区分商品信息与不可计算的跨境费用，并给出安全、具体的后续选择"
+
+  - id: unrelated-conversation-boundary
+    description: 非购物话题不误触业务工具
+    scenario_family: chitchat
+    coverage_points: [unrelated-conversation]
+    queries: ["请用通俗的话解释一下为什么天空看起来是蓝色的。"]
+    rubric:
+      p0:
+        - "不得编造商品、订单、用户历史或声称执行了并不存在的业务操作"
+      p1:
+        - "本地执行证据中没有 product_search_tool、category_insight_tool、SearchAgent 或 Trade 工具调用"
+        - "最终回答直接处理非购物问题，没有强行转成商品推荐或订单流程"
+      p2:
+        - criterion: "非购物对话质量"
+          score_1_anchor: "答非所问，或机械拒绝正常的非购物交流"
+          score_5_anchor: "用通俗、简洁且自然的语言正确回答问题，同时不喧宾夺主地推销购物能力"
+
+  - id: category-follow-up-to-search
+    description: 品类知识追问后明确转商品搜索
+    scenario_family: category-guidance
+    coverage_points: [knowledge-follow-up, guidance-to-search]
+    queries:
+      - "我第一次买羽毛球包，先只讲容量和背负方式，不要推荐具体商品。"
+      - "如果平时带两支拍、鞋和一套衣服，容量怎么选？双肩和单肩各有什么坑？仍先别推商品。"
+      - "明白了，现在请去淘宝实际找2款适合这个场景的羽毛球包。"
+    rubric:
+      p0:
+        - "前两轮不得推荐或编造具体商品；第三轮展示的商品必须来自真实工具 hits"
+      p1:
+        - "前两轮可调用 category_insight_tool，但不得调用 product_search_tool 或 SearchAgent，并能延续两拍、鞋和衣物的知识上下文"
+        - "第三轮才使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数使用 platform=taobao 且 top_k 在冻结的 1..5 范围内，真实候选充足时最终结构化展示 2 件，并延续前两轮形成的选购口径"
+      p2:
+        - criterion: "知识到搜索的衔接质量"
+          score_1_anchor: "追问丢失上下文，或转搜索后推荐理由与前两轮选购口径无关"
+          score_5_anchor: "前两轮知识回答连续可操作，第三轮在用户明确要求后自然转搜索，并用既有选购口径解释候选"
+
+  - id: broad-need-explicit-count
+    description: 宽泛需求直接搜索并遵守明确数量
+    scenario_family: single-turn-recommendation
+    coverage_points: [broad-need-direct-search, explicit-count-within-limit]
+    queries: ["我想买点适合长途飞行的旅行小物，不用先问我，直接给我3件。"]
+    rubric:
+      p0:
+        - "最终最多展示 3 件商品，所有商品身份、价格和库存必须来自真实工具 hits；候选不足时不得编造补足"
+      p1:
+        - "Main 不强制追问且不派发 SearchAgent，直接调用唯一的 product_search_tool；未指定平台时使用 globex_reference，top_k 在冻结的 1..5 范围内"
+        - "最终展示数量与结构化 selected_products 一致；真实候选充足时恰好展示 3 件，不足时如实说明"
+      p2:
+        - criterion: "宽泛需求推荐价值"
+          score_1_anchor: "只堆砌商品，未说明各自适合长途飞行的用途"
+          score_5_anchor: "三件商品用途有区分，理由紧扣长途飞行，并帮助用户快速决定优先购买什么"
+
+  - id: amazon-jp-locale-route
+    description: Amazon 日本站单平台路由
+    scenario_family: single-turn-recommendation
+    coverage_points: [amazon-explicit-locale-routing]
+    queries: ["请只在 Amazon 日本站找2款适合通勤的降噪耳机。"]
+    rubric:
+      p0:
+        - "不得混入其他平台或 Amazon 其他站点的商品，商品事实必须与 ProductRepository 和工具证据一致"
+      p1:
+        - "Main 直接调用唯一的 product_search_tool，不派发 SearchAgent；搜索参数含 platform=amazon、site_locale=jp，且 top_k 在冻结的 1..5 范围内"
+        - "普通会话 locale 不得代替或覆盖明确的 Amazon site_locale=jp；最终最多展示 2 件真实候选"
+      p2:
+        - criterion: "站点推荐清晰度"
+          score_1_anchor: "没有说明候选与通勤降噪需求的关系，或站点范围表达含混"
+          score_5_anchor: "清楚保持 Amazon 日本站范围，并用简洁差异说明候选如何适配通勤降噪"
+
+  - id: filtered-only-budget
+    description: 只有预算过滤结果时如实说明
+    scenario_family: single-turn-recommendation
+    coverage_points: [genuine-empty-or-filtered-only]
+    ground_truth_product_ids: [P1008]
+    queries: ["帮我找1元人民币以内的 LumenGo 露营灯，直接搜索。"]
+    rubric:
+      p0:
+        - "不得把 filtered_out 商品展示为满足预算的推荐，不得编造 1 CNY 以内候选，也不得把正常空结果伪造成系统故障"
+      p1:
+        - "搜索参数包含 price_max_major=1、target_currency=CNY；工具成功时忠实区分 hits、filtered_out 与 error"
+        - "若有召回商品被预算挡住，最终说明具体约束原因并询问是否放宽预算；若粗召回本身为空，也必须按真实证据说明"
+      p2:
+        - criterion: "无合格结果说明质量"
+          score_1_anchor: "只说没有，混淆过滤与故障，或推荐超预算商品"
+          score_5_anchor: "准确解释当前证据属于空结果还是预算过滤，并给出不擅自改变检索策略的明确下一步"
+
+  - id: multi-constraint-switch-reference
+    description: 多轮追加约束、类别切换与序号比较
+    scenario_family: short-multi-turn-recommendation
+    coverage_points:
+      - add-current-constraints
+      - ordinal-reference
+      - compare-prior-items
+      - category-switch-no-carryover
+    queries:
+      - "只看淘宝，帮我找轻便旅行背包。"
+      - "还是刚才的旅行背包，这轮加上预算 100 元并配送到中国。"
+      - "改看降噪耳机，不要沿用刚才的预算和配送条件，请给我5件候选。"
+      - "比较刚才第三个和第五个，告诉我各自更适合谁；不要重新搜索。"
+    rubric:
+      p0:
+        - "各轮商品身份和事实必须来自对应真实 hits；最后一轮不得串错第三与第五件，也不得编造未展示商品"
+      p1:
+        - "第二轮搜索保持旅行背包需求并增加 price_max_major=100、ship_to=CN；第三轮切换到降噪耳机且不继承上一类别的价格和配送约束"
+        - "第三轮最多展示 5 件且结构化顺序可恢复；第四轮不重新搜索，严格按第三轮展示顺序引用并比较第 3 与第 5 件"
+      p2:
+        - criterion: "多轮衔接与比较价值"
+          score_1_anchor: "约束或类别串线，序号恢复错误，或比较只是重复商品描述"
+          score_5_anchor: "约束追加和类别切换边界清楚，序号恢复准确，并给出有区分度的适用人群比较"
+
+  - id: multi-more-explicit-count
+    description: 更多推荐、明确后续数量且避免无故重复
+    scenario_family: short-multi-turn-recommendation
+    coverage_points: [more-recommendations, explicit-next-count]
+    buyer_id: eval-session-isolation-buyer
+    queries:
+      - "只看淘宝找旅行背包，明确推荐3件。"
+      - "再给我2件更多推荐，避免无故重复；如果当前真实候选没有新的就如实说。"
+    rubric:
+      p0:
+        - "两轮展示的商品都必须来自真实 hits；不得为了凑数编造商品，且第二轮最多展示 2 件"
+      p1:
+        - "两轮 product_search_tool 的 top_k 均在冻结的 1..5 范围内；第一轮最多展示 3 件，第二轮仍处理旅行背包且遵守明确的 2 件上限"
+        - "第二轮优先选择此前未展示的真实候选；只有没有可核验新候选时才如实少给或说明没有新的，不把用户主动回看误判为本场景"
+      p2:
+        - criterion: "续推体验"
+          score_1_anchor: "无故重复上一轮商品、忽略明确数量，或只说没有而不解释"
+          score_5_anchor: "优先给出不重复的新候选，数量边界清楚；候选不足时简洁说明并给出可执行下一步"
+
+  - id: memory-other-buyer-isolation
+    description: 不同买家与新会话偏好隔离
+    scenario_family: long-context-memory
+    coverage_points: [multi-buyer-preference-isolation]
+    buyer_id: eval-isolation-buyer
+    depends_on: [memory-write]
+    ground_truth_product_ids: [P1016]
+    queries: ["帮我推荐一款500元以内的 PC 塑料硬壳登机箱。"]
+    rubric:
+      p0:
+        - "不得继承依赖用例中另一买家的不要塑料偏好、历史商品或会话事实；商品事实必须来自真实证据"
+      p1:
+        - "当前新买家的 preference_before 与 preference_after 数量均为 0，normalized_query 只表达本轮 PC 塑料硬壳、登机箱和预算需求"
+        - "当前新 session 没有另一买家的结构化推荐历史，真实 PC 硬壳候选可以进入最终选择，回答不得声称存在历史偏好"
+      p2:
+        - criterion: "隔离后的需求响应"
+          score_1_anchor: "提到不存在的历史偏好，或因另一买家的偏好拒绝当前塑料硬壳需求"
+          score_5_anchor: "完全依据当前买家的显式需求给出简洁推荐，不泄露也不暗示另一买家的任何上下文"
+
+  - id: order-real-query
+    description: 创建后查询真实订单状态
+    scenario_family: trade-order
+    coverage_points: [query-real-order]
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "帮我买 1 个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
+      - "我确认下单。"
+      - "请查询刚创建的这个订单现在是什么状态。"
+    rubric:
+      p0:
+        - "未确认前不得创建订单；查询返回的订单号、状态、商品和金额必须来自本轮真实订单工具证据"
+      p1:
+        - "第一轮只展示下单确认信息，第二轮明确确认后才调用 create_order_tool 并得到真实订单号"
+        - "第三轮调用 query_order_tool，查询的订单号等于第二轮创建结果，最终状态与结构化查询结果一致"
+      p2:
+        - criterion: "真实查单闭环清晰度"
+          score_1_anchor: "创建与查询状态混乱，用户无法确认查的是哪个订单"
+          score_5_anchor: "确认、创建和真实查单三步边界清楚，订单号与当前状态表达简洁且可核对"
+
+  - id: single-taobao-route
+    description: 淘宝单平台由 Main 直接检索
+    scenario_family: single-turn-recommendation
+    coverage_points: [explicit-taobao-routing]
+    queries: ["只看淘宝，帮我找2款轻便旅行背包。"]
+    rubric:
+      p0:
+        - "不得混入 Globex 或 Amazon 商品，展示商品必须来自淘宝真实 hits"
+      p1:
+        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=taobao 且 top_k 在 1..5 范围内"
+        - "最终结构化展示最多 2 件；候选充足时展示 2 件，不足时如实说明"
+      p2:
+        - criterion: "单平台推荐清晰度"
+          score_1_anchor: "平台范围含混，或没有解释候选为什么轻便"
+          score_5_anchor: "明确保持淘宝范围，并简洁说明两款候选的轻便依据与差异"
+
+  - id: single-globex-route
+    description: Globex 单平台由 Main 直接检索
+    scenario_family: single-turn-recommendation
+    coverage_points: [explicit-globex-routing]
+    queries: ["只看 Globex，帮我找2款轻便旅行背包。"]
+    rubric:
+      p0:
+        - "不得混入淘宝或 Amazon 商品，展示商品必须来自 Globex 真实 hits"
+      p1:
+        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=globex_reference 且 top_k 在 1..5 范围内"
+        - "最终结构化展示最多 2 件；候选充足时展示 2 件，不足时如实说明"
+      p2:
+        - criterion: "单平台推荐清晰度"
+          score_1_anchor: "平台范围含混，或没有解释候选为什么轻便"
+          score_5_anchor: "明确保持 Globex 范围，并简洁说明两款候选的轻便依据与差异"
+
+  - id: amazon-unscoped-route
+    description: Amazon 未指定站点时不擅自限定 locale
+    scenario_family: single-turn-recommendation
+    coverage_points: [amazon-unscoped-routing]
+    queries: ["只看 Amazon，帮我找2款 noise cancelling headphones；我没有指定美国、日本或西班牙站。"]
+    rubric:
+      p0:
+        - "不得混入非 Amazon 商品，也不得声称用户指定了不存在的 Amazon 站点"
+      p1:
+        - "Main 不派发 SearchAgent，只使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数含 platform=amazon、top_k 在 1..5 范围内，site_locale 字段缺省或显式为 null"
+        - "不得根据英文 query、会话 locale、标题或商品 ID 擅自推断 Amazon 站点；最终最多展示 2 件真实候选"
+      p2:
+        - criterion: "未限定站点的表达质量"
+          score_1_anchor: "擅自宣称来自某一站点，或没有解释候选与降噪需求的关系"
+          score_5_anchor: "清楚保持 Amazon 未限定站点的边界，并简洁比较候选的降噪依据、差异和适用场景"
+
+  - id: explicit-count-cap-five
+    description: 用户要求超过五件时仍遵守展示上限
+    scenario_family: single-turn-recommendation
+    coverage_points: [display-cap-over-requested-five]
+    queries: ["只看 Globex，给我8件适合长途飞行的旅行小物。"]
+    rubric:
+      p0:
+        - "即使用户要求 8 件，最终文本和结构化 selected_products 也都不得展示超过 5 件；所有商品必须来自真实 hits"
+      p1:
+        - "Main 直接调用唯一的 product_search_tool，参数含 platform=globex_reference 且 top_k 不超过冻结上限 5"
+        - "最终清单与结构化 selected_products 顺序和数量一致，最多 5 件，并如实处理无法一次展示 8 件的边界"
+      p2:
+        - criterion: "数量上限说明质量"
+          score_1_anchor: "无视用户数量且不解释，或为了凑 8 件编造/重复商品"
+          score_5_anchor: "在不超过 5 件的前提下给出有区分度的推荐，并自然说明单轮展示上限或继续查看方式"
+
+  - id: search-state-new-session-isolation
+    description: 同一买家的新会话不继承上一会话商品状态
+    scenario_family: long-context-memory
+    coverage_points: [multi-session-search-state-isolation]
+    buyer_id: eval-session-isolation-buyer
+    depends_on: [multi-more-explicit-count]
+    queries:
+      - "这是一个新会话。请告诉我刚才第1个旅行背包是什么；如果当前会话没有商品历史就如实说，不要重新搜索。"
+    rubric:
+      p0:
+        - "不得把依赖用例另一会话的商品当作当前会话已经展示过的商品，不得编造刚才第1个商品"
+      p1:
+        - "本轮不得调用 product_search_tool 或 SearchAgent；当前结构化状态没有上一会话的 current_recommendations、verified_display_history 或 last_search 商品"
+        - "最终回答如实说明当前新会话没有可恢复的商品历史，并可请用户重新提供需求，但不得泄露依赖会话的商品身份"
+      p2:
+        - criterion: "新会话边界说明"
+          score_1_anchor: "错误恢复另一会话商品，或只机械报错且不给下一步"
+          score_5_anchor: "简洁说明当前会话没有该指代所需上下文，并给出安全、自然的继续方式"

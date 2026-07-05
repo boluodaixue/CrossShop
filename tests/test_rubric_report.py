@@ -372,15 +372,28 @@ def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
         policy=suite.evaluation_policy,
     )
 
-    assert coverage.designed_score == 40.452
+    assert coverage.designed_score == 82.643
     assert coverage.executed_score == 0.0
     short_multi = next(
         item
         for item in coverage.families
         if item.family_id == "short-multi-turn-recommendation"
     )
-    assert short_multi.coverage_percentage == 0.0
-    assert len(short_multi.missing_points) == 6
+    assert short_multi.coverage_percentage == 100.0
+    assert short_multi.missing_points == []
+    missing = {
+        (family.family_id, point)
+        for family in coverage.families
+        for point in family.missing_points
+    }
+    assert missing == {
+        ("long-context-memory", "summary-freeze-recovery"),
+        ("trade-order", "ownership-idempotency-failure"),
+        ("exception-degradation", "opensearch-unavailable"),
+        ("exception-degradation", "repository-inconsistency"),
+        ("exception-degradation", "model-or-embedding-timeout"),
+        ("exception-degradation", "reranker-or-platform-fallback"),
+    }
 
 
 def test_duplicate_cases_do_not_increase_coverage_for_the_same_point() -> None:
