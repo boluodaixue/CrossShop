@@ -9,7 +9,7 @@
        TextBlockDeltaEvent → token.delta
        Task* 工具结果      → plan.update（从 AgentState.tasks_context 快照）
        （业务工具的 tool.invoke / tool.result 与 agent.dispatch 由工具自身发布）
-    4. 上下文压缩检测：本轮结束后 AgentState.summary 发生变化即发布 context.compressed；
+    4. 上下文压缩检测：本轮结束后自定义 L3 摘要发生变化即发布 context.compressed；
     5. 上游瞬时错误（限流/并发/5xx）有界重试；
     6. 结束后发布 final.result / error，落盘 AgentState，返回最终文本。
 
@@ -207,6 +207,17 @@ def _prior_displayed_products(agent: Agent) -> tuple[dict[str, Any], ...]:
     ]
 
 
+def _l3_summary_hash(agent: Agent) -> str | None:
+    namespace = agent.state.middle_context.get("globex_context_v1")
+    if not isinstance(namespace, dict):
+        return None
+    stage = namespace.get("stage_summary")
+    if not isinstance(stage, dict):
+        return None
+    value = stage.get("summary_hash")
+    return value if isinstance(value, str) and value else None
+
+
 def _tasks_snapshot(agent: Agent) -> dict:
     tasks = agent.state.tasks_context.tasks
     return {
@@ -307,6 +318,7 @@ class MainAgentOrchestrator:
         try:
             agent = await self._sessions.get_or_create(session_id)
             summary_before = agent.state.summary
+            l3_summary_before = _l3_summary_hash(agent)
             # 语义缓存：仅首轮（无历史上下文）且非写操作意图时尝试命中，命中则零模型调用
             has_history = bool(agent.state.context)
             cached = await self._lookup_cache(intent, has_history)
@@ -342,7 +354,12 @@ class MainAgentOrchestrator:
             )
             await self._check_drift(session_id)
 
-            self._publish_compression(session_id, agent, summary_before)
+            self._publish_compression(
+                session_id,
+                agent,
+                summary_before,
+                l3_summary_before,
+            )
             self._bus.publish(
                 session_id,
                 "final.result",
@@ -654,10 +671,44 @@ class MainAgentOrchestrator:
             )
 
     def _publish_compression(
-        self, session_id: str, agent: Agent, summary_before: str | None
+        self,
+        session_id: str,
+        agent: Agent,
+        summary_before: str | None,
+        l3_summary_before: str | None,
     ) -> None:
-        """上下文压缩发生时，2.0 会把早期消息压成摘要写入 AgentState.summary，
-        比对本轮前后的 summary 即可判定并上报。"""
+        """Publish the real Main L3 transition, with legacy 2.0 compatibility."""
+
+        namespace = agent.state.middle_context.get("globex_context_v1", {})
+        if isinstance(namespace, dict):
+            stage = namespace.get("stage_summary")
+            compression = namespace.get("context_compression")
+            if isinstance(stage, dict) and isinstance(compression, dict):
+                summary_hash = stage.get("summary_hash")
+                if (
+                    compression.get("action") == "l3_stage_summary"
+                    and isinstance(summary_hash, str)
+                    and summary_hash
+                    and summary_hash != l3_summary_before
+                ):
+                    source_ids = stage.get("source_segment_ids")
+                    self._bus.publish(
+                        session_id,
+                        "context.compressed",
+                        {
+                            "action": "l3_stage_summary",
+                            "before_tokens": compression.get("before_tokens"),
+                            "after_tokens": compression.get("after_tokens"),
+                            "source_segment_count": (
+                                len(source_ids) if isinstance(source_ids, list) else 0
+                            ),
+                            "summary_hash": summary_hash,
+                        },
+                    )
+                    return
+
+        # Search/Trade or a future migration may still use AgentScope's built-in
+        # summary. Keep the old signal without treating it as Main's L3 proof.
         summary_after = agent.state.summary
         if not summary_after or summary_after == summary_before:
             return
@@ -665,6 +716,7 @@ class MainAgentOrchestrator:
             session_id,
             "context.compressed",
             {
+                "action": "agentscope_builtin_summary",
                 "summary_length": len(summary_after),
                 "context_messages": len(agent.state.context),
             },

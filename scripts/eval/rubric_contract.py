@@ -163,6 +163,7 @@ class RubricCaseSpec(BaseModel):
     buyer_id: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     prior_context: str = ""
+    execution_profile: Literal["default", "force-context-summary"] = "default"
     ground_truth_product_ids: list[str] = Field(default_factory=list)
     scenario_family: str = Field(
         min_length=1,
@@ -298,8 +299,45 @@ class ProductReferenceEvidence(BaseModel):
     site_locale: Literal["us", "es", "jp"] | None = None
 
 
+class ContextLifecycleEvidence(BaseModel):
+    """Privacy-safe proof that the real L2/L3 lifecycle advanced."""
+
+    raw_context_message_count: int = Field(default=0, ge=0)
+    freeze_cursor: int = Field(default=0, ge=0)
+    frozen_segment_count: int = Field(default=0, ge=0)
+    stage_summary_present: bool = False
+    stage_summary_source_count: int = Field(default=0, ge=0)
+    stage_source_message_start: int | None = Field(default=None, ge=0)
+    stage_source_message_end: int | None = Field(default=None, ge=0)
+    stage_summary_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    stage_summary_verified: bool = False
+    compression_action: Literal["none", "l3_stage_summary", "l3_no_gain"] = "none"
+    before_tokens: int | None = Field(default=None, ge=0)
+    after_tokens: int | None = Field(default=None, ge=0)
+    budget_decision: str = ""
+    total_input_tokens: int = Field(default=0, ge=0)
+    soft_limit_tokens: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_successful_summary(self) -> ContextLifecycleEvidence:
+        if self.compression_action != "l3_stage_summary":
+            return self
+        if self.before_tokens is None or self.after_tokens is None:
+            raise ValueError("successful L3 compression requires token counts")
+        if self.after_tokens >= self.before_tokens:
+            raise ValueError("successful L3 compression must reduce tokens")
+        if not self.stage_summary_present or not self.stage_summary_verified:
+            raise ValueError("successful L3 compression requires a verified summary")
+        if self.stage_summary_source_count < 1 or not self.stage_summary_hash:
+            raise ValueError("successful L3 compression requires source evidence")
+        return self
+
+
 class StructuredStateEvidence(BaseModel):
-    """Bounded privacy-safe L4 and preference snapshot after one turn."""
+    """Bounded privacy-safe context lifecycle, L4, and preference snapshot."""
 
     schema_version: str = ""
     revision: int = Field(default=0, ge=0)
@@ -318,6 +356,9 @@ class StructuredStateEvidence(BaseModel):
         max_length=20,
     )
     order: dict[str, Any] | None = None
+    context_lifecycle: ContextLifecycleEvidence = Field(
+        default_factory=ContextLifecycleEvidence,
+    )
     preference_before: PreferenceStateEvidence
     preference_after: PreferenceStateEvidence
 
@@ -476,6 +517,7 @@ class EvaluationEvidence(BaseModel):
 
     schema_version: Literal["rubric-evidence-v2"] = "rubric-evidence-v2"
     case_id: str = Field(min_length=1)
+    execution_profile: Literal["default", "force-context-summary"] = "default"
     session_id_hash: str = Field(min_length=1)
     turns: list[TurnEvidence] = Field(min_length=1)
 

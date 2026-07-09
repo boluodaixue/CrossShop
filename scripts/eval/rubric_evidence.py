@@ -15,8 +15,10 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from app.application.context.models import FrozenSegment, StageSummary
 from scripts.eval.rubric_contract import (
     AgentDispatchEvidence,
+    ContextLifecycleEvidence,
     DisplayedProductEvidence,
     EvaluationEvidence,
     PreferenceStateEvidence,
@@ -420,8 +422,17 @@ def _normalize_events(
         }:
             details = {
                 key: payload[key]
-                for key in ("classification", "retrying", "tool", "agent")
-                if key in payload and isinstance(payload[key], (str, bool))
+                for key in (
+                    "classification",
+                    "retrying",
+                    "tool",
+                    "agent",
+                    "action",
+                    "before_tokens",
+                    "after_tokens",
+                    "source_segment_count",
+                )
+                if key in payload and isinstance(payload[key], (str, bool, int))
             }
             signals.append(
                 RuntimeSignalEvidence(
@@ -587,14 +598,17 @@ def _state_product_refs(values: Any) -> list[ProductReferenceEvidence]:
 
 
 def build_structured_state_evidence(
-    session_context: Any,
+    context_namespace: Any,
     *,
+    raw_context_message_count: int = 0,
     preference_before: PreferenceStateEvidence,
     preference_after: PreferenceStateEvidence,
 ) -> StructuredStateEvidence:
-    """Project the existing L4 state without buyer, address, or raw request text."""
+    """Project L2/L3/L4 metadata without buyer, address, or raw text."""
 
-    context = session_context if isinstance(session_context, Mapping) else {}
+    namespace = context_namespace if isinstance(context_namespace, Mapping) else {}
+    nested_context = namespace.get("session_context")
+    context = nested_context if isinstance(nested_context, Mapping) else namespace
     search = context.get("last_search")
     search = search if isinstance(search, Mapping) else {}
     arguments: list[dict[str, Any]] = []
@@ -626,6 +640,33 @@ def build_structured_state_evidence(
     history = recommendation.get("displayed_history")
     if not isinstance(history, list):
         history = recommendation.get("displayed_products")
+    frozen: list[FrozenSegment] = []
+    for item in namespace.get("frozen_segments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            frozen.append(FrozenSegment.from_dict(item))
+        except (KeyError, TypeError, ValueError):
+            continue
+    stage_raw = namespace.get("stage_summary")
+    stage: StageSummary | None = None
+    if isinstance(stage_raw, Mapping):
+        try:
+            stage = StageSummary.from_dict(stage_raw)
+        except (KeyError, TypeError, ValueError):
+            stage = None
+    frozen_hashes = {item.segment_id: item.content_hash for item in frozen}
+    stage_verified = bool(stage) and all(
+        frozen_hashes.get(source["segment_id"]) == source["content_hash"]
+        for source in stage.source_segments
+    )
+    compression = namespace.get("context_compression")
+    compression = compression if isinstance(compression, Mapping) else {}
+    action = str(compression.get("action") or "none")
+    if action not in {"none", "l3_stage_summary", "l3_no_gain"}:
+        action = "none"
+    budget = namespace.get("budget_report")
+    budget = budget if isinstance(budget, Mapping) else {}
     return StructuredStateEvidence(
         schema_version=str(context.get("schema_version") or ""),
         revision=max(0, int(context.get("revision") or 0)),
@@ -641,6 +682,37 @@ def build_structured_state_evidence(
         )[:5],
         verified_display_history=_state_product_refs(history)[:20],
         order=safe_order or None,
+        context_lifecycle=ContextLifecycleEvidence(
+            raw_context_message_count=max(0, raw_context_message_count),
+            freeze_cursor=max(0, int(namespace.get("freeze_cursor") or 0)),
+            frozen_segment_count=len(frozen),
+            stage_summary_present=isinstance(stage_raw, Mapping),
+            stage_summary_source_count=(
+                len(stage.source_segments) if stage is not None else 0
+            ),
+            stage_source_message_start=(
+                stage.source_message_start if stage is not None else None
+            ),
+            stage_source_message_end=(
+                stage.source_message_end if stage is not None else None
+            ),
+            stage_summary_hash=(stage.summary_hash if stage is not None else None),
+            stage_summary_verified=stage_verified,
+            compression_action=action,
+            before_tokens=(
+                int(compression["before_tokens"])
+                if isinstance(compression.get("before_tokens"), int)
+                else None
+            ),
+            after_tokens=(
+                int(compression["after_tokens"])
+                if isinstance(compression.get("after_tokens"), int)
+                else None
+            ),
+            budget_decision=str(namespace.get("budget_decision") or ""),
+            total_input_tokens=max(0, int(budget.get("total_input_tokens") or 0)),
+            soft_limit_tokens=max(0, int(budget.get("soft_limit_tokens") or 0)),
+        ),
         preference_before=preference_before,
         preference_after=preference_after,
     )
@@ -700,9 +772,11 @@ def build_evaluation_evidence(
     case_id: str,
     session_id: str,
     turns: list[TurnEvidence],
+    execution_profile: str = "default",
 ) -> EvaluationEvidence:
     return EvaluationEvidence(
         case_id=case_id,
+        execution_profile=execution_profile,
         session_id_hash=_digest(session_id),
         turns=turns,
     )

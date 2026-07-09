@@ -20,6 +20,7 @@ from agentscope.message import (
 from agentscope.state import AgentState
 from agentscope.tool import ToolResponse
 
+from app.application.agents.orchestrator import MainAgentOrchestrator
 from app.application.context import (
     CACHE_BREAKPOINT_TEXT,
     ContextBudgetPolicy,
@@ -41,6 +42,7 @@ from app.infrastructure.context_middleware import (
     ContextLifecycleMiddleware,
     ContextOwnershipError,
 )
+from app.infrastructure.eventbus import TradeEventBus
 
 
 def _turn(
@@ -86,6 +88,57 @@ def _middleware() -> ContextLifecycleMiddleware:
         model_context_tokens=8_000,
         tool_result_limit=2_000,
     )
+
+
+def test_custom_l3_transition_publishes_one_privacy_safe_event() -> None:
+    bus = TradeEventBus()
+    queue = bus.subscribe("session-1")
+    orchestrator = object.__new__(MainAgentOrchestrator)
+    orchestrator._bus = bus  # noqa: SLF001
+    agent = SimpleNamespace(
+        state=SimpleNamespace(
+            summary=None,
+            context=["raw-1", "raw-2"],
+            middle_context={
+                CONTEXT_NAMESPACE: {
+                    "stage_summary": {
+                        "source_segment_ids": ["frozen-0-2"],
+                        "summary_hash": "a" * 64,
+                    },
+                    "context_compression": {
+                        "action": "l3_stage_summary",
+                        "before_tokens": 120,
+                        "after_tokens": 80,
+                    },
+                },
+            },
+        ),
+    )
+
+    orchestrator._publish_compression(  # noqa: SLF001
+        "session-1",
+        agent,
+        None,
+        None,
+    )
+
+    event = queue.get_nowait()
+    assert event.type == "context.compressed"
+    assert event.payload == {
+        "action": "l3_stage_summary",
+        "before_tokens": 120,
+        "after_tokens": 80,
+        "source_segment_count": 1,
+        "summary_hash": "a" * 64,
+    }
+
+    orchestrator._publish_compression(  # noqa: SLF001
+        "session-1",
+        agent,
+        None,
+        "a" * 64,
+    )
+    assert queue.empty()
 
 
 def test_phase_a_l4_is_idempotent_and_ignores_orphan_and_failed_results() -> None:

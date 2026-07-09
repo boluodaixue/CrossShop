@@ -79,8 +79,10 @@ docker/                # docker-compose.yaml（app + worker + qdrant + redis + f
   `cross-border-guide.md` 未复制进本 release。该工具只提供目录样本款型、属性分布、人民币历史
   价格区间及经批准的选购/避坑提示，不承诺实时热销、销量排行、市场份额、实时价格、免税额度
   或动态跨境通则
-- **上下文工程**：ContextConfig 定制压缩（trigger_ratio 0.75 / reserve_ratio 0.15 + 工具结果截断），
-  摘要落 AgentState.summary 并推送 `context.compressed` 事件；配合 Token 预算中间件收口单轮开销
+- **上下文工程**：Main 保留原始 AgentState，由 ContextLifecycleMiddleware 将完整交互冻结为
+  hash 可证 L2，并在 70% soft threshold 后仅于 token 真减少时形成确定性 L3；L4 单独保存
+  商品/订单事实，pre-model assembler 重建模型视图。L3 hash 变化会推送脱敏的
+  `context.compressed` 事件；Search/Trade 仍可使用 AgentScope 常规 ContextConfig
 - **工具韧性**：ToolResilienceMiddleware 分级超时 + 按工具熔断（closed→open→half_open），
   触发时返回 [error] 让模型如实告知，不编造数字
 - **真并行**：同一轮内多个 `task_dispatch` 由 2.0 并发批执行（`is_concurrency_safe`），

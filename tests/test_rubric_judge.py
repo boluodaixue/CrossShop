@@ -137,7 +137,7 @@ def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
         "p1": 35.0,
         "p2": 40.0,
     }
-    assert len(suite.cases) == 27
+    assert len(suite.cases) == 28
     memory_recall = next(case for case in suite.cases if case.id == "memory-recall")
     assert memory_recall.depends_on == ["memory-write"]
     assert memory_recall.rubric.p2[0].score_1_anchor
@@ -149,6 +149,10 @@ def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
     )
     assert isolation.depends_on == ["memory-write"]
     assert isolation.buyer_id == "eval-isolation-buyer"
+    compression = next(
+        case for case in suite.cases if case.id == "context-compression-recovery"
+    )
+    assert compression.execution_profile == "force-context-summary"
 
 
 def test_judge_prompt_contains_refs_schema_and_no_weighted_score_instruction() -> None:

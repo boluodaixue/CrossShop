@@ -80,7 +80,10 @@ _PHONE_RE = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 
 _BUSINESS_EVENT_FIELDS = frozenset(
     {
+        "action",
         "agent",
+        "after_tokens",
+        "before_tokens",
         "budget_tier",
         "context_messages",
         "elapsed_ms",
@@ -93,6 +96,7 @@ _BUSINESS_EVENT_FIELDS = frozenset(
         "site_locale",
         "similarity",
         "summary_length",
+        "source_segment_count",
         "to",
         "tool",
     },

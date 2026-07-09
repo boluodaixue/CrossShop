@@ -8,6 +8,7 @@ import pytest
 from opentelemetry.trace import Status, StatusCode
 
 from app.infrastructure.eventbus import TradeEvent, TradeEventBus
+from app.application.context.models import FrozenSegment, StageSummary
 from scripts.eval.rubric_evidence import (
     EvidenceNormalizationError,
     build_evaluation_evidence,
@@ -32,6 +33,57 @@ def _state():
         preference_before=_preference(),
         preference_after=_preference(),
     )
+
+
+def test_context_lifecycle_projects_verified_metadata_without_content() -> None:
+    segment = FrozenSegment(
+        segment_id="frozen-0-4",
+        content='{"user":"private marker","tools":[],"assistant":"private answer"}',
+        source_message_start=0,
+        source_message_end=4,
+    )
+    stage = StageSummary(
+        source_segments=(
+            {"segment_id": segment.segment_id, "content_hash": segment.content_hash},
+        ),
+        user_requests=("private marker",),
+        tool_facts=(),
+        assistant_outcomes=("private answer",),
+        source_message_start=0,
+        source_message_end=4,
+    )
+
+    state = build_structured_state_evidence(
+        {
+            "session_context": {"schema_version": "session-context-v1"},
+            "freeze_cursor": 4,
+            "frozen_segments": [segment.to_dict()],
+            "stage_summary": stage.to_dict(),
+            "context_compression": {
+                "action": "l3_stage_summary",
+                "before_tokens": 100,
+                "after_tokens": 70,
+            },
+            "budget_decision": "needs_l3",
+            "budget_report": {"total_input_tokens": 70, "soft_limit_tokens": 1},
+        },
+        raw_context_message_count=6,
+        preference_before=_preference(),
+        preference_after=_preference(),
+    )
+
+    lifecycle = state.context_lifecycle
+    assert lifecycle.raw_context_message_count == 6
+    assert lifecycle.freeze_cursor == 4
+    assert lifecycle.frozen_segment_count == 1
+    assert lifecycle.stage_summary_source_count == 1
+    assert lifecycle.stage_summary_verified is True
+    assert lifecycle.stage_source_message_start == 0
+    assert lifecycle.before_tokens == 100
+    assert lifecycle.after_tokens == 70
+    serialized = state.model_dump_json()
+    assert "private marker" not in serialized
+    assert "private answer" not in serialized
 
 
 def _span(
@@ -180,6 +232,36 @@ def test_real_event_bus_event_object_is_normalized() -> None:
     assert turn.tool_calls[0].arguments == {
         "normalized_query": "露营灯",
         "platform": "taobao",
+    }
+
+
+def test_context_compression_signal_keeps_only_safe_operational_counts() -> None:
+    turn = build_turn_evidence(
+        turn_index=1,
+        user_input="继续",
+        final_text="好的",
+        displayed_products=[],
+        events=[
+            _event(
+                "context.compressed",
+                {
+                    "action": "l3_stage_summary",
+                    "before_tokens": 100,
+                    "after_tokens": 70,
+                    "source_segment_count": 2,
+                    "summary_hash": "a" * 64,
+                    "content": "must not survive",
+                },
+            ),
+        ],
+        structured_state=_state(),
+    )
+
+    assert turn.runtime_signals[0].details == {
+        "action": "l3_stage_summary",
+        "before_tokens": 100,
+        "after_tokens": 70,
+        "source_segment_count": 2,
     }
 
 

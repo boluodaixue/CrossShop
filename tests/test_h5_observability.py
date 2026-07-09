@@ -316,6 +316,18 @@ def test_intent_business_events_and_product_stages_share_one_trace(
             "final.result",
             {"text": "完整回复不应进入 trace", "displayed_products": [{"rank": 1}]},
         )
+        bus.publish(
+            "session-private",
+            "context.compressed",
+            {
+                "action": "l3_stage_summary",
+                "before_tokens": 100,
+                "after_tokens": 70,
+                "source_segment_count": 2,
+                "summary_hash": "a" * 64,
+                "content": "摘要正文不应进入 trace",
+            },
+        )
         assert root.is_recording()
     provider.shutdown()
 
@@ -338,9 +350,17 @@ def test_intent_business_events_and_product_stages_share_one_trace(
     assert events["globex.agent.dispatch"]["globex.platform"] == "taobao"
     assert "demands" not in events["globex.agent.dispatch"]
     assert events["globex.final.result"]["globex.recommended_count"] == 1
+    assert events["globex.context.compressed"] == {
+        "globex.action": "l3_stage_summary",
+        "globex.before_tokens": 100,
+        "globex.after_tokens": 70,
+        "globex.source_segment_count": 2,
+    }
     serialized = "\n".join(span.to_json() for span in collector.spans)
     assert "完整私密需求" not in serialized
     assert "完整回复" not in serialized
+    assert "摘要正文" not in serialized
+    assert "a" * 64 not in serialized
     assert "session-private" not in serialized
     assert "buyer-private" not in serialized
 

@@ -11,11 +11,15 @@ import pytest
 
 from scripts.eval.rubric_cases import load_case_suite
 from scripts.eval.rubric_contract import (
+    ContextLifecycleEvidence,
+    DisplayedProductEvidence,
     EvaluationEvidence,
     P2CriterionSpec,
     PreferenceStateEvidence,
+    RuntimeSignalEvidence,
     RubricSpec,
     StructuredStateEvidence,
+    ToolCallEvidence,
     TurnEvidence,
 )
 from scripts.eval.rubric_ground_truth import ProductFactWindow
@@ -25,6 +29,8 @@ from scripts.eval.rubric_runner import (
     EvaluationRunError,
     _safe_failure,
     _scoped_buyer_id,
+    _configure_execution_profile,
+    _validate_execution_profile_evidence,
     build_dependency_context,
     build_run_manifest,
     call_judge,
@@ -95,6 +101,149 @@ def test_case_selection_includes_declared_dependency_in_file_order() -> None:
     assert [case.id for case in selected] == ["memory-write", "memory-recall"]
     with pytest.raises(ValueError, match="unknown case ids"):
         select_cases(suite.cases, ["missing"])
+
+
+def test_context_compression_case_uses_explicit_stress_profile() -> None:
+    suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
+    case = next(
+        item for item in suite.cases if item.id == "context-compression-recovery"
+    )
+
+    assert case.execution_profile == "force-context-summary"
+    assert case.coverage_points == ["summary-freeze-recovery"]
+
+
+def test_force_context_summary_profile_only_changes_target_middleware(
+    tmp_path: Path,
+) -> None:
+    from app.infrastructure.context_middleware import ContextLifecycleMiddleware
+
+    target = ContextLifecycleMiddleware(
+        artifact_root=tmp_path,
+        model_context_tokens=128_000,
+        tool_result_limit=8_000,
+    )
+    untouched = ContextLifecycleMiddleware(
+        artifact_root=tmp_path,
+        model_context_tokens=128_000,
+        tool_result_limit=8_000,
+    )
+    agent = SimpleNamespace(_model_call_middlewares=[target])
+
+    _configure_execution_profile(agent, "force-context-summary")
+    _configure_execution_profile(
+        SimpleNamespace(_model_call_middlewares=[untouched]),
+        "default",
+    )
+
+    assert target._policy.soft_limit_tokens == 1  # noqa: SLF001
+    assert untouched._policy.soft_limit_tokens == 89_600  # noqa: SLF001
+
+
+def _compression_profile_evidence(
+    *,
+    first_product: bool = True,
+    final_tool: bool = False,
+) -> EvaluationEvidence:
+    lifecycle = ContextLifecycleEvidence(
+        raw_context_message_count=4,
+        freeze_cursor=2,
+        frozen_segment_count=2,
+        stage_summary_present=True,
+        stage_summary_source_count=1,
+        stage_source_message_start=0,
+        stage_source_message_end=2,
+        stage_summary_hash="a" * 64,
+        stage_summary_verified=True,
+        compression_action="l3_stage_summary",
+        before_tokens=100,
+        after_tokens=70,
+        soft_limit_tokens=1,
+    )
+    final_tools = (
+        [
+            ToolCallEvidence(
+                order=1,
+                call_id="call-1",
+                agent="main",
+                tool="product_search_tool",
+            )
+        ]
+        if final_tool
+        else []
+    )
+    return EvaluationEvidence(
+        case_id="context-compression-recovery",
+        execution_profile="force-context-summary",
+        session_id_hash="0" * 64,
+        turns=[
+            TurnEvidence(
+                turn_index=1,
+                user_input="first",
+                route="main.direct",
+                displayed_products=(
+                    [
+                        DisplayedProductEvidence(
+                            rank=1,
+                            product_id="P1008",
+                            platform="globex_reference",
+                        )
+                    ]
+                    if first_product
+                    else []
+                ),
+                structured_state=_state(),
+                final_text="first result",
+            ),
+            TurnEvidence(
+                turn_index=2,
+                user_input="recover",
+                route="main.direct",
+                tool_calls=final_tools,
+                runtime_signals=[
+                    RuntimeSignalEvidence(
+                        order=1,
+                        signal="context.compressed",
+                        details={"action": "l3_stage_summary"},
+                    )
+                ],
+                structured_state=StructuredStateEvidence(
+                    context_lifecycle=lifecycle,
+                    preference_before=PreferenceStateEvidence(
+                        count=0,
+                        content_hash="0" * 64,
+                    ),
+                    preference_after=PreferenceStateEvidence(
+                        count=0,
+                        content_hash="0" * 64,
+                    ),
+                ),
+                final_text="recovered",
+            ),
+        ],
+    )
+
+
+def test_compression_profile_fails_closed_without_product_or_with_final_tool() -> None:
+    case = next(
+        item
+        for item in load_case_suite(
+            PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml"
+        ).cases
+        if item.id == "context-compression-recovery"
+    )
+
+    _validate_execution_profile_evidence(case, _compression_profile_evidence())
+    with pytest.raises(RuntimeError, match="verified first-turn product"):
+        _validate_execution_profile_evidence(
+            case,
+            _compression_profile_evidence(first_product=False),
+        )
+    with pytest.raises(RuntimeError, match="final turn must not call tools"):
+        _validate_execution_profile_evidence(
+            case,
+            _compression_profile_evidence(final_tool=True),
+        )
 
 
 def test_run_scoped_buyer_is_stable_within_run_and_isolated_between_runs() -> None:

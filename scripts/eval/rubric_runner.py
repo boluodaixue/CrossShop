@@ -17,7 +17,7 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +28,7 @@ from opentelemetry.sdk.trace.export import SpanExportResult
 from app.application.agents.orchestrator import SubmitIntentInput
 from app.composition import Container, build_container
 from app.infrastructure.settings import Settings, load_settings
+from app.infrastructure.context_middleware import ContextLifecycleMiddleware
 from app.infrastructure.tracing import setup_tracing
 from app.infrastructure.transient import is_transient_error
 from scripts.eval.rubric_cases import load_case_suite
@@ -175,6 +176,10 @@ async def collect_case_evidence(
     """Execute all turns and capture complete local events plus OTel spans."""
 
     session_id = f"rubric-{case.id}-{uuid.uuid4().hex[:10]}"
+    agent = await container.orchestrator._sessions.get_or_create(  # noqa: SLF001
+        session_id,
+    )
+    _configure_execution_profile(agent, case.execution_profile)
     turns: list[TurnEvidence] = []
     for turn_index, query in enumerate(case.queries, start=1):
         queue = container.bus.subscribe(session_id)
@@ -194,7 +199,10 @@ async def collect_case_evidence(
             while not queue.empty():
                 events.append(queue.get_nowait())
             preference_after = await _preference_state(container, buyer_id)
-            session_context = await _session_context(container, session_id)
+            context_namespace, raw_context_message_count = await _context_state(
+                container,
+                session_id,
+            )
             turns.append(
                 build_turn_evidence(
                     turn_index=turn_index,
@@ -203,7 +211,8 @@ async def collect_case_evidence(
                     displayed_products=list(output.displayed_products),
                     events=events,
                     structured_state=build_structured_state_evidence(
-                        session_context,
+                        context_namespace,
+                        raw_context_message_count=raw_context_message_count,
                         preference_before=preference_before,
                         preference_after=preference_after,
                     ),
@@ -212,11 +221,14 @@ async def collect_case_evidence(
             )
         finally:
             container.bus.unsubscribe(session_id, queue)
-    return build_evaluation_evidence(
+    evidence = build_evaluation_evidence(
         case_id=case.id,
         session_id=session_id,
         turns=turns,
+        execution_profile=case.execution_profile,
     )
+    _validate_execution_profile_evidence(case, evidence)
+    return evidence
 
 
 async def _preference_state(
@@ -237,13 +249,84 @@ async def _preference_state(
     )
 
 
-async def _session_context(container: Container, session_id: str) -> Any:
+def _configure_execution_profile(agent: Any, profile: str) -> None:
+    """Apply a deterministic per-session stress profile in the eval process only."""
+
+    if profile == "default":
+        return
+    if profile != "force-context-summary":
+        raise ValueError(f"unsupported execution profile: {profile}")
+    lifecycle = [
+        middleware
+        for middleware in agent._model_call_middlewares  # noqa: SLF001
+        if isinstance(middleware, ContextLifecycleMiddleware)
+    ]
+    if len(lifecycle) != 1:
+        raise RuntimeError("expected exactly one context lifecycle middleware")
+    middleware = lifecycle[0]
+    middleware._policy = replace(  # noqa: SLF001
+        middleware._policy,  # noqa: SLF001
+        soft_limit_tokens=1,
+    )
+
+
+def _validate_execution_profile_evidence(
+    case: RubricCaseSpec,
+    evidence: EvaluationEvidence,
+) -> None:
+    if case.execution_profile != "force-context-summary":
+        return
+    if not evidence.turns[0].displayed_products:
+        raise RuntimeError(
+            "compression recovery requires a verified first-turn product"
+        )
+    if evidence.turns[-1].tool_calls:
+        raise RuntimeError("compression recovery final turn must not call tools")
+    compressed_turns = [
+        turn
+        for turn in evidence.turns
+        if turn.structured_state.context_lifecycle.compression_action
+        == "l3_stage_summary"
+    ]
+    if not compressed_turns:
+        raise RuntimeError("forced context summary did not produce L3 evidence")
+    if not any(
+        turn.structured_state.context_lifecycle.stage_summary_verified
+        and turn.structured_state.context_lifecycle.stage_summary_source_count > 0
+        and turn.structured_state.context_lifecycle.stage_source_message_start == 0
+        and turn.structured_state.context_lifecycle.soft_limit_tokens == 1
+        and turn.structured_state.context_lifecycle.before_tokens is not None
+        and turn.structured_state.context_lifecycle.after_tokens is not None
+        and turn.structured_state.context_lifecycle.before_tokens
+        > turn.structured_state.context_lifecycle.after_tokens
+        for turn in compressed_turns
+    ):
+        raise RuntimeError("forced context summary evidence is incomplete")
+    final_lifecycle = evidence.turns[-1].structured_state.context_lifecycle
+    if (
+        final_lifecycle.stage_source_message_end is None
+        or final_lifecycle.raw_context_message_count
+        <= final_lifecycle.stage_source_message_end
+    ):
+        raise RuntimeError("raw context retention is not proven after L3")
+    if not any(
+        signal.signal == "context.compressed"
+        and signal.details.get("action") == "l3_stage_summary"
+        for turn in evidence.turns
+        for signal in turn.runtime_signals
+    ):
+        raise RuntimeError("forced context summary emitted no runtime signal")
+
+
+async def _context_state(
+    container: Container,
+    session_id: str,
+) -> tuple[dict[str, Any], int]:
     agent = await container.orchestrator._sessions.get_or_create(session_id)  # noqa: SLF001
     namespace = agent.state.middle_context.get("globex_context_v1", {})
     if not isinstance(namespace, dict):
-        return {}
-    context = namespace.get("session_context")
-    return context if isinstance(context, dict) else {}
+        return {}, len(agent.state.context)
+    return namespace, len(agent.state.context)
 
 
 async def call_judge(

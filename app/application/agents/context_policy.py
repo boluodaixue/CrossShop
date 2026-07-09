@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """context_policy
 
-Context 工程策略：把 2.0 内置的上下文压缩配置成跨境购物场景的口径
-（即教程 Cache Breakpoint 章节要解决的问题——长对话不爆 token 且关键事实不丢）。
+AgentScope 内置上下文配置，当前供 Search/Trade 的常规压缩以及 Main 的工具结果上限使用。
+Main 的长会话主链已由 ContextLifecycleMiddleware 的 L2/L3/L4 assembler 接管，
+并在 on_compress_context 中跳过这里的删除式摘要。
 
-压缩触发：上下文占用达 context_size * trigger_ratio 时，Agent 自动把早期消息
-压缩成摘要写入 AgentState.summary，保留末段 reserve_ratio 的原始消息。
+Search/Trade 的压缩触发：上下文占用达 model context * trigger_ratio 时，Agent 自动把
+早期消息压缩成摘要写入 AgentState.summary，保留末段 reserve_ratio 的原始消息。
 
-关键取舍：摘要提示词显式列出"必须逐字保留"的事实清单（偏好、product_id/sku_id、
+关键取舍：内置摘要提示词显式列出"必须逐字保留"的事实清单（偏好、product_id/sku_id、
 订单号与金额、待确认动作），避免压缩后 Agent 忘记已确认的商品或订单。
 
 注意：summary_template 的占位符必须与 2.0 内置 summary_schema 的五个字段一致
