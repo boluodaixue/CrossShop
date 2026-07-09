@@ -179,7 +179,24 @@ uv run pytest                          # 完整单测回归
 uv run python scripts/smoke_e2e.py    # 端到端冒烟：WS 订阅 + 提交意图，实时打印事件流
 uv run python scripts/verify_parallel.py   # 并行验证：同轮多派 vs 串行的墙钟耗时与事件重叠数对比
 SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.rubric_runner  # Rubric v3：质量总分、P0 门禁与用户场景覆盖
+SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_compression_runner  # 默认 128K/70%：10+ 轮单次 token 上限、累计成本、Ark Prompt Cache、自然 L3 与压缩后恢复
+SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_compression_runner --smoke  # 只跑固定十轮，先核对 token/cache 与成本
+SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_resume_runner --source-session-id <session> --source-artifact-dir <artifact> --max-trigger-turns 2  # 克隆持久化长会话，仅追加少量轮次验证 L2/L3 与恢复
 ```
+
+上下文专项场景固定在 `eval/context_compression_scenario_v1.yaml`。运行器不会降低
+`CONTEXT_SIZE` 或 soft threshold；它逐轮记录全部 Main/子 Agent 模型调用的
+input/output/total token 以及 Ark `cached_tokens`，在首次真实 `context.compressed`
+后验证 StageSummary 来源 hash，并要求不重新搜索即可恢复会话最开始的商品名称、价格和币种。
+Langfuse 中每次模型调用还会产生一个 `globex.prompt.breakdown` Span，仅记录 system、tool schema、
+recent history、frozen context、tool result 和 total estimated token 数字；评测 manifest 保存脱敏后的
+`langfuse_trace_session_hash`，用于把本地报告与 Langfuse Trace 对齐，不上传原始会话 ID 或正文。
+报告默认写入 `artifacts/context-compression/<run-id>/`。该命令会产生真实模型与检索调用，
+应先运行本地测试，再单独安排小规模冒烟和正式评测。
+续跑命令同样不会降低默认阈值；若克隆会话只验证到 L2 冻结推进、尚未自然触发 L3，
+报告会明确标记 `L2_PASS_L3_NOT_REACHED`，不会把它冒充为压缩恢复通过。
+从已有续跑克隆继续时，运行器会从持久化 AgentState 自动计算已完成轮数；若增量 artifact
+不含最初商品锚点，可用 `--anchor-artifact-dir <original-artifact>` 指向原始完整证据。
 
 当前用例和版本化评分/覆盖协议位于 `eval/rubric_cases_v3.yaml`。P1 使用本地 EventBus/OTel 执行证据，
 商品事实来自当前 `ProductRepository`；LangFuse 只用于外部观察，不是评分依赖。

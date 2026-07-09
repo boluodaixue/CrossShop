@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from agentscope.message import Msg, ToolCallBlock, ToolResultBlock, ToolResultState
+from agentscope.message import (
+    AssistantMsg,
+    Msg,
+    ToolCallBlock,
+    ToolResultBlock,
+    ToolResultState,
+)
 
 _NON_BUYER_USER_MESSAGE_NAMES = frozenset({"memory_hint"})
+_STRUCTURED_OUTPUT_TOOL = "GenerateStructuredOutput"
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,8 @@ def _build_unit(
     if missing:
         reasons.append("missing_tool_result")
     if final is None:
+        final = _structured_final_answer(messages, calls, results, call_order)
+    if final is None:
         reasons.append("missing_final_answer")
     interactions = tuple(
         ToolInteraction(
@@ -153,6 +162,37 @@ def _build_unit(
         complete=not reasons,
         incomplete_reason=",".join(dict.fromkeys(reasons)),
     )
+
+
+def _structured_final_answer(
+    messages: Sequence[Msg],
+    calls: Mapping[str, tuple[ToolCallBlock, int]],
+    results: Mapping[str, tuple[ToolResultBlock, int]],
+    call_order: Sequence[str],
+) -> Msg | None:
+    """Project a successful structured-output call into a compactable answer.
+
+    AgentScope stores ``final_text`` in the built-in tool call arguments and a
+    success acknowledgement in the paired result. The projection is used only
+    by L2/L3 compaction; raw AgentState messages remain untouched.
+    """
+
+    for call_id in reversed(call_order):
+        call, message_index = calls[call_id]
+        if call.name != _STRUCTURED_OUTPUT_TOOL or call_id not in results:
+            continue
+        result = results[call_id][0]
+        if str(getattr(result.state, "value", result.state)) != "success":
+            continue
+        payload = _parse_args(call.input)
+        if not isinstance(payload, Mapping):
+            continue
+        final_text = payload.get("final_text")
+        if not isinstance(final_text, str) or not final_text.strip():
+            continue
+        source = messages[message_index]
+        return AssistantMsg(name=source.name, content=final_text.strip())
+    return None
 
 
 def settled_prefix_units(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,7 @@ from app.application.context import (
     StageSummary,
     ToolArtifactStore,
     advance_context_state,
+    assemble_llm_input_messages,
     format_tool_output,
     freeze_settled_units,
     group_interaction_units,
@@ -72,6 +74,38 @@ def _turn(
                     state=result_state,
                 ),
                 TextBlock(type="text", text=answer),
+            ],
+        ),
+    ]
+
+
+def _structured_only_turn(
+    query: str,
+    final_text: str,
+    *,
+    call_id: str = "structured-1",
+    result_state: ToolResultState = ToolResultState.SUCCESS,
+) -> list:
+    return [
+        UserMsg(name="buyer", content=query),
+        AssistantMsg(
+            name="Main",
+            content=[
+                ToolCallBlock(
+                    id=call_id,
+                    name="GenerateStructuredOutput",
+                    input=json.dumps(
+                        {"final_text": final_text, "selected_products": []},
+                        ensure_ascii=False,
+                    ),
+                    state=ToolCallState.FINISHED,
+                ),
+                ToolResultBlock(
+                    id=call_id,
+                    name="GenerateStructuredOutput",
+                    output="Structured output generated successfully.",
+                    state=result_state,
+                ),
             ],
         ),
     ]
@@ -614,11 +648,75 @@ def test_phase_f_assembler_is_non_destructive_and_has_logical_breakpoint() -> No
     )
     assert [message.model_dump_json() for message in messages] == snapshot
     assert state["freeze_cursor"] == 2
+    assert len(state["budget_report"]["stable_prefix_sha256"]) == 64
+    assert state["budget_report"]["stable_prefix_estimated_tokens"] > 0
     assert any(
         CACHE_BREAKPOINT_TEXT[:-3] in (message.get_text_content() or "")
         for message in model_view
     )
     assert model_view[-1].get_text_content() == "第二轮"
+
+
+def test_phase_f_breakpoint_hash_ignores_agentscope_runtime_ids() -> None:
+    frozen = FrozenSegment(
+        segment_id="frozen-0-2",
+        content='{"assistant":"回答","tools":[],"user":"问题"}',
+        source_message_start=0,
+        source_message_end=2,
+    )
+    kwargs = {
+        "fixed_messages": [SystemMsg(name="system", content="固定提示")],
+        "active_messages": [UserMsg(name="buyer", content="当前问题")],
+        "frozen_segments": [frozen],
+        "session_context": L4Context(revision=1).to_dict(),
+    }
+
+    first = assemble_llm_input_messages(**kwargs)
+    second = assemble_llm_input_messages(**kwargs)
+    first_breakpoint = first[2].get_text_content()
+    second_breakpoint = second[2].get_text_content()
+
+    assert first_breakpoint == second_breakpoint
+    assert "prefix_sha256=" in first_breakpoint
+
+
+def test_structured_output_only_turn_is_complete_without_mutating_raw_state() -> None:
+    messages = [
+        *_structured_only_turn("第一轮", "结构化最终回答"),
+        UserMsg(name="buyer", content="第二轮"),
+    ]
+    snapshot = [message.model_dump_json() for message in messages]
+
+    units = settled_prefix_units(messages)
+
+    assert len(units) == 1
+    assert units[0].complete is True
+    assert units[0].final_answer is not None
+    assert units[0].final_answer.get_text_content() == "结构化最终回答"
+    assert [message.model_dump_json() for message in messages] == snapshot
+
+
+@pytest.mark.parametrize(
+    ("final_text", "result_state"),
+    [
+        ("", ToolResultState.SUCCESS),
+        ("不会被接受", ToolResultState.ERROR),
+    ],
+)
+def test_structured_output_projection_rejects_empty_or_failed_results(
+    final_text: str,
+    result_state: ToolResultState,
+) -> None:
+    messages = [
+        *_structured_only_turn(
+            "第一轮",
+            final_text,
+            result_state=result_state,
+        ),
+        UserMsg(name="buyer", content="第二轮"),
+    ]
+
+    assert settled_prefix_units(messages) == []
 
 
 @pytest.mark.asyncio
@@ -680,6 +778,78 @@ async def test_phase_f_on_model_call_uses_view_and_persists_middle_context() -> 
     )
     restored = AgentState.model_validate_json(state.model_dump_json())
     assert restored.middle_context[CONTEXT_NAMESPACE]["freeze_cursor"] == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_f_model_call_exports_privacy_safe_prompt_breakdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware = _middleware()
+    state = AgentState(
+        session_id="session-1",
+        context=[*_turn("第一轮", "一"), UserMsg(name="buyer", content="第二轮")],
+    )
+    state.middle_context[CONTEXT_NAMESPACE] = {
+        "session_context": L4Context(
+            request={"current_raw_query": "第二轮"},
+        ).to_dict(),
+    }
+    agent = SimpleNamespace(state=state, name="Main")
+    observed: dict[str, object] = {}
+
+    @contextmanager
+    def _capture_span(name, attributes):
+        observed["name"] = name
+        observed["attributes"] = dict(attributes)
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(
+        "app.infrastructure.context_middleware.trace_span",
+        _capture_span,
+    )
+
+    class _Model:
+        async def count_tokens(self, messages, tools):
+            del tools
+            return len(messages)
+
+    async def handler(**_kwargs):
+        return "model-result"
+
+    await middleware.on_model_call(
+        agent,
+        {
+            "messages": [
+                SystemMsg(name="system", content="private prompt"),
+                *state.context,
+            ],
+            "tools": [{"name": "private_tool", "description": "private schema"}],
+            "tool_choice": None,
+            "current_model": _Model(),
+        },
+        handler,
+    )
+
+    assert observed["name"] == "globex.prompt.breakdown"
+    attributes = observed["attributes"]
+    assert attributes["globex.prompt.agent"] == "Main"
+    for key in (
+        "globex.prompt.system_tokens",
+        "globex.prompt.tool_schema_tokens",
+        "globex.prompt.recent_history_tokens",
+        "globex.prompt.frozen_context_tokens",
+        "globex.prompt.tool_result_tokens",
+        "globex.prompt.total_estimated_tokens",
+        "globex.prompt.stable_prefix_estimated_tokens",
+    ):
+        assert isinstance(attributes[key], int)
+        assert attributes[key] >= 0
+    assert len(attributes["globex.prompt.stable_prefix_sha256"]) == 64
+    serialized = json.dumps(attributes, ensure_ascii=False)
+    assert "private prompt" not in serialized
+    assert "private schema" not in serialized
+    assert "第一轮" not in serialized
+    assert "第二轮" not in serialized
 
 
 def test_phase_f_soft_threshold_builds_l3_but_keeps_recent_l2() -> None:

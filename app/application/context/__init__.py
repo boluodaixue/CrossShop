@@ -4,6 +4,7 @@ from .assembler import (
     CACHE_BREAKPOINT_TEXT,
     advance_context_state,
     assemble_llm_input_messages,
+    cache_prefix_sha256,
 )
 from .budget import (
     ContextBudgetExceeded,
@@ -59,6 +60,7 @@ __all__ = [
     "ToolOutputContract",
     "advance_context_state",
     "assemble_llm_input_messages",
+    "cache_prefix_sha256",
     "compact_interaction",
     "count_tokens",
     "decide_budget",

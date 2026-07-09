@@ -29,9 +29,66 @@ from app.application.context import (
     reduce_l4,
 )
 from app.infrastructure.context import ShoppingContext
+from app.infrastructure.tracing import trace_span
 
 CONTEXT_NAMESPACE = "globex_context_v1"
 _MAX_ARTIFACT_REFERENCES = 100
+
+
+def _prompt_breakdown_attributes(
+    report: Mapping[str, Any],
+    *,
+    agent_name: str,
+) -> dict[str, Any]:
+    """Return privacy-safe, estimated prompt-layer counters for one model call."""
+
+    layers = report.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+
+    def _tokens(name: str) -> int:
+        layer = layers.get(name)
+        if not isinstance(layer, Mapping):
+            return 0
+        try:
+            return max(0, int(layer.get("tokens") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    tool_results = report.get("tool_results")
+    tool_results = tool_results if isinstance(tool_results, Mapping) else {}
+    tool_result_tokens = 0
+    for value in tool_results.values():
+        if not isinstance(value, Mapping):
+            continue
+        try:
+            tool_result_tokens += max(0, int(value.get("tokens") or 0))
+        except (TypeError, ValueError):
+            continue
+
+    return {
+        "globex.prompt.agent": agent_name,
+        "globex.prompt.system_tokens": _tokens("fixed_prompt"),
+        "globex.prompt.tool_schema_tokens": _tokens("tool_schemas"),
+        "globex.prompt.recent_history_tokens": (
+            _tokens("l4_candidate") + _tokens("active") + _tokens("current")
+        ),
+        "globex.prompt.frozen_context_tokens": _tokens("history"),
+        "globex.prompt.tool_result_tokens": tool_result_tokens,
+        "globex.prompt.total_estimated_tokens": max(
+            0,
+            int(report.get("total_input_tokens") or 0),
+        ),
+        "globex.prompt.stable_prefix_estimated_tokens": max(
+            0,
+            int(report.get("stable_prefix_estimated_tokens") or 0),
+        ),
+        "globex.prompt.stable_prefix_sha256": str(
+            report.get("stable_prefix_sha256") or "",
+        ),
+        "globex.prompt.estimated": bool(report.get("estimated", True)),
+        "globex.prompt.counter_method": str(report.get("counter_method") or "unknown"),
+        "globex.prompt.budget_decision": str(report.get("decision") or "unknown"),
+    }
 
 
 class ContextOwnershipError(RuntimeError):
@@ -296,7 +353,12 @@ class ContextLifecycleMiddleware(MiddlewareBase):
                 raise ContextBudgetExceeded(
                     "provider_hard_overflow", _report_from_mapping(report)
                 )
-        return await next_handler(**{**input_kwargs, "messages": model_view})
+        breakdown = _prompt_breakdown_attributes(
+            updated.get("budget_report") or {},
+            agent_name=str(getattr(agent, "name", "unknown")),
+        )
+        with trace_span("globex.prompt.breakdown", breakdown):
+            return await next_handler(**{**input_kwargs, "messages": model_view})
 
     async def on_compress_context(
         self, agent: Any, input_kwargs: dict, next_handler: Any

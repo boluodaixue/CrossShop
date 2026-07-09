@@ -16,6 +16,26 @@ from .models import FrozenSegment, L4Context, StageSummary, canonical_json
 CACHE_BREAKPOINT_TEXT = '<globex-cache-breakpoint version="v1" />'
 
 
+def cache_prefix_sha256(messages: Sequence[Msg]) -> str:
+    """Hash only fields that the OpenAI-compatible provider can observe.
+
+    AgentScope message dumps also contain random ids and timestamps. Including
+    them made the logical breakpoint change across identical provider prompts.
+    L2/L3 prefix messages are text-only system messages, so role, name, and
+    text are the complete provider-visible projection for this hash.
+    """
+
+    visible = [
+        {
+            "role": message.role,
+            "name": message.name,
+            "content": message.get_text_content() or "",
+        }
+        for message in messages
+    ]
+    return hashlib.sha256(canonical_json(visible).encode()).hexdigest()
+
+
 def _l4(value: L4Context | Mapping[str, Any] | None) -> dict[str, Any]:
     return value.to_dict() if isinstance(value, L4Context) else dict(value or {})
 
@@ -75,10 +95,7 @@ def assemble_llm_input_messages(
                 )
             )
 
-    stable_prefix = canonical_json(
-        [message.model_dump(mode="json") for message in assembled]
-    )
-    prefix_hash = hashlib.sha256(stable_prefix.encode()).hexdigest()
+    prefix_hash = cache_prefix_sha256(assembled)
     assembled.append(
         SystemMsg(
             name="globex_context",
@@ -245,8 +262,41 @@ def advance_context_state(
             "frozen_segments": [item.to_dict() for item in frozen],
             "freeze_cursor": next_cursor,
             "stage_summary": stage.to_dict() if stage else None,
-            "budget_report": report.to_dict(),
+            "budget_report": _budget_report_with_cache_prefix(
+                report.to_dict(),
+                provisional,
+            ),
             "budget_decision": report.decision,
         },
     )
     return state, provisional
+
+
+def _budget_report_with_cache_prefix(
+    report: dict[str, Any],
+    model_view: Sequence[Msg],
+) -> dict[str, Any]:
+    prefix: list[Msg] = []
+    for message in model_view:
+        if (message.get_text_content() or "").startswith(
+            CACHE_BREAKPOINT_TEXT[:-3],
+        ):
+            break
+        prefix.append(message)
+    layers = report.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+
+    def _tokens(name: str) -> int:
+        value = layers.get(name)
+        if not isinstance(value, Mapping):
+            return 0
+        try:
+            return max(0, int(value.get("tokens") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    report["stable_prefix_sha256"] = cache_prefix_sha256(prefix)
+    report["stable_prefix_estimated_tokens"] = (
+        _tokens("fixed_prompt") + _tokens("tool_schemas") + _tokens("history")
+    )
+    return report
