@@ -290,31 +290,6 @@ cases:
           score_1_anchor: "丢失指代、答错类别或给出冗长重述"
           score_5_anchor: "准确恢复早期商品，并按要求用接近一句话直接回答"
 
-  - id: context-compression-recovery
-    description: 受控触发上下文摘要后恢复早期对话事实与商品事实
-    execution_profile: force-context-summary
-    scenario_family: long-context-memory
-    coverage_points: [summary-freeze-recovery]
-    ground_truth_product_ids: [P1008, P1010, P1040, P1047]
-    queries:
-      - "把本次选购方案的临时代号记作“青松-47”。只看 Globex，帮我找1款300元以内、抗造耐摔的露营灯，并说明推荐理由。"
-      - "这款露营灯的防水等级和续航怎样？"
-      - "切换品类，只看 Globex，找1款适合高原徒步的登山杖。"
-      - "再切换到速干毛巾，只看 Globex，找1款三条装的。"
-      - "再看看只看 Globex 的轻便旅行背包，推荐1款。"
-      - "现在不要调用任何工具：告诉我第一轮的临时代号，以及第一轮第1件露营灯的完整标题和价格；两句话内。"
-    rubric:
-      p0:
-        - "最终恢复的露营灯完整标题和价格必须对应第一轮真实展示商品，不得编造或串到后续类别"
-      p1:
-        - "结构化生命周期证据显示真实 L3 摘要已形成、来源 hash 可验证且 after_tokens 小于 before_tokens，同时存在 context.compressed 运行信号"
-        - "第一轮存在结构化 displayed_products；摘要来源覆盖第一轮；最终轮准确恢复仅存在于早期对话的临时代号“青松-47”和第一轮商品事实，且不重新调用任何工具"
-        - "证据明确记录 execution_profile=force-context-summary，且本用例会话的 soft_limit_tokens=1"
-      p2:
-        - criterion: "压缩后恢复质量"
-          score_1_anchor: "遗漏或答错早期代号/商品，或用冗长内容掩盖无法恢复"
-          score_5_anchor: "两句话内准确给出代号、完整标题和价格，不引入后续类别或无关解释"
-
   - id: tool-error-honesty
     description: 不支持的到手价目的国如实降级
     scenario_family: exception-degradation

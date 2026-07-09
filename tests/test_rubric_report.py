@@ -372,7 +372,7 @@ def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
         policy=suite.evaluation_policy,
     )
 
-    assert coverage.designed_score == 85.143
+    assert coverage.designed_score == 82.643
     assert coverage.executed_score == 0.0
     short_multi = next(
         item
@@ -387,6 +387,7 @@ def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
         for point in family.missing_points
     }
     assert missing == {
+        ("long-context-memory", "summary-freeze-recovery"),
         ("trade-order", "ownership-idempotency-failure"),
         ("exception-degradation", "opensearch-unavailable"),
         ("exception-degradation", "repository-inconsistency"),

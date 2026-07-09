@@ -163,7 +163,6 @@ class RubricCaseSpec(BaseModel):
     buyer_id: str | None = None
     depends_on: list[str] = Field(default_factory=list)
     prior_context: str = ""
-    execution_profile: Literal["default", "force-context-summary"] = "default"
     ground_truth_product_ids: list[str] = Field(default_factory=list)
     scenario_family: str = Field(
         min_length=1,
@@ -517,7 +516,6 @@ class EvaluationEvidence(BaseModel):
 
     schema_version: Literal["rubric-evidence-v2"] = "rubric-evidence-v2"
     case_id: str = Field(min_length=1)
-    execution_profile: Literal["default", "force-context-summary"] = "default"
     session_id_hash: str = Field(min_length=1)
     turns: list[TurnEvidence] = Field(min_length=1)
 

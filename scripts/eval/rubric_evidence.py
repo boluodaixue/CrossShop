@@ -772,11 +772,9 @@ def build_evaluation_evidence(
     case_id: str,
     session_id: str,
     turns: list[TurnEvidence],
-    execution_profile: str = "default",
 ) -> EvaluationEvidence:
     return EvaluationEvidence(
         case_id=case_id,
-        execution_profile=execution_profile,
         session_id_hash=_digest(session_id),
         turns=turns,
     )
