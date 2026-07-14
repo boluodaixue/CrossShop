@@ -17,7 +17,7 @@ from app.infrastructure.persistence.jsonl_product_repository import (
 
 def _product(product_id: str, sku_id: str) -> dict:
     return {
-        "brand": "Globex",
+        "brand": "CrossShop",
         "category": "耳机",
         "description": "",
         "highlights": [{"detail": "长续航", "label": "续航"}],
@@ -140,7 +140,7 @@ def test_requires_exactly_the_five_fixed_partitions(tmp_path: Path) -> None:
 def test_rejects_manifest_path_traversal(tmp_path: Path) -> None:
     root = _write_catalog(tmp_path / "catalog")
     manifest = _manifest(root)
-    manifest["partitions"]["taobao"]["products"]["path"] = "../outside.jsonl"
+    manifest["partitions"]["reference_seed"]["products"]["path"] = "../outside.jsonl"
     _write_manifest(root, manifest)
 
     with pytest.raises(ValueError, match="unsafe or unexpected"):
@@ -153,7 +153,7 @@ def test_rejects_manifest_file_evidence_mismatch(
 ) -> None:
     root = _write_catalog(tmp_path / "catalog")
     manifest = _manifest(root)
-    metadata = manifest["partitions"]["taobao"]["products"]
+    metadata = manifest["partitions"]["reference_seed"]["products"]
     metadata[metadata_field] = (
         "0" * 64 if metadata_field == "sha256" else metadata[metadata_field] + 1
     )
@@ -170,7 +170,7 @@ def test_rejects_unknown_product_field_without_compatibility(tmp_path: Path) -> 
         partition: [_product(f"product-{index}", f"sku-{index}")]
         for index, partition in enumerate(PARTITION_PRODUCT_PATHS, 1)
     }
-    rows["taobao"][0]["item_id"] = rows["taobao"][0].pop("product_id")
+    rows["reference_seed"][0]["item_id"] = rows["reference_seed"][0].pop("product_id")
     root = _write_catalog(tmp_path / "catalog", rows)
 
     with pytest.raises(ValueError, match="Product fields must be exactly"):
@@ -195,7 +195,7 @@ def test_rejects_wrong_nested_types_and_values(tmp_path: Path, mutate) -> None:
         partition: [_product(f"product-{index}", f"sku-{index}")]
         for index, partition in enumerate(PARTITION_PRODUCT_PATHS, 1)
     }
-    mutate(rows["taobao"][0])
+    mutate(rows["reference_seed"][0])
     root = _write_catalog(tmp_path / "catalog", rows)
 
     with pytest.raises((TypeError, ValueError)):

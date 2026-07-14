@@ -26,7 +26,7 @@ from app.domain.catalog.money import Money
 
 ROOT = Path(__file__).resolve().parents[2]
 V2_ROOT = ROOT
-PARTITIONS = (("amazon", "us"), ("amazon", "es"), ("amazon", "jp"), ("taobao", "cn"))
+PARTITIONS = (("amazon", "us"), ("amazon", "es"), ("amazon", "jp"), ("reference_seed", "cn"))
 CONTRACT_VERSION = "product-sku-contract-v2"
 CONVERTER_VERSION = "catalog-product-sku-builder-v3-product-only"
 PRODUCT_FIELDS = frozenset(
@@ -131,17 +131,17 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
 
     reference_sources = _reference_products()
     _write_partition(
-        root / "globex_reference",
-        "globex_reference",
+        root / "crossshop_reference",
+        "crossshop_reference",
         reference_sources,
         all_product_ids,
         all_sku_ids,
         partitions,
     )
-    counts.update(_partition_counts("globex_reference", reference_sources))
+    counts.update(_partition_counts("crossshop_reference", reference_sources))
 
     for platform, locale in (
-        ("taobao", "cn"),
+        ("reference_seed", "cn"),
         ("amazon", "us"),
         ("amazon", "es"),
         ("amazon", "jp"),
@@ -150,8 +150,8 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
             _validated_partition_rows(sources[(platform, locale)], platform, locale)
         )
         converted = (
-            [_convert_taobao(row) for row in rows]
-            if platform == "taobao"
+            [_convert_reference_seed(row) for row in rows]
+            if platform == "reference_seed"
             else [_convert_amazon(row) for row in rows]
         )
         converted_sources = [item for item in converted if item is not None]
@@ -165,7 +165,7 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
             for row, item in zip(rows, converted, strict=True)
             if item is None
         )
-        key = platform if platform == "taobao" else f"{platform}/{locale}"
+        key = platform if platform == "reference_seed" else f"{platform}/{locale}"
         _write_partition(
             root / key, key, converted_sources, all_product_ids, all_sku_ids, partitions
         )
@@ -190,7 +190,7 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
         "partitions": partitions,
         "rejections": _file_metadata(rejection_path, len(rejections)),
         "rules": {
-            "taobao": {
+            "reference_seed": {
                 "brand": "attributes.shop_name",
                 "category": "category_path[-1]",
                 "origin_country": "CN",
@@ -219,7 +219,7 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
         },
         "reference_source": _file_metadata(
             V2_ROOT / "app" / "infrastructure" / "persistence" / "seed_products.py",
-            relative_path="D:/PycharmProjects/globex-agent-mainV2/app/infrastructure/persistence/seed_products.py",
+            relative_path="D:/PycharmProjects/crossshop-agent-mainV2/app/infrastructure/persistence/seed_products.py",
         ),
     }
     _write_json(root / "manifest.json", manifest)
@@ -307,7 +307,7 @@ def _reference_products() -> list[ProductSource]:
     return result
 
 
-def _convert_taobao(row: dict) -> ProductSource | None:
+def _convert_reference_seed(row: dict) -> ProductSource | None:
     product_id = str(row["item_id"])
     shop_name = _shop_name(row) or "未知"
     category = _category(row.get("category_path")) or "未知"
@@ -340,7 +340,7 @@ def _convert_taobao(row: dict) -> ProductSource | None:
         "CN",
         str(row.get("description") or ""),
         [],
-        _taobao_ships_to(product_id),
+        _reference_seed_ships_to(product_id),
         skus,
     )
     return ProductSource(product)
@@ -414,7 +414,7 @@ def _shop_name(row: dict) -> str | None:
     return None
 
 
-def _taobao_ships_to(product_id: str) -> list[str]:
+def _reference_seed_ships_to(product_id: str) -> list[str]:
     return ["CN", "US", "JP", "SG"] if _hash_int(product_id, 5) == 0 else ["CN"]
 
 

@@ -40,7 +40,7 @@ class _SearchWorker:
     async def reply(self, inputs):
         del inputs
         await asyncio.sleep(
-            {"globex_reference": 0.003, "taobao": 0.002, "amazon": 0.001}[
+            {"crossshop_reference": 0.003, "reference_seed": 0.002, "amazon": 0.001}[
                 self._platform
             ],
         )
@@ -111,11 +111,11 @@ class _RetrySearchWorker:
                 "tool.result",
                 {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "site_locale": None,
                     "args": {
                         "normalized_query": query,
-                        "platform": "taobao",
+                        "platform": "reference_seed",
                         "top_k": 5,
                     },
                     "dispatch_correlation_id": SearchDispatchContext.current(),
@@ -144,9 +144,9 @@ class _CatalogUseCase:
     async def execute(self, spec: ProductSearchSpec) -> dict:
         assert spec.normalized_query == "咖啡杯"
         return {
-            "hits": [{"product_id": "taobao-hit"}],
+            "hits": [{"product_id": "reference_seed-hit"}],
             "filtered_out": [
-                {"product_id": "taobao-filtered", "reason": "over_price_cap"},
+                {"product_id": "reference_seed-filtered", "reason": "over_price_cap"},
             ],
             "recall_strategy": "embedding_rerank",
         }
@@ -170,9 +170,9 @@ class _InterleavedUseCase:
 class _ActualProductWorker:
     def __init__(self, bus: TradeEventBus) -> None:
         self._tool = build_product_search_tool(
-            {"taobao": _InterleavedUseCase()},  # type: ignore[arg-type]
+            {"reference_seed": _InterleavedUseCase()},  # type: ignore[arg-type]
             bus,
-            fixed_platform="taobao",
+            fixed_platform="reference_seed",
         )
 
     async def reply(self, inputs):
@@ -217,13 +217,13 @@ async def _dispatch_three_platforms():
         chunks = await asyncio.gather(
             tool(
                 subagent_type="search_agent",
-                demands="Globex 搜咖啡杯",
-                platform="globex_reference",
+                demands="CrossShop 搜咖啡杯",
+                platform="crossshop_reference",
             ),
             tool(
                 subagent_type="search_agent",
-                demands="淘宝搜咖啡杯",
-                platform="taobao",
+                demands="示例平台搜咖啡杯",
+                platform="reference_seed",
             ),
             tool(
                 subagent_type="search_agent",
@@ -241,8 +241,8 @@ async def test_concurrent_dispatch_returns_exact_structured_platform_results() -
     outputs = [json.loads(chunk.content[0].text) for chunk in chunks]
 
     assert [output["platform"] for output in outputs] == [
-        "globex_reference",
-        "taobao",
+        "crossshop_reference",
+        "reference_seed",
         "amazon",
     ]
     for output in outputs:
@@ -263,14 +263,14 @@ async def test_product_tool_event_contains_exact_dispatch_contract() -> None:
     bus = TradeEventBus()
     queue = bus.subscribe("cross-session")
     tool = build_product_search_tool(
-        {"taobao": _CatalogUseCase()},  # type: ignore[arg-type]
+        {"reference_seed": _CatalogUseCase()},  # type: ignore[arg-type]
         bus,
     )
     token = _snapshot_token()
     try:
         await tool(
             normalized_query="咖啡杯",
-            platform="taobao",
+            platform="reference_seed",
             ship_to="CN",
             price_max_major=100,
         )
@@ -280,10 +280,10 @@ async def test_product_tool_event_contains_exact_dispatch_contract() -> None:
     queue.get_nowait()  # tool.invoke
     event = queue.get_nowait()
     assert event.payload["args"]["normalized_query"] == "咖啡杯"
-    assert event.payload["args"]["platform"] == "taobao"
-    assert event.payload["hits"] == [{"product_id": "taobao-hit"}]
+    assert event.payload["args"]["platform"] == "reference_seed"
+    assert event.payload["hits"] == [{"product_id": "reference_seed-hit"}]
     assert event.payload["filtered_out"] == [
-        {"product_id": "taobao-filtered", "reason": "over_price_cap"},
+        {"product_id": "reference_seed-filtered", "reason": "over_price_cap"},
     ]
 
 
@@ -298,8 +298,8 @@ async def test_missing_product_result_does_not_fabricate_l4_search() -> None:
     try:
         chunk = await tool(
             subagent_type="search_agent",
-            demands="淘宝搜咖啡杯",
-            platform="taobao",
+            demands="示例平台搜咖啡杯",
+            platform="reference_seed",
         )
     finally:
         ShoppingContext.reset(token)
@@ -313,15 +313,15 @@ async def test_missing_product_result_does_not_fabricate_l4_search() -> None:
                 "type": "tool.invoke",
                 "payload": {
                     "tool": "task_dispatch",
-                    "tool_call_id": "dispatch-taobao",
-                    "args": {"platform": "taobao"},
+                    "tool_call_id": "dispatch-reference_seed",
+                    "args": {"platform": "reference_seed"},
                 },
             },
             {
                 "type": "tool.result",
                 "payload": {
                     "tool": "task_dispatch",
-                    "tool_call_id": "dispatch-taobao",
+                    "tool_call_id": "dispatch-reference_seed",
                     "raw_output": chunk.content[0].text,
                 },
             },
@@ -341,8 +341,8 @@ async def test_dispatch_uses_latest_structured_result_after_allowed_rewrite() ->
     try:
         chunk = await tool(
             subagent_type="search_agent",
-            demands="淘宝搜咖啡杯",
-            platform="taobao",
+            demands="示例平台搜咖啡杯",
+            platform="reference_seed",
         )
     finally:
         ShoppingContext.reset(token)
@@ -363,13 +363,13 @@ async def test_same_platform_concurrent_dispatches_are_correlated_exactly() -> N
         coffee_chunk, tea_chunk = await asyncio.gather(
             tool(
                 subagent_type="search_agent",
-                demands="淘宝搜咖啡杯",
-                platform="taobao",
+                demands="示例平台搜咖啡杯",
+                platform="reference_seed",
             ),
             tool(
                 subagent_type="search_agent",
-                demands="淘宝搜茶杯",
-                platform="taobao",
+                demands="示例平台搜茶杯",
+                platform="reference_seed",
             ),
         )
     finally:
@@ -416,7 +416,7 @@ async def test_dispatch_results_update_main_l4_without_parsing_agent_prose(
             ),
             state=ToolCallState.ALLOWED,
         )
-        for platform in ("globex_reference", "taobao", "amazon")
+        for platform in ("crossshop_reference", "reference_seed", "amazon")
     ]
     model_outputs: list[dict] = []
 
@@ -455,18 +455,18 @@ async def test_dispatch_results_update_main_l4_without_parsing_agent_prose(
     assert last_search["returned_count"] == 3
     assert last_search["filtered_count"] == 3
     assert last_search["product_refs"] == [
-        "globex_reference-hit",
-        "taobao-hit",
+        "crossshop_reference-hit",
+        "reference_seed-hit",
         "amazon-hit",
     ]
     assert last_search["filtered_product_refs"] == [
-        "globex_reference-filtered",
-        "taobao-filtered",
+        "crossshop_reference-filtered",
+        "reference_seed-filtered",
         "amazon-filtered",
     ]
     assert [item["platform"] for item in last_search["platform_results"]] == [
-        "globex_reference",
-        "taobao",
+        "crossshop_reference",
+        "reference_seed",
         "amazon",
     ]
     assert all(
@@ -474,8 +474,8 @@ async def test_dispatch_results_update_main_l4_without_parsing_agent_prose(
         for item in last_search["platform_results"]
     )
     assert [output["platform"] for output in model_outputs] == [
-        "globex_reference",
-        "taobao",
+        "crossshop_reference",
+        "reference_seed",
         "amazon",
     ]
     assert all(output["hits"] and output["filtered_out"] for output in model_outputs)

@@ -52,6 +52,7 @@ TOOL_OUTPUT_CONTRACTS: dict[str, ToolOutputContract] = {
             "order_id",
             "buyer_id",
             "items",
+            "lines",
             "shipping_address",
             "status",
             "created_at",
@@ -60,7 +61,7 @@ TOOL_OUTPUT_CONTRACTS: dict[str, ToolOutputContract] = {
             "currency",
             "error",
         ),
-        list_limits={"items": 10},
+        list_limits={"items": 10, "lines": 10},
         max_total_chars=8_000,
     ),
     "query_order_tool": ToolOutputContract(
@@ -68,6 +69,7 @@ TOOL_OUTPUT_CONTRACTS: dict[str, ToolOutputContract] = {
             "order_id",
             "buyer_id",
             "items",
+            "lines",
             "shipping_address",
             "status",
             "created_at",
@@ -77,7 +79,7 @@ TOOL_OUTPUT_CONTRACTS: dict[str, ToolOutputContract] = {
             "currency",
             "error",
         ),
-        list_limits={"items": 10},
+        list_limits={"items": 10, "lines": 10},
         max_total_chars=8_000,
     ),
     "cancel_order_tool": ToolOutputContract(
@@ -145,14 +147,14 @@ class ToolArtifactStore:
             except FileExistsError:  # pragma: no cover - concurrent identical output
                 temporary.unlink(missing_ok=True)
         return {
-            "scheme": "globex-artifact-sha256-v1",
+            "scheme": "crossshop-artifact-sha256-v1",
             "sha256": digest,
             "bytes": len(raw),
             "media_type": _media_type(content),
         }
 
     def read(self, reference: Mapping[str, Any]) -> str:
-        if reference.get("scheme") != "globex-artifact-sha256-v1":
+        if reference.get("scheme") != "crossshop-artifact-sha256-v1":
             raise ValueError("unsupported artifact reference")
         digest = str(reference.get("sha256", ""))
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):

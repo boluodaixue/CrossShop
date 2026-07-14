@@ -109,9 +109,11 @@ def test_h6_prompt_covers_multi_turn_route_and_reference_boundaries() -> None:
         "普通聊天",
         "纯品类选购知识",
         "宽泛商品需求",
-        "未指定平台的简单检索默认由 Main 直接查 globex_reference",
+        "未指定平台的简单检索默认由 Main 直接查 crossshop_reference",
         "更多推荐",
         "无故重复",
+        "重新取得为本轮真实 hits",
+        "不得仅因证据轮次边界就宣称没有新的",
         "刚才第 N 个",
         "类别切换",
         "最终最多推荐 5 件商品",
@@ -125,6 +127,11 @@ def test_h6_prompt_covers_multi_turn_route_and_reference_boundaries() -> None:
         "本会话此前已展示商品",
         "必须先调用 query_order_tool 验证订单仍为 CONFIRMED",
         "即使 MainAgent 单干也必须遵守这个顺序",
+        "纯查单时只展示本轮 query_order_tool 明确返回",
+        "买家未明确询问时不复述",
+        "skus 可能是截断后的",
+        "不到几分之一",
+        "当前快照不足以判定完整价格区间",
     )
     for fragment in required:
         assert fragment in prompt
@@ -134,6 +141,10 @@ def test_h6_prompt_covers_multi_turn_route_and_reference_boundaries() -> None:
     assert "禁止翻译、缩写、改名或拼接" in search_prompt
     assert "原始 hits 有 3、4 或 5 件" in search_prompt
     assert "连 category 的 None/非 None 状态也必须保持不变" in search_prompt
+
+    trade_prompt = load_prompts()["sub_agents"]["trade"]["system_prompt"]
+    assert "查单回复只展示本轮 query_order_tool 返回" in trade_prompt
+    assert "买家未明确询问时不复述" in trade_prompt
 
 
 def test_category_switch_accepts_equivalent_normalized_query_whitespace() -> None:
@@ -231,18 +242,18 @@ def test_prior_displayed_products_prefers_bounded_verified_history() -> None:
     agent = SimpleNamespace(
         state=SimpleNamespace(
             middle_context={
-                "globex_context_v1": {
+                "crossshop_context_v1": {
                     "session_context": {
                         "last_recommendation": {
                             "displayed_products": [
                                 {
-                                    "platform": "globex_reference",
+                                    "platform": "crossshop_reference",
                                     "card": {"product_id": "CURRENT"},
                                 },
                             ],
                             "displayed_history": [
                                 {
-                                    "platform": "globex_reference",
+                                    "platform": "crossshop_reference",
                                     "card": {"product_id": f"P-{index}"},
                                 }
                                 for index in range(25)
@@ -265,12 +276,12 @@ def test_structured_selection_can_return_verified_earlier_product() -> None:
     prior = (
         {
             "rank": 1,
-            "platform": "globex_reference",
+            "platform": "crossshop_reference",
             "site_locale": None,
             "card": {"product_id": "P1008", "title": "LumenGo 便携露营灯"},
         },
     )
-    selected = (SelectedProductRef(platform="globex_reference", product_id="P1008"),)
+    selected = (SelectedProductRef(platform="crossshop_reference", product_id="P1008"),)
 
     displayed = _resolve_displayed_products(selected, [], prior)
 
@@ -323,7 +334,7 @@ def test_product_recommendation_semantic_cache_is_bypassed_for_l4_continuity() -
     displayed = (
         {
             "rank": 1,
-            "platform": "taobao",
+            "platform": "reference_seed",
             "site_locale": None,
             "card": {"product_id": "P1", "title": "完整原标题"},
         },
@@ -382,7 +393,7 @@ def test_strict_identity_rejects_rewritten_title_even_with_real_product_id() -> 
         "displayed_products": [
             {
                 "rank": 1,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P1", "title": "完整原标题一"},
             },
@@ -392,7 +403,7 @@ def test_strict_identity_rejects_rewritten_title_even_with_real_product_id() -> 
                 "type": "tool.result",
                 "payload": {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "site_locale": None,
                     "hits": [{"product_id": "P1", "title": "完整原标题一"}],
                 },
@@ -411,13 +422,13 @@ def test_strict_identity_rejects_cross_paired_ids_and_titles() -> None:
         "displayed_products": [
             {
                 "rank": 1,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P1", "title": "完整原标题一"},
             },
             {
                 "rank": 2,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P2", "title": "完整原标题二"},
             },
@@ -427,7 +438,7 @@ def test_strict_identity_rejects_cross_paired_ids_and_titles() -> None:
                 "type": "tool.result",
                 "payload": {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "site_locale": None,
                     "hits": [
                         {"product_id": "P1", "title": "完整原标题一"},
@@ -452,13 +463,13 @@ def test_strict_identity_rejects_cross_paired_ids_on_one_line() -> None:
         "displayed_products": [
             {
                 "rank": 1,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P1", "title": "完整原标题一"},
             },
             {
                 "rank": 2,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P2", "title": "完整原标题二"},
             },
@@ -468,7 +479,7 @@ def test_strict_identity_rejects_cross_paired_ids_on_one_line() -> None:
                 "type": "tool.result",
                 "payload": {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "site_locale": None,
                     "hits": [
                         {"product_id": "P1", "title": "完整原标题一"},
@@ -506,7 +517,7 @@ def test_h6_l4_reacquires_namespace_after_pre_model_replacement(tmp_path) -> Non
             input=json.dumps(
                 {
                     "normalized_query": "旅行背包",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "top_k": 5,
                 },
             ),
@@ -527,7 +538,7 @@ def test_h6_l4_reacquires_namespace_after_pre_model_replacement(tmp_path) -> Non
                                 {
                                     "hits": [
                                         {
-                                            "product_id": "taobao:cn:H6",
+                                            "product_id": "reference_seed:cn:H6",
                                             "title": "H6 旅行背包",
                                         },
                                     ],
@@ -574,10 +585,10 @@ def test_h6_l4_reacquires_namespace_after_pre_model_replacement(tmp_path) -> Non
         "tool_call_id": "h6-product-call",
         "args": {
             "normalized_query": "旅行背包",
-            "platform": "taobao",
+            "platform": "reference_seed",
             "top_k": 5,
         },
         "status": "succeeded",
         "returned_count": 1,
-        "product_refs": ["taobao:cn:H6"],
+        "product_refs": ["reference_seed:cn:H6"],
     }

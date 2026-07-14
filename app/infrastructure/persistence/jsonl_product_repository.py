@@ -18,8 +18,8 @@ PARTITION_PRODUCT_PATHS = {
     "amazon/es": "amazon/es/products.jsonl",
     "amazon/jp": "amazon/jp/products.jsonl",
     "amazon/us": "amazon/us/products.jsonl",
-    "globex_reference": "globex_reference/products.jsonl",
-    "taobao": "taobao/products.jsonl",
+    "crossshop_reference": "crossshop_reference/products.jsonl",
+    "reference_seed": "reference_seed/products.jsonl",
 }
 
 _PRODUCT_FIELDS = {

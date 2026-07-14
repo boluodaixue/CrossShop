@@ -44,7 +44,7 @@ def _product(product_id: str, amount: int = 8900) -> Product:
     return Product(
         product_id=product_id,
         title=f"商品 {product_id}",
-        brand="Globex",
+        brand="CrossShop",
         category="户外运动",
         origin_country="CN",
         description="防水耐用",
@@ -86,7 +86,7 @@ def _evidence() -> EvaluationEvidence:
                     DisplayedProductEvidence(
                         rank=1,
                         product_id="P1004",
-                        platform="globex_reference",
+                        platform="crossshop_reference",
                     ),
                 ],
                 structured_state=_state(),

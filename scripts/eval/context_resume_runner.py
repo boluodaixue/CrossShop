@@ -1,8 +1,9 @@
 """Resume context-compression evaluation from a cloned persisted session.
 
 The source session is read-only. A deep AgentState copy is saved under a new
-evaluation session id, then only the remaining natural scenario turns are
-executed until L3 is observed or the small resume limit is reached.
+evaluation session id, then only unconsumed natural scenario turns are executed
+until the next L3 transition. A private, Git-ignored checkpoint keeps the raw
+local session handle and scenario cursor so interruption never forces replay.
 """
 
 from __future__ import annotations
@@ -18,12 +19,16 @@ from pathlib import Path
 from typing import Any
 
 from agentscope.state import AgentState
+from sqlalchemy import select
 
 from app.application.context import group_interaction_units
 from app.composition import Container, build_container
 from app.infrastructure.model_usage import ModelUsageSample
 from app.infrastructure.settings import load_settings
 from app.infrastructure.tracing import text_digest
+from app.infrastructure.persistence.json_file_stores import JsonFileSessionStore
+from app.infrastructure.persistence.sql.repositories import SqlSessionStore
+from app.infrastructure.persistence.sql.tables import AgentSessionStateRow
 from scripts.eval.context_compression_runner import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_SCENARIO,
@@ -37,6 +42,151 @@ from scripts.eval.context_compression_runner import (
     load_scenario,
 )
 
+_PRIVATE_CHECKPOINT = "resume_checkpoint.private.json"
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path.name} must contain a JSON object")
+    return value
+
+
+def _compression_history(
+    artifact_dir: Path,
+) -> tuple[int, list[int], list[dict[str, Any]]]:
+    """Return original source size plus bounded prior L3 trigger evidence."""
+
+    summary = _read_json_object(artifact_dir / "summary.json")
+    source_turns, _ = _load_source_turns(artifact_dir)
+    compression = summary.get("compression")
+    compression = compression if isinstance(compression, dict) else {}
+    trigger_turns = compression.get("trigger_turns")
+    if not isinstance(trigger_turns, list):
+        legacy = compression.get("trigger_turn") or compression.get(
+            "first_trigger_turn",
+        )
+        trigger_turns = [legacy] if isinstance(legacy, int) else []
+    normalized = sorted(
+        {
+            int(item)
+            for item in trigger_turns
+            if isinstance(item, int) and not isinstance(item, bool) and item >= 1
+        },
+    )
+    trigger_rows = [
+        turn
+        for turn in source_turns
+        if int(turn.get("turn_index") or 0) in normalized
+        and isinstance(turn.get("compression_event"), dict)
+    ]
+    if len(trigger_rows) != len(normalized):
+        raise ValueError("source artifact does not contain every prior L3 trigger")
+    base_source_turns = summary.get("source_turns")
+    if not isinstance(base_source_turns, int):
+        base_source_turns = normalized[0] - 1 if normalized else 0
+    return base_source_turns, normalized, trigger_rows
+
+
+def natural_scenario_cursor(
+    artifact_dir: Path,
+    *,
+    completed_session_turns: int,
+) -> int:
+    """Count authored shopping turns without counting recovery probes."""
+
+    summary = _read_json_object(artifact_dir / "summary.json")
+    source_turns = summary.get("source_turns")
+    added_turns = summary.get("trigger_turns_executed")
+    if isinstance(source_turns, int) and isinstance(added_turns, int):
+        return min(completed_session_turns, source_turns + added_turns)
+    turns, _ = _load_source_turns(artifact_dir)
+    authored = sum(
+        str(turn.get("phase") or "") in {"natural-long-session", "resume-trigger"}
+        for turn in turns
+    )
+    return min(completed_session_turns, authored or completed_session_turns)
+
+
+def recovery_query_for_session(
+    query: str,
+    *,
+    authored_turn_index: int,
+    source_scenario_cursor: int,
+    completed_source_turns: int,
+) -> tuple[str, int]:
+    """Map an authored shopping-turn number across inserted recovery turns."""
+
+    actual_turn_index = authored_turn_index
+    if authored_turn_index > source_scenario_cursor:
+        actual_turn_index = completed_source_turns + (
+            authored_turn_index - source_scenario_cursor
+        )
+    return (
+        query.replace(
+            f"第{authored_turn_index}轮",
+            f"第{actual_turn_index}轮",
+        ),
+        actual_turn_index,
+    )
+
+
+def _usage_samples_from_turns(
+    turns: list[dict[str, Any]],
+) -> list[ModelUsageSample]:
+    fields = {
+        "requested_model",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "cache_creation_input_tokens",
+        "elapsed_seconds",
+    }
+    samples: list[ModelUsageSample] = []
+    for turn in turns:
+        for value in turn.get("model_usage") or []:
+            if not isinstance(value, dict):
+                continue
+            samples.append(
+                ModelUsageSample(**{name: value[name] for name in fields}),
+            )
+    return samples
+
+
+def _write_private_checkpoint(path: Path, payload: dict[str, Any]) -> None:
+    _write_json(path / _PRIVATE_CHECKPOINT, payload)
+
+
+def _match_session_id_by_hash(
+    session_ids: list[str],
+    expected_hash: str,
+) -> str:
+    matches = [item for item in session_ids if text_digest(item) == expected_hash]
+    if len(matches) != 1:
+        raise ValueError(
+            "source session hash did not resolve to exactly one local session",
+        )
+    return matches[0]
+
+
+async def _resolve_source_session_id(
+    container: Container,
+    expected_hash: str,
+) -> str:
+    registry = container.orchestrator._sessions  # noqa: SLF001
+    store = registry._session_store  # noqa: SLF001
+    if isinstance(store, JsonFileSessionStore):
+        session_ids = [path.stem for path in store._dir.glob("*.json")]  # noqa: SLF001
+    elif isinstance(store, SqlSessionStore):
+        async with store._session_factory() as database:  # noqa: SLF001
+            session_ids = list(
+                await database.scalars(select(AgentSessionStateRow.session_id)),
+            )
+    else:
+        raise ValueError("configured session store cannot resolve a session hash")
+    return _match_session_id_by_hash(session_ids, expected_hash)
+
 
 def clone_session_state_json(
     source_state_json: str,
@@ -47,9 +197,9 @@ def clone_session_state_json(
 
     state = AgentState.model_validate_json(source_state_json)
     cloned = state.model_copy(deep=True, update={"session_id": target_session_id})
-    namespace = cloned.middle_context.get("globex_context_v1")
+    namespace = cloned.middle_context.get("crossshop_context_v1")
     namespace = namespace if isinstance(namespace, dict) else {}
-    cloned.middle_context["globex_context_v1"] = namespace
+    cloned.middle_context["crossshop_context_v1"] = namespace
     intent = namespace.get("current_intent")
     intent = intent if isinstance(intent, dict) else {}
     session_context = namespace.get("session_context")
@@ -114,6 +264,16 @@ def _load_source_turns(
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)], path
     raise FileNotFoundError("source artifact has no turns.json or turns.partial.json")
+
+
+def _load_checkpoint_turns(artifact_dir: Path) -> list[dict[str, Any]]:
+    path = artifact_dir / "turns.partial.json"
+    if not path.exists():
+        return []
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise ValueError("turns.partial.json must contain a JSON array")
+    return [item for item in value if isinstance(item, dict)]
 
 
 async def _clone_persisted_session(
@@ -317,43 +477,137 @@ async def run(args: argparse.Namespace) -> int:
     if settings.semantic_cache_enabled:
         raise RuntimeError("set SEMANTIC_CACHE_ENABLED=0 for prompt-cache evaluation")
     scenario = load_scenario(Path(args.scenario))
-    source_artifact = Path(args.source_artifact_dir)
-    source_turns, source_turns_path = _load_source_turns(source_artifact)
-    anchor_artifact = Path(args.anchor_artifact_dir or args.source_artifact_dir)
-    anchor_turns, anchor_turns_path = _load_source_turns(anchor_artifact)
-    anchor = _anchor_fact(anchor_turns)
-    if anchor is None:
-        raise ValueError("anchor artifact has no recoverable anchor product")
+    continuing = bool(args.continue_artifact_dir)
+    checkpoint: dict[str, Any] = {}
+    if continuing:
+        run_dir = Path(args.continue_artifact_dir).resolve()
+        checkpoint = _read_json_object(run_dir / _PRIVATE_CHECKPOINT)
+        source_artifact = Path(str(checkpoint["source_artifact_dir"]))
+        anchor_artifact = Path(str(checkpoint["anchor_artifact_dir"]))
+        source_session_id = str(checkpoint["source_session_id"])
+        target_session_id = str(checkpoint["target_session_id"])
+        buyer_id = str(checkpoint["buyer_id"])
+        source_hash = str(checkpoint["source_state_sha256"])
+        completed_source_turns = int(checkpoint["completed_source_turns"])
+        scenario_cursor = int(checkpoint["scenario_cursor"])
+        before_context = dict(checkpoint["before_context"])
+        max_trigger_turns = int(checkpoint["max_trigger_turns"])
+        turns = _load_checkpoint_turns(run_dir)
+        all_samples = _usage_samples_from_turns(turns)
+    else:
+        if (
+            not (args.source_session_id or args.source_session_hash)
+            or not args.source_artifact_dir
+        ):
+            raise ValueError(
+                "a source session id/hash and source-artifact-dir are required",
+            )
+        source_artifact = Path(args.source_artifact_dir).resolve()
+        anchor_artifact = Path(
+            args.anchor_artifact_dir or args.source_artifact_dir,
+        ).resolve()
+        source_session_id = args.source_session_id or ""
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_dir = Path(args.artifact_root) / f"resume-{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=False)
+        target_session_id = f"context-resume-{uuid.uuid4().hex[:12]}"
+        buyer_id = ""
+        source_hash = ""
+        completed_source_turns = 0
+        scenario_cursor = 0
+        before_context: dict[str, Any] = {}
+        max_trigger_turns = args.max_trigger_turns
+        turns: list[dict[str, Any]] = []
+        all_samples: list[ModelUsageSample] = []
 
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = Path(args.artifact_root) / f"resume-{run_id}"
-    run_dir.mkdir(parents=True, exist_ok=False)
-    target_session_id = f"context-resume-{uuid.uuid4().hex[:12]}"
-    turns: list[dict[str, Any]] = []
-    all_samples: list[ModelUsageSample] = []
-    compression_turn: int | None = None
+    source_turns, source_turns_path = _load_source_turns(source_artifact)
+    anchor_turns, anchor_turns_path = _load_source_turns(anchor_artifact)
+    first_anchor = _anchor_fact(anchor_turns)
+    if first_anchor is None:
+        raise ValueError("anchor artifact has no recoverable anchor product")
+    base_source_turns, prior_trigger_turns, prior_trigger_rows = _compression_history(
+        source_artifact
+    )
+    compression_turn = next(
+        (
+            int(turn["turn_index"])
+            for turn in turns
+            if isinstance(turn.get("compression_event"), dict)
+        ),
+        None,
+    )
 
     container = await build_container()
     await container.startup()
     try:
-        buyer_id, source_hash, completed_source_turns = await _clone_persisted_session(
-            container,
-            source_session_id=args.source_session_id,
-            target_session_id=target_session_id,
+        registry = container.orchestrator._sessions  # noqa: SLF001
+        store = registry._session_store  # noqa: SLF001
+        if continuing:
+            target_state = await store.load(target_session_id)
+            if target_state is None:
+                raise ValueError("checkpoint target session was not found")
+            expected_turns = completed_source_turns + len(turns)
+            if completed_turns_from_state_json(target_state) != expected_turns:
+                raise ValueError(
+                    "checkpoint and persisted target session have diverged; refusing replay",
+                )
+        else:
+            if not source_session_id:
+                source_session_id = await _resolve_source_session_id(
+                    container,
+                    args.source_session_hash,
+                )
+            (
+                buyer_id,
+                source_hash,
+                completed_source_turns,
+            ) = await _clone_persisted_session(
+                container,
+                source_session_id=source_session_id,
+                target_session_id=target_session_id,
+            )
+            scenario_cursor = natural_scenario_cursor(
+                source_artifact,
+                completed_session_turns=completed_source_turns,
+            )
+            before_context = await _context_snapshot(container, target_session_id)
+        executed_trigger_turns = sum(
+            turn.get("phase") in {"resume-trigger", "warm-cache"} for turn in turns
         )
+        remaining_limit = max(0, max_trigger_turns - executed_trigger_turns)
         queries = (
-            list(scenario.warm_cache_queries)
+            list(scenario.warm_cache_queries)[executed_trigger_turns:]
             if args.warm_cache
             else remaining_natural_queries(
                 scenario,
-                completed_turns=completed_source_turns,
-                limit=args.max_trigger_turns,
+                completed_turns=scenario_cursor,
+                limit=remaining_limit,
             )
         )
-        if not queries:
+        if not queries and compression_turn is None:
             raise ValueError("scenario has no remaining natural query for resume")
-        before_context = await _context_snapshot(container, target_session_id)
+        checkpoint_payload = {
+            "schema_version": "context-resume-checkpoint-v1",
+            "status": "running",
+            "source_artifact_dir": str(source_artifact),
+            "anchor_artifact_dir": str(anchor_artifact),
+            "source_session_id": source_session_id,
+            "target_session_id": target_session_id,
+            "buyer_id": buyer_id,
+            "source_state_sha256": source_hash,
+            "completed_source_turns": completed_source_turns,
+            "source_scenario_cursor": natural_scenario_cursor(
+                source_artifact,
+                completed_session_turns=completed_source_turns,
+            ),
+            "scenario_cursor": scenario_cursor,
+            "before_context": before_context,
+            "max_trigger_turns": max_trigger_turns,
+        }
+        _write_private_checkpoint(run_dir, checkpoint_payload)
         for query in queries:
+            if compression_turn is not None:
+                break
             turn, samples = await _execute_turn(
                 container,
                 session_id=target_session_id,
@@ -366,6 +620,8 @@ async def run(args: argparse.Namespace) -> int:
             )
             turns.append(turn)
             all_samples.extend(samples)
+            if not args.warm_cache:
+                scenario_cursor += 1
             if turn["compression_event"] is not None:
                 compression_turn = int(turn["turn_index"])
             _checkpoint_progress(
@@ -374,12 +630,53 @@ async def run(args: argparse.Namespace) -> int:
                 samples=all_samples,
                 compression_turn=compression_turn,
             )
-            if compression_turn is not None:
-                break
+            checkpoint_payload["scenario_cursor"] = scenario_cursor
+            _write_private_checkpoint(run_dir, checkpoint_payload)
 
         recovery_results: list[dict[str, Any]] = []
+        all_trigger_turns = [
+            *prior_trigger_turns,
+            *([compression_turn] if compression_turn is not None else []),
+        ]
         if compression_turn is not None and not args.warm_cache:
             for probe in scenario.recovery_probes:
+                if probe.minimum_compressions > len(all_trigger_turns):
+                    continue
+                phase = f"resume-recovery:{probe.id}"
+                probe_query, actual_anchor_turn = recovery_query_for_session(
+                    probe.query,
+                    authored_turn_index=probe.anchor_turn_index,
+                    source_scenario_cursor=int(
+                        checkpoint_payload["source_scenario_cursor"],
+                    ),
+                    completed_source_turns=completed_source_turns,
+                )
+                existing = next(
+                    (turn for turn in turns if turn.get("phase") == phase),
+                    None,
+                )
+                if existing is not None:
+                    probe_anchor = (
+                        first_anchor
+                        if probe.anchor_turn_index == 1
+                        else _anchor_fact(
+                            anchor_turns,
+                            turn_index=probe.anchor_turn_index,
+                        )
+                    )
+                    existing_result = evaluate_recovery_probe(
+                        existing,
+                        probe=probe,
+                        anchor=probe_anchor,
+                    )
+                    if existing_result["passed"]:
+                        existing_result["authored_anchor_turn"] = (
+                            probe.anchor_turn_index
+                        )
+                        existing_result["actual_anchor_turn"] = actual_anchor_turn
+                        recovery_results.append(existing_result)
+                        continue
+                    existing["phase"] = f"resume-diagnostic-failed:{probe.id}"
                 turn, samples = await _execute_turn(
                     container,
                     session_id=target_session_id,
@@ -387,26 +684,37 @@ async def run(args: argparse.Namespace) -> int:
                     locale=scenario.locale,
                     currency=scenario.currency,
                     turn_index=completed_source_turns + len(turns) + 1,
-                    query=probe.query,
-                    phase=f"resume-recovery:{probe.id}",
+                    query=probe_query,
+                    phase=phase,
                 )
                 turns.append(turn)
                 all_samples.extend(samples)
-                recovery_results.append(
-                    evaluate_recovery_probe(turn, probe=probe, anchor=anchor),
+                probe_anchor = (
+                    first_anchor
+                    if probe.anchor_turn_index == 1
+                    else _anchor_fact(
+                        anchor_turns,
+                        turn_index=probe.anchor_turn_index,
+                    )
                 )
+                probe_result = evaluate_recovery_probe(
+                    turn,
+                    probe=probe,
+                    anchor=probe_anchor,
+                )
+                probe_result["authored_anchor_turn"] = probe.anchor_turn_index
+                probe_result["actual_anchor_turn"] = actual_anchor_turn
+                recovery_results.append(probe_result)
                 _checkpoint_progress(
                     run_dir,
                     turns=turns,
                     samples=all_samples,
                     compression_turn=compression_turn,
                 )
+                _write_private_checkpoint(run_dir, checkpoint_payload)
 
         after_context = await _context_snapshot(container, target_session_id)
-        registry = container.orchestrator._sessions  # noqa: SLF001
-        source_after = await registry._session_store.load(  # noqa: SLF001
-            args.source_session_id,
-        )
+        source_after = await store.load(source_session_id)
         source_unchanged = (
             bool(source_after)
             and hashlib.sha256(
@@ -415,7 +723,9 @@ async def run(args: argparse.Namespace) -> int:
             == source_hash
         )
         summary = {
-            "source_turns": completed_source_turns,
+            "source_turns": base_source_turns,
+            "resume_source_turns": completed_source_turns,
+            "scenario_cursor": scenario_cursor,
             "source_artifact_turns": len(source_turns),
             "trigger_turns_executed": sum(
                 turn["phase"] in {"resume-trigger", "warm-cache"} for turn in turns
@@ -426,6 +736,8 @@ async def run(args: argparse.Namespace) -> int:
             "compression": {
                 "observed": compression_turn is not None,
                 "trigger_turn": compression_turn,
+                "trigger_turns": all_trigger_turns,
+                "observed_count": len(all_trigger_turns),
             },
             "recovery": {
                 "probes": recovery_results,
@@ -478,16 +790,24 @@ async def run(args: argparse.Namespace) -> int:
             "anchor_artifact_sha256": hashlib.sha256(
                 anchor_turns_path.read_bytes(),
             ).hexdigest(),
-            "source_session_hash": text_digest(args.source_session_id),
+            "source_session_hash": text_digest(source_session_id),
             "target_session_hash": text_digest(target_session_id),
         }
         _write_json(run_dir / "manifest.json", manifest)
-        _write_json(run_dir / "turns.json", turns)
+        combined_turns = [*prior_trigger_rows, *turns]
+        _write_json(run_dir / "turns.json", combined_turns)
         _write_json(run_dir / "summary.json", summary)
         (run_dir / "report.md").write_text(
             _render_report(summary),
             encoding="utf-8",
         )
+        checkpoint_payload.update(
+            {
+                "status": "complete" if summary["passed"] else "resumable",
+                "scenario_cursor": scenario_cursor,
+            },
+        )
+        _write_private_checkpoint(run_dir, checkpoint_payload)
         print(f"报告：{run_dir / 'report.md'}", flush=True)
         return 0 if summary["passed"] else 1
     finally:
@@ -498,13 +818,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Resume context evaluation from a cloned persisted session",
     )
-    parser.add_argument("--source-session-id", required=True)
-    parser.add_argument("--source-artifact-dir", required=True)
+    parser.add_argument("--source-session-id")
+    parser.add_argument(
+        "--source-session-hash",
+        help="resolve one existing local session by its privacy-safe artifact hash",
+    )
+    parser.add_argument("--source-artifact-dir")
     parser.add_argument(
         "--anchor-artifact-dir",
         help="Artifact containing the original recovery anchor; defaults to source artifact",
     )
-    parser.add_argument("--max-trigger-turns", type=int, default=2, choices=(1, 2, 3))
+    parser.add_argument(
+        "--max-trigger-turns",
+        type=int,
+        choices=range(1, 61),
+        default=2,
+        metavar="1..60",
+    )
+    parser.add_argument(
+        "--continue-artifact-dir",
+        help=(
+            "continue an interrupted resume run from its private local checkpoint; "
+            "source arguments are read from that checkpoint"
+        ),
+    )
     parser.add_argument(
         "--warm-cache",
         action="store_true",

@@ -8,12 +8,12 @@ from typing import Any
 
 VECTOR_DIMENSION = 1024
 EMBEDDING_VERSION = "bge-m3-cls-v1"
-RRF_PIPELINE_NAME = "globex-products-rrf-v1"
+RRF_PIPELINE_NAME = "crossshop-products-rrf-v1"
 
 INDEX_NAMES = {
-    "globex_reference": "globex-products-reference-v1",
-    "taobao": "globex-products-taobao-v1",
-    "amazon": "globex-products-amazon-v1",
+    "crossshop_reference": "crossshop-products-reference-v1",
+    "reference_seed": "crossshop-products-reference_seed-v1",
+    "amazon": "crossshop-products-amazon-v1",
 }
 
 PRODUCT_FIELDS = frozenset(
@@ -104,7 +104,7 @@ def product_index_body() -> dict[str, Any]:
 
 def rrf_pipeline_body() -> dict[str, Any]:
     return {
-        "description": "Globex Product ANN and BM25 reciprocal rank fusion",
+        "description": "CrossShop Product ANN and BM25 reciprocal rank fusion",
         "phase_results_processors": [
             {
                 "score-ranker-processor": {

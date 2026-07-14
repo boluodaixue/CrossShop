@@ -17,7 +17,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# 项目根目录（globex-agent/）
+# 项目根目录（crossshop-agent/）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -85,7 +85,7 @@ class Settings:
     llm_min_interval_seconds: float = 1.0  # 相邻请求起跑最小间隔，治速率爬升过快
     llm_max_retries: int = 2  # 瞬时故障重试次数（指数退避）
     # ---- 四期：存储 ----
-    # 默认 SQLite（零外部依赖，落在 DATA_DIR/globex.db）。
+    # 默认 SQLite（零外部依赖，落在 DATA_DIR/crossshop.db）。
     # 换服务型数据库需自行装异步驱动（aiomysql / asyncpg）并改此 URL，本仓未验证。
     # 特殊值 "file" = 退回三期的 JSON 文件存储（无数据库）
     database_url: str = ""
@@ -138,6 +138,16 @@ class Settings:
     langfuse_capture_input: bool = False
     langfuse_capture_output: bool = False
     langfuse_flush_timeout_seconds: float = 20.0
+    # ---- 累计 L3 单摘要重压缩（均可按预算实验覆盖）----
+    summary_target_tokens: int = 8_000
+    summary_hard_limit_tokens: int = 12_000
+    context_recent_raw_turns: int = 10
+    context_recent_raw_token_limit: int = 16_000
+    context_l2_hot_turns: int = 1
+    # Knowledge v2 is independent of Product indexes; Qdrant v1 remains opt-in.
+    category_kb_backend: str = "opensearch"
+    category_knowledge_index: str = "crossshop-knowledge-current"
+    category_candidate_k: int = 20
 
 
 def load_settings() -> Settings:
@@ -169,6 +179,9 @@ def load_settings() -> Settings:
     )
     product_embedding_dim = int(os.getenv("PRODUCT_EMBEDDING_DIM", "1024"))
     return Settings(
+        category_kb_backend=os.getenv("CATEGORY_KB_BACKEND", "opensearch"),
+        category_knowledge_index=os.getenv("CATEGORY_KNOWLEDGE_INDEX", "crossshop-knowledge-current"),
+        category_candidate_k=int(os.getenv("CATEGORY_CANDIDATE_K", "20")),
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=os.getenv("LLM_MODEL", "qwen3-max"),
@@ -180,14 +193,14 @@ def load_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-v4"),
         embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
         qdrant_url=os.getenv("QDRANT_URL", ""),
-        qdrant_collection=os.getenv("QDRANT_COLLECTION", "globex_products"),
+        qdrant_collection=os.getenv("QDRANT_COLLECTION", "crossshop_products"),
         reranker_base_url=os.getenv("RERANKER_BASE_URL", ""),
         reranker_model=os.getenv("RERANKER_MODEL", ""),
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
         data_dir=data_dir,
         category_kb_collection=os.getenv(
-            "CATEGORY_KB_COLLECTION", "globex_category_kb_v1"
+            "CATEGORY_KB_COLLECTION", "crossshop_category_kb_v1"
         ),
         context_size=int(os.getenv("CONTEXT_SIZE", "128000")),
         tool_result_limit=int(os.getenv("TOOL_RESULT_LIMIT", "20000")),
@@ -210,7 +223,7 @@ def load_settings() -> Settings:
         database_url=(
             os.getenv("DATABASE_URL")
             or os.getenv("MYSQL_URL")
-            or f"sqlite+aiosqlite:///{data_dir / 'globex.db'}"
+            or f"sqlite+aiosqlite:///{data_dir / 'crossshop.db'}"
         ),
         redis_url=os.getenv("REDIS_URL", ""),
         semantic_cache_enabled=os.getenv("SEMANTIC_CACHE_ENABLED", "1")
@@ -279,5 +292,12 @@ def load_settings() -> Settings:
         langfuse_flush_timeout_seconds=_env_positive_float(
             "LANGFUSE_FLUSH_TIMEOUT_SECONDS",
             20.0,
+        ),
+        summary_target_tokens=int(os.getenv("SUMMARY_TARGET_TOKENS", "8000")),
+        summary_hard_limit_tokens=int(os.getenv("SUMMARY_HARD_LIMIT_TOKENS", "12000")),
+        context_recent_raw_turns=int(os.getenv("CONTEXT_RECENT_RAW_TURNS", "10")),
+        context_l2_hot_turns=int(os.getenv("CONTEXT_L2_HOT_TURNS", "1")),
+        context_recent_raw_token_limit=int(
+            os.getenv("CONTEXT_RECENT_RAW_TOKEN_LIMIT", "16000")
         ),
     )

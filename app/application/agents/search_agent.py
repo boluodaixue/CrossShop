@@ -25,6 +25,10 @@ from app.application.tools.product_search_tool import build_product_search_tool
 from app.application.tools.web_search_tool import build_web_search_tool
 from app.application.usecases.catalog_search import CatalogSearchUseCase
 from app.infrastructure.eventbus import TradeEventBus
+from app.infrastructure.evaluation_controls import (
+    FULL_HARNESS_CONTROLS,
+    EvaluationHarnessControls,
+)
 from app.infrastructure.llm import create_chat_model
 from app.infrastructure.resilience import (
     CircuitBreakerRegistry,
@@ -44,6 +48,7 @@ class SearchAgentFactory:
         knowledge_base: KnowledgeBase,
         circuit_registry: CircuitBreakerRegistry,
         throttle: GatewayThrottle,
+        evaluation_controls: EvaluationHarnessControls = FULL_HARNESS_CONTROLS,
     ) -> None:
         self._settings = settings
         self._catalog_search = catalog_search
@@ -52,6 +57,7 @@ class SearchAgentFactory:
         self._circuit_registry = circuit_registry
         # 闸门由组装根下发，三个工厂必须共用同一个，否则各限一份等于没限
         self._throttle = throttle
+        self._evaluation_controls = evaluation_controls
 
     def _resilience(self, *, platform: str | None = None) -> list:
         return [
@@ -59,6 +65,7 @@ class SearchAgentFactory:
                 self._circuit_registry,
                 self._bus,
                 fixed_product_platform=platform,
+                timeout_enforced=self._evaluation_controls.timeout_enforced,
             ),
         ]
 

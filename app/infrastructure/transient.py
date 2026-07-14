@@ -88,8 +88,8 @@ async def retry_dependency_once(
                 set_span_attributes(
                     span,
                     {
-                        "globex.dependency.attempts": attempt,
-                        "globex.dependency.retried": attempt > 1,
+                        "crossshop.dependency.attempts": attempt,
+                        "crossshop.dependency.retried": attempt > 1,
                     },
                 )
                 raise
@@ -101,8 +101,8 @@ async def retry_dependency_once(
             set_span_attributes(
                 span,
                 {
-                    "globex.dependency.attempts": attempt,
-                    "globex.dependency.retry_reason": type(error).__name__,
+                    "crossshop.dependency.attempts": attempt,
+                    "crossshop.dependency.retry_reason": type(error).__name__,
                 },
             )
             await asyncio.sleep(_RETRY_DELAY_SECONDS)
@@ -110,8 +110,8 @@ async def retry_dependency_once(
         set_span_attributes(
             span,
             {
-                "globex.dependency.attempts": attempt,
-                "globex.dependency.retried": attempt > 1,
+                "crossshop.dependency.attempts": attempt,
+                "crossshop.dependency.retried": attempt > 1,
             },
         )
         return result

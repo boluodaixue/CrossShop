@@ -15,6 +15,8 @@ from agentscope.message import (
     ToolResultState,
 )
 
+from agentscope.types import ReplyFinishedReason
+
 _NON_BUYER_USER_MESSAGE_NAMES = frozenset({"memory_hint"})
 _STRUCTURED_OUTPUT_TOOL = "GenerateStructuredOutput"
 
@@ -38,6 +40,7 @@ class InteractionUnit:
     tools: tuple[ToolInteraction, ...]
     complete: bool
     incomplete_reason: str = ""
+    terminal_status: str = "completed"
 
 
 def _parse_args(value: str) -> Any:
@@ -115,6 +118,7 @@ def _build_unit(
     results: dict[str, tuple[ToolResultBlock, int]] = {}
     reasons: list[str] = []
     final: Msg | None = None
+    terminal_status = "completed"
 
     for index in range(human_index + 1, end):
         message = messages[index]
@@ -129,10 +133,14 @@ def _build_unit(
                 reasons.append("orphan_tool_result")
                 continue
             results[block.id] = (block, index)
-            if block.state != ToolResultState.SUCCESS:
-                reasons.append("failed_tool_result")
+            if block.state == ToolResultState.RUNNING:
+                reasons.append("running_tool_result")
         if message.role == "assistant" and message.get_text_content():
             final = message
+            if message.finished_reason == ReplyFinishedReason.INTERRUPTED:
+                terminal_status = "interrupted"
+            elif message.metadata.get("crossshop_terminal_status") == "error":
+                terminal_status = "error"
 
     missing = [call_id for call_id in call_order if call_id not in results]
     if missing:
@@ -161,6 +169,7 @@ def _build_unit(
         tools=interactions,
         complete=not reasons,
         incomplete_reason=",".join(dict.fromkeys(reasons)),
+        terminal_status=terminal_status,
     )
 
 
@@ -201,17 +210,21 @@ def settled_prefix_units(
     freeze_cursor: int = 0,
     has_pending: bool = False,
     has_interrupt: bool = False,
+    hot_turns: int = 1,
 ) -> list[InteractionUnit]:
-    """Return the continuous complete prefix before the current user turn."""
+    """Freeze only a complete prefix older than the hot window (current included)."""
+
+    if hot_turns < 1:
+        raise ValueError("hot_turns must include the current buyer turn")
 
     if has_pending or has_interrupt:
         return []
     units = group_interaction_units(messages)
-    if len(units) < 2:
+    if len(units) <= hot_turns:
         return []
     settled: list[InteractionUnit] = []
     cursor = max(0, freeze_cursor)
-    for unit in units[:-1]:
+    for unit in units[:-hot_turns]:
         if unit.end <= cursor:
             continue
         if unit.start != cursor or not unit.complete:

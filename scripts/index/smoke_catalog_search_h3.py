@@ -41,7 +41,7 @@ from app.infrastructure.vector.opensearch_product_index import (
 )
 
 PLATFORM_SPECS = {
-    "globex_reference": ProductSearchSpec(
+    "crossshop_reference": ProductSearchSpec(
         normalized_query="降噪耳机",
         ship_to="CN",
         locale="zh-CN",
@@ -49,7 +49,7 @@ PLATFORM_SPECS = {
         target_currency="USD",
         price_max_major=30.0,
     ),
-    "taobao": ProductSearchSpec(
+    "reference_seed": ProductSearchSpec(
         normalized_query="轻便旅行背包",
         ship_to="CN",
         locale="zh-CN",

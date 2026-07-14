@@ -76,7 +76,7 @@ class ModelUsageCapture:
 
 
 _CURRENT_CAPTURE: ContextVar[ModelUsageCapture | None] = ContextVar(
-    "globex_model_usage_capture",
+    "crossshop_model_usage_capture",
     default=None,
 )
 

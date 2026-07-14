@@ -115,11 +115,13 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
         bus: Optional[TradeEventBus] = None,
         timeouts: Optional[dict[str, float]] = None,
         fixed_product_platform: str | None = None,
+        timeout_enforced: bool = True,
     ) -> None:
         self._registry = registry
         self._bus = bus
         self._timeouts = timeouts or DEFAULT_TIMEOUTS
         self._fixed_product_platform = fixed_product_platform
+        self._timeout_enforced = timeout_enforced
 
     def _circuit_key(self, tool_name: str, input_kwargs: dict[str, Any]) -> str:
         if tool_name != "product_search_tool":
@@ -188,12 +190,18 @@ class ToolResilienceMiddleware(ToolMiddlewareBase):
                     collected.append(chunk)
                 return collected
 
-            chunks = await asyncio.wait_for(_collect(), timeout=timeout)
+            if self._timeout_enforced:
+                chunks = await asyncio.wait_for(_collect(), timeout=timeout)
+            else:
+                # 仅供显式评测容器做单因素消融。共同的场景级 watchdog
+                # 仍由评测运行器负责，熔断与异常分类保持不变。
+                chunks = await _collect()
         except asyncio.TimeoutError as err:
             if self._counts_as_failure(tool_name, err):
                 await _record_failure(self._registry, circuit_key)
-            detail = f"{tool_name} 执行超过 {timeout:.0f} 秒已中断"
-            logger.warning("工具超时：%s（%.0fs）", tool_name, timeout)
+            rendered_timeout = f"{timeout:g}"
+            detail = f"{tool_name} 执行超过 {rendered_timeout} 秒已中断"
+            logger.warning("工具超时：%s（%ss）", tool_name, rendered_timeout)
             self._publish_circuit(
                 tool_name,
                 circuit_key,

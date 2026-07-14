@@ -46,6 +46,10 @@ from app.domain.buyer.preference import PreferenceStore
 from app.domain.session.ports.session_store import SessionStore
 from app.infrastructure.context_middleware import ContextLifecycleMiddleware
 from app.infrastructure.eventbus import TradeEventBus
+from app.infrastructure.evaluation_controls import (
+    FULL_HARNESS_CONTROLS,
+    EvaluationHarnessControls,
+)
 from app.infrastructure.harness_middleware import HarnessToolMiddleware
 from app.infrastructure.llm import create_chat_model
 from app.infrastructure.resilience import (
@@ -71,6 +75,7 @@ class MainAgentFactory:
         throttle: GatewayThrottle,
         sequencing: Optional[SequencingTracker] = None,
         loop_detector: Optional[LoopDetector] = None,
+        evaluation_controls: EvaluationHarnessControls = FULL_HARNESS_CONTROLS,
     ) -> None:
         self._settings = settings
         self._search_factory = search_factory
@@ -79,6 +84,7 @@ class MainAgentFactory:
         self._preference_store = preference_store
         self._circuit_registry = circuit_registry
         self._throttle = throttle
+        self._evaluation_controls = evaluation_controls
         # 护栏判定器按会话累积状态，须跨 Agent 实例共享（与熔断注册表同理）
         self._sequencing = sequencing or SequencingTracker()
         self._loop_detector = loop_detector or LoopDetector(
@@ -98,9 +104,18 @@ class MainAgentFactory:
                     sequencing=self._sequencing,
                     loop_detector=self._loop_detector,
                     bus=self._bus,
+                    loop_feedback_enabled=(
+                        self._evaluation_controls.loop_feedback_enabled
+                    ),
                 ),
             )
-        chain.append(ToolResilienceMiddleware(self._circuit_registry, self._bus))
+        chain.append(
+            ToolResilienceMiddleware(
+                self._circuit_registry,
+                self._bus,
+                timeout_enforced=self._evaluation_controls.timeout_enforced,
+            )
+        )
         return chain
 
     def build(self, restored_state: Optional[AgentState] = None) -> Agent:
@@ -154,6 +169,18 @@ class MainAgentFactory:
                         reply_reserved_tokens=max(
                             2_048,
                             self._settings.reply_token_budget,
+                        ),
+                        summary_target_tokens=(self._settings.summary_target_tokens),
+                        summary_hard_limit_tokens=(
+                            self._settings.summary_hard_limit_tokens
+                        ),
+                        recent_raw_turns=self._settings.context_recent_raw_turns,
+                        l2_hot_turns=self._settings.context_l2_hot_turns,
+                        recent_raw_token_limit=(
+                            self._settings.context_recent_raw_token_limit
+                        ),
+                        tool_output_reduction_enabled=(
+                            self._evaluation_controls.tool_output_reduction_enabled
                         ),
                     ),
                     *build_agent_middlewares(self._settings),

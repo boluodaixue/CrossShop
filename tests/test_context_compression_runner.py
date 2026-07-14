@@ -33,8 +33,9 @@ def test_context_scenario_has_ten_anchor_turns_and_default_threshold_contract() 
     assert scenario.targets.warm_cache_turns == 5
     assert scenario.targets.min_warm_turn_cache_hit_ratio == 0.75
     assert scenario.targets.max_turns_until_compression == 90
+    assert scenario.targets.target_compression_events == 1
     assert len(scenario.warm_cache_queries) == 5
-    assert sum(len(journey) for journey in scenario.long_journeys) == 80
+    assert sum(len(journey) for journey in scenario.long_journeys) == 110
 
 
 def test_rolling_cache_ratio_excludes_only_declared_warmup() -> None:
@@ -175,3 +176,45 @@ def test_summary_separates_cumulative_cost_from_per_call_cap() -> None:
     }
     assert summary["prompt_cache"]["minimum_rolling_hit_ratio"] == 0.8
     assert summary["prompt_cache"]["passed"] is True
+
+
+def test_summary_requires_authored_repeated_compression_count() -> None:
+    scenario = load_scenario(DEFAULT_SCENARIO).model_copy(
+        update={
+            "targets": load_scenario(DEFAULT_SCENARIO).targets.model_copy(
+                update={"target_compression_events": 2},
+            ),
+        },
+    )
+    turns = [
+        {
+            "turn_index": index,
+            "phase": "natural-long-session",
+            "model_usage": [_usage(2_000, 1_600).to_dict()],
+            "turn_usage": {
+                "input_tokens": 2_000,
+                "output_tokens": 100,
+                "total_tokens": 2_100,
+            },
+        }
+        for index in range(1, 13)
+    ]
+
+    summary = summarize_run(
+        scenario=scenario,
+        turns=turns,
+        samples=[_usage(1_000, 800) for _ in range(12)],
+        compression_turn=10,
+        compression_turns=[10, 12],
+        recovery_results=[{"passed": True}],
+    )
+
+    assert summary["compression"] == {
+        "observed": True,
+        "observed_count": 2,
+        "target_count": 2,
+        "trigger_turns": [10, 12],
+        "first_trigger_turn": 10,
+        "max_turns_until_compression": 90,
+        "passed": True,
+    }

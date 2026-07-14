@@ -34,7 +34,8 @@ from agentscope.event import (
     ToolCallStartEvent,
     ToolResultEndEvent,
 )
-from agentscope.message import Msg, UserMsg
+from agentscope.message import AssistantMsg, Msg, UserMsg
+from agentscope.types import ReplyFinishedReason
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.application.agents.main_agent import SessionRegistry
@@ -89,6 +90,7 @@ class SubmitIntentOutput:
     shopping_session_id: str
     final_text: str
     displayed_products: tuple[dict[str, Any], ...] = ()
+    interrupted: bool = False
 
 
 class SelectedProductRef(BaseModel):
@@ -96,7 +98,7 @@ class SelectedProductRef(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    platform: Literal["globex_reference", "taobao", "amazon"]
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"]
     product_id: str = Field(min_length=1)
 
 
@@ -116,6 +118,7 @@ class MainAgentStructuredOutput(BaseModel):
 class _MainTurnReply:
     final_text: str
     selected_products: tuple[SelectedProductRef, ...] = ()
+    interrupted: bool = False
 
 
 def _resolve_displayed_products(
@@ -146,7 +149,7 @@ def _resolve_displayed_products(
         platform = payload.get("platform")
         site_locale = payload.get("site_locale")
         hits = payload.get("hits")
-        if platform not in {"globex_reference", "taobao", "amazon"}:
+        if platform not in {"crossshop_reference", "reference_seed", "amazon"}:
             continue
         if not isinstance(hits, list):
             continue
@@ -187,7 +190,7 @@ def _resolve_displayed_products(
 
 
 def _prior_displayed_products(agent: Agent) -> tuple[dict[str, Any], ...]:
-    namespace = agent.state.middle_context.get("globex_context_v1")
+    namespace = agent.state.middle_context.get("crossshop_context_v1")
     if not isinstance(namespace, dict):
         return ()
     context = namespace.get("session_context")
@@ -208,7 +211,7 @@ def _prior_displayed_products(agent: Agent) -> tuple[dict[str, Any], ...]:
 
 
 def _l3_summary_hash(agent: Agent) -> str | None:
-    namespace = agent.state.middle_context.get("globex_context_v1")
+    namespace = agent.state.middle_context.get("crossshop_context_v1")
     if not isinstance(namespace, dict):
         return None
     stage = namespace.get("stage_summary")
@@ -292,8 +295,8 @@ class MainAgentOrchestrator:
                 set_span_attributes(
                     intent_span,
                     {
-                        "globex.result.error": output.final_text.startswith("[error]"),
-                        "globex.result.text_length": len(output.final_text),
+                        "crossshop.result.error": output.final_text.startswith("[error]"),
+                        "crossshop.result.text_length": len(output.final_text),
                     },
                 )
                 return output
@@ -315,6 +318,7 @@ class MainAgentOrchestrator:
         selection_trace = self._bus.subscribe(session_id)
         final_text = ""
         displayed_products: tuple[dict[str, Any], ...] = ()
+        agent: Agent | None = None
         try:
             agent = await self._sessions.get_or_create(session_id)
             summary_before = agent.state.summary
@@ -344,6 +348,14 @@ class MainAgentOrchestrator:
 
             reply = await self._reply_with_retry(session_id, agent, inputs)
             final_text = self._guard_final_text(session_id, reply.final_text)
+            if reply.interrupted:
+                self._bus.publish(session_id, "error", {
+                    "classification": "interrupted", "message": "本轮已中断，任务未完成。",
+                })
+                self._bus.publish(session_id, "final.result", {
+                    "text": final_text, "displayed_products": [], "interrupted": True,
+                })
+                return SubmitIntentOutput(session_id, final_text, interrupted=True)
             turn_events = []
             while not selection_trace.empty():
                 turn_events.append(selection_trace.get_nowait())
@@ -398,6 +410,16 @@ class MainAgentOrchestrator:
                 },
             )
             final_text = f"[error] {public_message}"
+            if agent is not None:
+                # Persist the terminal failure so later turns do not leave L2
+                # blocked behind an apparently unfinished interaction.
+                agent.state.context.append(
+                    AssistantMsg(
+                        name=str(getattr(agent, "name", "Main")),
+                        content=final_text,
+                        metadata={"crossshop_terminal_status": "error"},
+                    ),
+                )
             return SubmitIntentOutput(
                 shopping_session_id=session_id, final_text=final_text
             )
@@ -579,6 +601,7 @@ class MainAgentOrchestrator:
         self, session_id: str, agent: Agent, inputs: list[Msg]
     ) -> _MainTurnReply:
         final_text = ""
+        interrupted = False
         selected_products: tuple[SelectedProductRef, ...] = ()
         # tool_call_id → 工具名，用于把 ToolResultEndEvent 关联回 Task 工具
         call_names: dict[str, str] = {}
@@ -588,6 +611,14 @@ class MainAgentOrchestrator:
             yield_final_msg=True,
         ):
             if isinstance(event, Msg):
+                if event.finished_reason == ReplyFinishedReason.INTERRUPTED:
+                    interrupted = True
+                    # SDK emits this terminal reply but may not persist it.
+                    # Keep the partial raw message; append an explicit failure outcome.
+                    agent.state.context.append(AssistantMsg(
+                        name=agent.name, content="本轮已中断，任务未完成；不得把部分结果视为成功。",
+                        finished_reason=ReplyFinishedReason.INTERRUPTED,
+                    ))
                 if event.structured_output is not None:
                     structured = MainAgentStructuredOutput.model_validate(
                         event.structured_output,
@@ -613,6 +644,7 @@ class MainAgentOrchestrator:
         return _MainTurnReply(
             final_text=final_text,
             selected_products=selected_products,
+            interrupted=interrupted,
         )
 
     def _observe_for_drift(
@@ -679,7 +711,7 @@ class MainAgentOrchestrator:
     ) -> None:
         """Publish the real Main L3 transition, with legacy 2.0 compatibility."""
 
-        namespace = agent.state.middle_context.get("globex_context_v1", {})
+        namespace = agent.state.middle_context.get("crossshop_context_v1", {})
         if isinstance(namespace, dict):
             stage = namespace.get("stage_summary")
             compression = namespace.get("context_compression")
@@ -692,18 +724,41 @@ class MainAgentOrchestrator:
                     and summary_hash != l3_summary_before
                 ):
                     source_ids = stage.get("source_segment_ids")
+                    payload = {
+                        "action": "l3_stage_summary",
+                        "before_tokens": compression.get("before_tokens"),
+                        "after_tokens": compression.get("after_tokens"),
+                        "source_segment_count": (
+                            len(source_ids) if isinstance(source_ids, list) else 0
+                        ),
+                        "summary_hash": summary_hash,
+                    }
+                    optional = {
+                        "source_manifest_hash": stage.get("combined_source_hash"),
+                        "summary_generation": stage.get("generation"),
+                        "summary_estimated_tokens": stage.get("estimated_tokens"),
+                        "summary_target_tokens": compression.get(
+                            "summary_target_tokens"
+                        ),
+                        "summary_hard_limit_tokens": compression.get(
+                            "summary_hard_limit_tokens"
+                        ),
+                        "compression_ratio": compression.get("compression_ratio"),
+                        "recent_raw_segment_count": compression.get(
+                            "recent_raw_segment_count"
+                        ),
+                    }
+                    payload.update(
+                        {
+                            key: value
+                            for key, value in optional.items()
+                            if value is not None
+                        }
+                    )
                     self._bus.publish(
                         session_id,
                         "context.compressed",
-                        {
-                            "action": "l3_stage_summary",
-                            "before_tokens": compression.get("before_tokens"),
-                            "after_tokens": compression.get("after_tokens"),
-                            "source_segment_count": (
-                                len(source_ids) if isinstance(source_ids, list) else 0
-                            ),
-                            "summary_hash": summary_hash,
-                        },
+                        payload,
                     )
                     return
 

@@ -222,14 +222,14 @@ def main() -> None:
         snapshots = {
             "audit-report.json": report,
             "mapping-actual.json": client.request(
-                "GET", "/globex-products-*-v1/_mapping"
+                "GET", "/crossshop-products-*-v1/_mapping"
             ),
             "rrf-pipeline-actual.json": client.request(
                 "GET", f"/_search/pipeline/{RRF_PIPELINE_NAME}"
             ),
             "index-stats-actual.json": client.request(
                 "GET",
-                "/_cat/indices/globex-products-*-v1?format=json&bytes=b&h=health,index,docs.count,docs.deleted,store.size",
+                "/_cat/indices/crossshop-products-*-v1?format=json&bytes=b&h=health,index,docs.count,docs.deleted,store.size",
             ),
         }
         for filename, payload in snapshots.items():

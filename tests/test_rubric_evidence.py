@@ -108,14 +108,14 @@ def _span(
 def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> None:
     turn = build_turn_evidence(
         turn_index=1,
-        user_input="电话 13800138000，只看淘宝露营灯",
+        user_input="电话 13800138000，只看示例平台露营灯",
         final_text="联系 13800138000，推荐第一件商品",
         displayed_products=[
             {
                 "rank": 1,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
-                "card": {"product_id": "taobao:1", "title": "露营灯"},
+                "card": {"product_id": "reference_seed:1", "title": "露营灯"},
             },
         ],
         events=[
@@ -125,7 +125,7 @@ def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> Non
                     "tool": "product_search_tool",
                     "args": {
                         "normalized_query": "露营灯",
-                        "platform": "taobao",
+                        "platform": "reference_seed",
                         "shipping_address": "不应保留",
                     },
                 },
@@ -134,13 +134,13 @@ def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> Non
                 "tool.result",
                 {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "hit_count": 1,
                     "filtered_count": 1,
                     "recall_strategy": "hybrid_rrf",
                     "hits": [
                         {
-                            "product_id": "taobao:1",
+                            "product_id": "reference_seed:1",
                             "title": "露营灯",
                             "price_major": 89,
                             "currency": "CNY",
@@ -156,7 +156,7 @@ def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> Non
                     ],
                     "filtered_out": [
                         {
-                            "product_id": "taobao:2",
+                            "product_id": "reference_seed:2",
                             "price_major": 399,
                             "currency": "CNY",
                             "reason": "over_price_cap",
@@ -169,18 +169,18 @@ def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> Non
     )
 
     assert turn.route == "main.direct"
-    assert turn.user_input == "电话 [redacted]，只看淘宝露营灯"
+    assert turn.user_input == "电话 [redacted]，只看示例平台露营灯"
     assert "13800138000" not in turn.final_text
     assert len(turn.tool_calls) == 1
     call = turn.tool_calls[0]
     assert call.agent == "main"
     assert call.status == "success"
-    assert call.arguments == {"normalized_query": "露营灯", "platform": "taobao"}
-    assert call.result_summary["hit_product_ids"] == ["taobao:1"]
-    assert call.result_summary["filtered_product_ids"] == ["taobao:2"]
+    assert call.arguments == {"normalized_query": "露营灯", "platform": "reference_seed"}
+    assert call.result_summary["hit_product_ids"] == ["reference_seed:1"]
+    assert call.result_summary["filtered_product_ids"] == ["reference_seed:2"]
     assert call.result_summary["hit_facts"] == [
         {
-            "product_id": "taobao:1",
+            "product_id": "reference_seed:1",
             "title": "露营灯",
             "price_major": 89,
             "currency": "CNY",
@@ -195,13 +195,82 @@ def test_direct_product_search_keeps_safe_args_and_product_id_summaries() -> Non
     ]
     assert call.result_summary["filtered_facts"] == [
         {
-            "product_id": "taobao:2",
+            "product_id": "reference_seed:2",
             "price_major": 399,
             "currency": "CNY",
             "reason": "over_price_cap",
         },
     ]
     assert "description" not in call.result_summary["hit_facts"][0]
+
+
+def test_order_evidence_keeps_lines_and_created_at_without_shipping_pii() -> None:
+    state = build_structured_state_evidence(
+        {
+            "order": {
+                "order_id": "GBX-1",
+                "status": "CONFIRMED",
+                "currency": "CNY",
+                "total_amount_major": 89.0,
+                "created_at": "2026-08-31T00:00:00+00:00",
+                "shipping_address": "不应进入评测证据",
+                "items": [
+                    {
+                        "product_id": "P1008",
+                        "sku_id": "P1008-S1",
+                        "title": "LumenGo 便携露营灯 可充电",
+                        "unit_price_major": 89.0,
+                        "quantity": 1,
+                    }
+                ],
+            }
+        },
+        preference_before=_preference(),
+        preference_after=_preference(),
+    )
+    turn = build_turn_evidence(
+        turn_index=1,
+        user_input="查询 GBX-1",
+        final_text="订单 GBX-1 已确认。",
+        displayed_products=[],
+        events=[
+            _event(
+                "tool.invoke",
+                {"tool": "query_order_tool", "args": {"order_id": "GBX-1"}},
+            ),
+            _event(
+                "tool.result",
+                {
+                    "tool": "query_order_tool",
+                    "order": {
+                        "order_id": "GBX-1",
+                        "status": "CONFIRMED",
+                        "currency": "CNY",
+                        "total_amount_major": 89.0,
+                        "created_at": "2026-08-31T00:00:00+00:00",
+                        "shipping_address": "不应进入评测证据",
+                        "lines": [
+                            {
+                                "product_id": "P1008",
+                                "sku_id": "P1008-S1",
+                                "title": "LumenGo 便携露营灯 可充电",
+                                "unit_price_major": 89.0,
+                                "quantity": 1,
+                            }
+                        ],
+                    },
+                },
+            ),
+        ],
+        structured_state=state,
+    )
+
+    order = turn.tool_calls[0].result_summary["order"]
+    assert order["created_at"] == "2026-08-31T00:00:00+00:00"
+    assert order["items"][0]["product_id"] == "P1008"
+    assert state.order == order
+    assert "shipping" not in turn.model_dump_json().lower()
+    assert "不应进入评测证据" not in turn.model_dump_json()
 
 
 def test_real_event_bus_event_object_is_normalized() -> None:
@@ -213,7 +282,7 @@ def test_real_event_bus_event_object_is_normalized() -> None:
             type="tool.invoke",
             payload={
                 "tool": "product_search_tool",
-                "args": {"normalized_query": "露营灯", "platform": "taobao"},
+                "args": {"normalized_query": "露营灯", "platform": "reference_seed"},
             },
             occurred_at="2026-08-29T00:00:00+00:00",
         ),
@@ -231,7 +300,7 @@ def test_real_event_bus_event_object_is_normalized() -> None:
     assert turn.tool_calls[0].tool == "product_search_tool"
     assert turn.tool_calls[0].arguments == {
         "normalized_query": "露营灯",
-        "platform": "taobao",
+        "platform": "reference_seed",
     }
 
 
@@ -320,8 +389,8 @@ def test_parallel_search_dispatches_link_calls_by_correlation_id() -> None:
             "agent.dispatch",
             {
                 "agent": "search_agent",
-                "platform": "taobao",
-                "dispatch_correlation_id": "corr-taobao",
+                "platform": "reference_seed",
+                "dispatch_correlation_id": "corr-reference_seed",
             },
         ),
         _event(
@@ -345,15 +414,15 @@ def test_parallel_search_dispatches_link_calls_by_correlation_id() -> None:
             "tool.invoke",
             {
                 "tool": "product_search_tool",
-                "dispatch_correlation_id": "corr-taobao",
-                "args": {"platform": "taobao"},
+                "dispatch_correlation_id": "corr-reference_seed",
+                "args": {"platform": "reference_seed"},
             },
         ),
         _event(
             "tool.result",
             {
                 "tool": "product_search_tool",
-                "dispatch_correlation_id": "corr-taobao",
+                "dispatch_correlation_id": "corr-reference_seed",
                 "hits": [],
                 "filtered_out": [],
             },
@@ -372,8 +441,8 @@ def test_parallel_search_dispatches_link_calls_by_correlation_id() -> None:
             {
                 "tool": "task_dispatch",
                 "agent": "search_agent",
-                "platform": "taobao",
-                "dispatch_correlation_id": "corr-taobao",
+                "platform": "reference_seed",
+                "dispatch_correlation_id": "corr-reference_seed",
                 "elapsed_ms": 20,
             },
         ),
@@ -391,7 +460,7 @@ def test_parallel_search_dispatches_link_calls_by_correlation_id() -> None:
 
     turn = build_turn_evidence(
         turn_index=1,
-        user_input="比较淘宝和日本亚马逊",
+        user_input="比较示例平台和日本亚马逊",
         final_text="暂未找到合适商品。",
         displayed_products=[],
         events=events,
@@ -399,7 +468,7 @@ def test_parallel_search_dispatches_link_calls_by_correlation_id() -> None:
     )
 
     assert turn.route == "main.dispatch.search_agent"
-    assert [dispatch.platform for dispatch in turn.dispatches] == ["taobao", "amazon"]
+    assert [dispatch.platform for dispatch in turn.dispatches] == ["reference_seed", "amazon"]
     assert [call.correlation_id for call in turn.tool_calls] == [None, None]
     assert [call.call_id for call in turn.tool_calls] == ["call-1", "call-2"]
     assert all(call.agent == "search_agent" for call in turn.tool_calls)
@@ -434,18 +503,18 @@ def test_circuit_result_without_business_invoke_stays_visible() -> None:
 
 def test_span_normalization_keeps_topology_and_operational_attributes_only() -> None:
     root = _span(
-        "globex.shopping_intent",
+        "crossshop.shopping_intent",
         span_id=1,
-        attributes={"globex.session.hash": "private-session"},
+        attributes={"crossshop.session.hash": "private-session"},
     )
     child = _span(
-        "globex.product.opensearch.hybrid",
+        "crossshop.product.opensearch.hybrid",
         span_id=2,
         parent_id=1,
         attributes={
-            "globex.opensearch.hit_count": 5,
-            "globex.dependency.attempts": 2,
-            "globex.dependency.retry_reason": {"secret": "sk-never-export"},
+            "crossshop.opensearch.hit_count": 5,
+            "crossshop.dependency.attempts": 2,
+            "crossshop.dependency.retry_reason": {"secret": "sk-never-export"},
             "gen_ai.input.messages": "private query",
         },
     )
@@ -460,9 +529,9 @@ def test_span_normalization_keeps_topology_and_operational_attributes_only() -> 
     assert spans[1].parent_span_id == "0000000000000001"
     assert spans[1].duration_ms == 2.5
     assert spans[1].attributes == {
-        "globex.opensearch.hit_count": 5,
-        "globex.dependency.attempts": 2,
-        "globex.dependency.retry_reason": "{'secret': '[redacted]'}",
+        "crossshop.opensearch.hit_count": 5,
+        "crossshop.dependency.attempts": 2,
+        "crossshop.dependency.retry_reason": "{'secret': '[redacted]'}",
     }
 
 
@@ -480,7 +549,7 @@ def test_case_hashes_session_and_keeps_per_turn_trace_id() -> None:
         final_text="你好，我是购物助手。",
         displayed_products=[],
         events=[],
-        spans=[_span("globex.shopping_intent")],
+        spans=[_span("crossshop.shopping_intent")],
         structured_state=_state(),
     )
 
@@ -509,7 +578,7 @@ def test_structured_state_keeps_refs_and_preference_fingerprints_only() -> None:
             "last_recommendation": {
                 "displayed_products": [
                     {
-                        "platform": "globex_reference",
+                        "platform": "crossshop_reference",
                         "card": {"product_id": "P1008", "title": "露营灯"},
                     },
                 ],

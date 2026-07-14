@@ -75,15 +75,15 @@ async def run() -> dict[str, Any]:
             set_span_attributes(
                 root,
                 {
-                    "globex.acceptance.scenario": "langfuse_connectivity",
-                    "globex.acceptance.contains_user_content": False,
+                    "crossshop.acceptance.scenario": "langfuse_connectivity",
+                    "crossshop.acceptance.contains_user_content": False,
                 },
             )
             with trace_span(
-                "globex.langfuse.connectivity",
+                "crossshop.langfuse.connectivity",
                 {
-                    "globex.langfuse.protocol": "otlp_http",
-                    "globex.langfuse.ingestion_version": 4,
+                    "crossshop.langfuse.protocol": "otlp_http",
+                    "crossshop.langfuse.ingestion_version": 4,
                 },
             ):
                 pass

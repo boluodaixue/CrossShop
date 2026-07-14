@@ -199,7 +199,7 @@ async def test_real_agentscope_error_spans_remove_exception_and_status_text(
 
     names = {span.name for span in collector.spans}
     assert names == {
-        "globex.shopping_intent",
+        "crossshop.shopping_intent",
         "invoke_agent commerce_concierge",
         "chat controlled-error",
     }
@@ -227,15 +227,15 @@ async def test_real_agentscope_single_and_cross_platform_span_topology(
     result = await run_agentscope_scenarios()
     provider.shutdown()
 
-    assert result["cross_platforms"] == ["globex_reference", "taobao", "amazon"]
+    assert result["cross_platforms"] == ["crossshop_reference", "reference_seed", "amazon"]
     roots = {
         span.context.trace_id: span
         for span in collector.spans
-        if span.name == "globex.shopping_intent"
+        if span.name == "crossshop.shopping_intent"
     }
     by_scenario: dict[str, list[Any]] = {}
     for span in collector.spans:
-        scenario = roots[span.context.trace_id].attributes["globex.acceptance.scenario"]
+        scenario = roots[span.context.trace_id].attributes["crossshop.acceptance.scenario"]
         by_scenario.setdefault(scenario, []).append(span)
 
     single = by_scenario["agentscope_single_platform"]
@@ -296,20 +296,20 @@ def test_intent_business_events_and_product_stages_share_one_trace(
             "agent.dispatch",
             {
                 "agent": "search",
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "demands": "完整私密需求不应进入 trace",
             },
         )
         with trace_span(
-            "globex.embedding.request",
-            {"globex.embedding.input_digest": text_digest("中性 query")},
+            "crossshop.embedding.request",
+            {"crossshop.embedding.input_digest": text_digest("中性 query")},
         ):
             pass
-        with trace_span("globex.product.opensearch.hybrid") as search_span:
-            set_span_attributes(search_span, {"globex.opensearch.hit_count": 5})
-        with trace_span("globex.product.constraints"):
+        with trace_span("crossshop.product.opensearch.hybrid") as search_span:
+            set_span_attributes(search_span, {"crossshop.opensearch.hit_count": 5})
+        with trace_span("crossshop.product.constraints"):
             pass
-        with trace_span("globex.product.rerank"):
+        with trace_span("crossshop.product.rerank"):
             pass
         bus.publish(
             "session-private",
@@ -332,29 +332,29 @@ def test_intent_business_events_and_product_stages_share_one_trace(
     provider.shutdown()
 
     by_name = {span.name: span for span in collector.spans}
-    root = by_name["globex.shopping_intent"]
+    root = by_name["crossshop.shopping_intent"]
     root_trace_id = root.context.trace_id
     assert all(span.context.trace_id == root_trace_id for span in collector.spans)
     for child_name in (
-        "globex.embedding.request",
-        "globex.product.opensearch.hybrid",
-        "globex.product.constraints",
-        "globex.product.rerank",
+        "crossshop.embedding.request",
+        "crossshop.product.opensearch.hybrid",
+        "crossshop.product.constraints",
+        "crossshop.product.rerank",
     ):
         assert by_name[child_name].parent.span_id == root.context.span_id
 
     root_attrs = dict(root.attributes)
-    assert root_attrs["globex.session.hash"] == text_digest("session-private")
-    assert root_attrs["globex.buyer.hash"] == text_digest("buyer-private")
+    assert root_attrs["crossshop.session.hash"] == text_digest("session-private")
+    assert root_attrs["crossshop.buyer.hash"] == text_digest("buyer-private")
     events = {event.name: dict(event.attributes) for event in root.events}
-    assert events["globex.agent.dispatch"]["globex.platform"] == "taobao"
-    assert "demands" not in events["globex.agent.dispatch"]
-    assert events["globex.final.result"]["globex.recommended_count"] == 1
-    assert events["globex.context.compressed"] == {
-        "globex.action": "l3_stage_summary",
-        "globex.before_tokens": 100,
-        "globex.after_tokens": 70,
-        "globex.source_segment_count": 2,
+    assert events["crossshop.agent.dispatch"]["crossshop.platform"] == "reference_seed"
+    assert "demands" not in events["crossshop.agent.dispatch"]
+    assert events["crossshop.final.result"]["crossshop.recommended_count"] == 1
+    assert events["crossshop.context.compressed"] == {
+        "crossshop.action": "l3_stage_summary",
+        "crossshop.before_tokens": 100,
+        "crossshop.after_tokens": 70,
+        "crossshop.source_segment_count": 2,
     }
     serialized = "\n".join(span.to_json() for span in collector.spans)
     assert "完整私密需求" not in serialized

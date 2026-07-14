@@ -36,7 +36,7 @@ def _product(
     return Product(
         product_id=product_id,
         title=f"测试商品 {product_id}",
-        brand="Globex",
+        brand="CrossShop",
         category="测试品类",
         origin_country="CN",
         description="测试商品",

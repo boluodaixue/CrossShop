@@ -24,7 +24,7 @@ from app.infrastructure.resilience import CircuitBreakerRegistry
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "globex:breaker:"
+_KEY_PREFIX = "crossshop:breaker:"
 # 状态 TTL 需明显大于冷却期，避免冷却还没到就被 Redis 过期清掉
 _TTL_MULTIPLIER = 10
 

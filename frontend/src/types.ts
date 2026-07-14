@@ -45,7 +45,7 @@ export interface ProductCard {
 
 export interface DisplayedProduct {
   rank: number;
-  platform: "globex_reference" | "taobao" | "amazon";
+  platform: "crossshop_reference" | "reference_seed" | "amazon";
   site_locale?: "us" | "es" | "jp" | null;
   card: ProductCard;
 }

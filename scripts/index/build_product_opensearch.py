@@ -40,12 +40,12 @@ class Partition:
 
 PARTITIONS = (
     Partition(
-        "globex_reference",
-        "globex_reference/products.jsonl",
-        INDEX_NAMES["globex_reference"],
+        "crossshop_reference",
+        "crossshop_reference/products.jsonl",
+        INDEX_NAMES["crossshop_reference"],
         None,
     ),
-    Partition("taobao", "taobao/products.jsonl", INDEX_NAMES["taobao"], "cn"),
+    Partition("reference_seed", "reference_seed/products.jsonl", INDEX_NAMES["reference_seed"], "cn"),
     Partition("amazon_us", "amazon/us/products.jsonl", INDEX_NAMES["amazon"], "us"),
     Partition("amazon_es", "amazon/es/products.jsonl", INDEX_NAMES["amazon"], "es"),
     Partition("amazon_jp", "amazon/jp/products.jsonl", INDEX_NAMES["amazon"], "jp"),
@@ -209,7 +209,7 @@ def runtime_stats(client: OpenSearchClient) -> dict[str, Any]:
     )["nodes"]
     raw_indexes = client.request(
         "GET",
-        "/_cat/indices/globex-products-*-v1?format=json&bytes=b&h=index,docs.count,store.size",
+        "/_cat/indices/crossshop-products-*-v1?format=json&bytes=b&h=index,docs.count,store.size",
     )
     indexes = [
         {

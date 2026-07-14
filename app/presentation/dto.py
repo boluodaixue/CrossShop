@@ -23,7 +23,7 @@ class SubmitIntentRequest(BaseModel):
 
 class DisplayedProduct(BaseModel):
     rank: int = Field(ge=1, le=5)
-    platform: Literal["globex_reference", "taobao", "amazon"]
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"]
     site_locale: Literal["us", "es", "jp"] | None = None
     card: dict[str, Any]
 

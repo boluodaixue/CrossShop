@@ -82,7 +82,7 @@ async def test_opensearch_startup_failure_is_a_non_blocking_capability_state() -
     container = SimpleNamespace(
         db_engine=None,
         task_queue=None,
-        product_indexes={"taobao": Unavailable()},
+        product_indexes={"reference_seed": Unavailable()},
         product_search_startup_check={},
         knowledge_base=None,
     )
@@ -90,7 +90,7 @@ async def test_opensearch_startup_failure_is_a_non_blocking_capability_state() -
     await Container.startup(container)
 
     assert container.product_search_startup_check == {
-        "taobao": "unavailable:RuntimeError",
+        "reference_seed": "unavailable:RuntimeError",
     }
 
 

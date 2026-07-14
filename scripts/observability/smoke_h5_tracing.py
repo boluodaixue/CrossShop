@@ -73,9 +73,9 @@ def _response(request: httpx.Request) -> httpx.Response:
                 "hits": {
                     "hits": [
                         {
-                            "_id": "taobao:p-local",
+                            "_id": "reference_seed:p-local",
                             "_score": 1.0,
-                            "_source": {"product_id": "taobao:p-local"},
+                            "_source": {"product_id": "reference_seed:p-local"},
                         },
                     ],
                 },
@@ -118,7 +118,7 @@ async def run(output: Path) -> dict[str, Any]:
         embedder = OpenAIEmbeddingClient(settings)
         index = OpenSearchProductIndex(
             "http://local.test",
-            "globex-products-taobao-v1",
+            "crossshop-products-reference_seed-v1",
         )
         reranker = HttpReranker(settings)
         with trace_intent(
@@ -129,19 +129,19 @@ async def run(output: Path) -> dict[str, Any]:
         ) as root:
             set_span_attributes(
                 root,
-                {"globex.acceptance.scenario": "retrieval_infrastructure"},
+                {"crossshop.acceptance.scenario": "retrieval_infrastructure"},
             )
             vector = await embedder.embed(query)
             hits = await index.search(query=query, embedding=vector, top_n=8)
             with trace_span(
-                "globex.product.constraints",
-                {"globex.constraints.candidate_count": len(hits)},
+                "crossshop.product.constraints",
+                {"crossshop.constraints.candidate_count": len(hits)},
             ) as constraint_span:
                 set_span_attributes(
                     constraint_span,
                     {
-                        "globex.constraints.eligible_count": len(hits),
-                        "globex.constraints.filtered_count": 0,
+                        "crossshop.constraints.eligible_count": len(hits),
+                        "crossshop.constraints.filtered_count": 0,
                     },
                 )
             scores = await reranker.rerank(query, ["synthetic local document"])
@@ -150,7 +150,7 @@ async def run(output: Path) -> dict[str, Any]:
                 "tool.result",
                 {
                     "tool": "product_search_tool",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "hit_count": len(hits),
                     "recall_strategy": "embedding_rerank",
                     "hits": [{"product_id": "must-not-enter-trace"}],
@@ -165,7 +165,7 @@ async def run(output: Path) -> dict[str, Any]:
     root_by_trace = {
         span.context.trace_id: span
         for span in spans
-        if span.name == "globex.shopping_intent"
+        if span.name == "crossshop.shopping_intent"
     }
     report_spans = [
         {
@@ -178,7 +178,7 @@ async def run(output: Path) -> dict[str, Any]:
                 else None
             ),
             "scenario": root_by_trace[span.context.trace_id].attributes[
-                "globex.acceptance.scenario"
+                "crossshop.acceptance.scenario"
             ],
             "start_offset_ms": round(
                 (span.start_time - root_by_trace[span.context.trace_id].start_time)
@@ -193,7 +193,7 @@ async def run(output: Path) -> dict[str, Any]:
             "attributes": {
                 key: value
                 for key, value in span.attributes.items()
-                if key in _SAFE_ATTRIBUTE_NAMES or key.startswith("globex.")
+                if key in _SAFE_ATTRIBUTE_NAMES or key.startswith("crossshop.")
             },
             "events": [
                 {"name": event.name, "attributes": dict(event.attributes)}
@@ -214,11 +214,11 @@ async def run(output: Path) -> dict[str, Any]:
         "controlled private single-platform request",
         "controlled private cross-platform request",
         "controlled private single query",
-        "controlled private globex_reference demand",
-        "controlled private taobao demand",
+        "controlled private crossshop_reference demand",
+        "controlled private reference_seed demand",
         "controlled private amazon demand",
-        "controlled private globex_reference query",
-        "controlled private taobao query",
+        "controlled private crossshop_reference query",
+        "controlled private reference_seed query",
         "controlled private amazon query",
         "controlled private product card",
         "controlled private final reply",
@@ -228,8 +228,8 @@ async def run(output: Path) -> dict[str, Any]:
         "controlled-root-cross-session",
         "controlled-root-cross-buyer",
         "controlled-main-cross-session",
-        "controlled-search-session-globex_reference",
-        "controlled-search-session-taobao",
+        "controlled-search-session-crossshop_reference",
+        "controlled-search-session-reference_seed",
         "controlled-search-session-amazon",
         "controlled private error request",
         "controlled private status with sk-local-never-export and address",
@@ -245,16 +245,16 @@ async def run(output: Path) -> dict[str, Any]:
         raise RuntimeError(f"privacy acceptance failed: {leaked}")
     trace_ids = {span.context.trace_id for span in spans}
     infrastructure_required = {
-        "globex.shopping_intent",
-        "globex.embedding.request",
-        "globex.product.opensearch.hybrid",
-        "globex.product.constraints",
-        "globex.product.rerank",
+        "crossshop.shopping_intent",
+        "crossshop.embedding.request",
+        "crossshop.product.opensearch.hybrid",
+        "crossshop.product.constraints",
+        "crossshop.product.rerank",
     }
     infrastructure_names = {
         span.name
         for span in spans
-        if root_by_trace[span.context.trace_id].attributes["globex.acceptance.scenario"]
+        if root_by_trace[span.context.trace_id].attributes["crossshop.acceptance.scenario"]
         == "retrieval_infrastructure"
     }
     missing = sorted(infrastructure_required - infrastructure_names)
@@ -291,14 +291,14 @@ def _validate_agentscope_topology(spans, root_by_trace) -> dict[str, Any]:
     by_scenario: dict[str, list[Any]] = {}
     for span in spans:
         scenario = root_by_trace[span.context.trace_id].attributes[
-            "globex.acceptance.scenario"
+            "crossshop.acceptance.scenario"
         ]
         by_scenario.setdefault(scenario, []).append(span)
 
     single = by_scenario["agentscope_single_platform"]
     cross = by_scenario["agentscope_cross_platform"]
     error = by_scenario["agentscope_error_privacy"]
-    single_root = next(span for span in single if span.name == "globex.shopping_intent")
+    single_root = next(span for span in single if span.name == "crossshop.shopping_intent")
     single_main = _one(single, "invoke_agent commerce_concierge")
     _require_parent(single_main, single_root)
     for span in single:
@@ -312,7 +312,7 @@ def _validate_agentscope_topology(spans, root_by_trace) -> dict[str, Any]:
     if sum(span.name == "execute_tool product_search_tool" for span in single) != 1:
         raise RuntimeError("single-platform product tool span count is not 1")
 
-    cross_root = next(span for span in cross if span.name == "globex.shopping_intent")
+    cross_root = next(span for span in cross if span.name == "crossshop.shopping_intent")
     cross_main = _one(cross, "invoke_agent commerce_concierge")
     _require_parent(cross_main, cross_root)
     dispatches = [span for span in cross if span.name == "execute_tool task_dispatch"]
@@ -352,7 +352,7 @@ def _validate_agentscope_topology(spans, root_by_trace) -> dict[str, Any]:
     if overlap_ms <= 0:
         raise RuntimeError("three task_dispatch spans did not overlap")
     error_required = {
-        "globex.shopping_intent",
+        "crossshop.shopping_intent",
         "invoke_agent commerce_concierge",
         "chat controlled-error",
     }
@@ -390,7 +390,7 @@ def _validate_agentscope_topology(spans, root_by_trace) -> dict[str, Any]:
     }
 
 
-_PLATFORM_ORDER = ("globex_reference", "taobao", "amazon")
+_PLATFORM_ORDER = ("crossshop_reference", "reference_seed", "amazon")
 
 
 def _one(spans, name: str):

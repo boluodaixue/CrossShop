@@ -144,19 +144,19 @@ class CatalogSearchUseCase:
         # 库存 / ship_to / 价格硬约束必须先于精排。全 SKU 缺货的 Product 静默排除，
         # 保持 OpenSearch stock>0 前置过滤语义，不虚构第三种 filtered_out 原因。
         with trace_span(
-            "globex.product.constraints",
+            "crossshop.product.constraints",
             {
-                "globex.constraints.candidate_count": len(scored),
-                "globex.constraints.has_ship_to": bool(spec.ship_to),
-                "globex.constraints.has_price_cap": spec.price_max_major is not None,
+                "crossshop.constraints.candidate_count": len(scored),
+                "crossshop.constraints.has_ship_to": bool(spec.ship_to),
+                "crossshop.constraints.has_price_cap": spec.price_max_major is not None,
             },
         ) as constraint_span:
             eligible, filtered_out = self._apply_constraints(scored, spec)
             set_span_attributes(
                 constraint_span,
                 {
-                    "globex.constraints.eligible_count": len(eligible),
-                    "globex.constraints.filtered_count": len(filtered_out),
+                    "crossshop.constraints.eligible_count": len(eligible),
+                    "crossshop.constraints.filtered_count": len(filtered_out),
                 },
             )
 

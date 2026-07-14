@@ -38,7 +38,7 @@ _MAX_DISPLAYED_PRODUCTS = 5
 _MAX_DISPLAYED_HISTORY = 20
 _MAX_DISPLAYED_SKUS = 5
 _MAX_HIGHLIGHTS = 8
-_PLATFORM_ORDER = {"globex_reference": 0, "taobao": 1, "amazon": 2}
+_PLATFORM_ORDER = {"crossshop_reference": 0, "reference_seed": 1, "amazon": 2}
 _SKU_FIELDS = {"sku_id", "spec", "price_major", "currency", "stock"}
 _LANDED_PRICE_FIELDS = {
     "ship_to",
@@ -351,6 +351,7 @@ def reduce_l4(
                 "currency",
                 "total_amount_major",
                 "cancel_reason",
+                "created_at",
             ):
                 if _present(output.get(key)):
                     order[key] = _bounded(output[key])

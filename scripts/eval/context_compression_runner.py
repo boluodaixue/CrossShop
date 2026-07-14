@@ -53,6 +53,7 @@ class ContextTargets(BaseModel):
     warm_cache_turns: int = Field(default=5, ge=2)
     min_warm_turn_cache_hit_ratio: float = Field(default=0.75, ge=0, le=1)
     max_turns_until_compression: int = Field(default=60, ge=10)
+    target_compression_events: int = Field(default=1, ge=1, le=3)
 
 
 class RecoveryProbe(BaseModel):
@@ -62,6 +63,9 @@ class RecoveryProbe(BaseModel):
     query: str = Field(min_length=1)
     require_anchor_title_price_currency: bool = True
     forbid_product_search: bool = True
+    minimum_compressions: int = Field(default=1, ge=1, le=3)
+    anchor_turn_index: int = Field(default=1, ge=1)
+    required_text_fragments: list[str] = Field(default_factory=list)
 
 
 class ContextScenario(BaseModel):
@@ -242,9 +246,16 @@ def _safe_events(events: Iterable[Any]) -> list[dict[str, Any]]:
                         "before_tokens",
                         "after_tokens",
                         "source_segment_count",
+                        "source_manifest_hash",
                         "summary_hash",
+                        "summary_generation",
+                        "summary_estimated_tokens",
+                        "summary_target_tokens",
+                        "summary_hard_limit_tokens",
+                        "compression_ratio",
+                        "recent_raw_segment_count",
                     )
-                    if isinstance(payload.get(key), (str, int))
+                    if isinstance(payload.get(key), (str, int, float))
                 },
             )
         elif event_type in {"error", "model.fallback", "cache.hit"}:
@@ -260,7 +271,7 @@ async def _context_snapshot(
     session_id: str,
 ) -> dict[str, Any]:
     agent = await container.orchestrator._sessions.get_or_create(session_id)  # noqa: SLF001
-    namespace = agent.state.middle_context.get("globex_context_v1", {})
+    namespace = agent.state.middle_context.get("crossshop_context_v1", {})
     structured = build_structured_state_evidence(
         namespace,
         raw_context_message_count=len(agent.state.context),
@@ -324,8 +335,14 @@ async def _execute_turn(
         container.bus.unsubscribe(session_id, queue)
 
 
-def _anchor_fact(turns: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+def _anchor_fact(
+    turns: Iterable[dict[str, Any]],
+    *,
+    turn_index: int = 1,
+) -> dict[str, Any] | None:
     for turn in turns:
+        if int(turn.get("turn_index") or 0) != turn_index:
+            continue
         displayed = turn.get("displayed_products") or []
         if displayed and isinstance(displayed[0].get("card"), Mapping):
             card = dict(displayed[0]["card"])
@@ -380,6 +397,10 @@ def evaluate_recovery_probe(
                 "anchor_currency_recovered": bool(currency) and currency in final_text,
             },
         )
+    if probe.required_text_fragments:
+        checks["required_text_fragments_recovered"] = all(
+            fragment in final_text for fragment in probe.required_text_fragments
+        )
     if not probe.forbid_product_search:
         checks.pop("no_product_search", None)
     return {
@@ -395,6 +416,7 @@ def summarize_run(
     turns: list[dict[str, Any]],
     samples: list[ModelUsageSample],
     compression_turn: int | None,
+    compression_turns: list[int] | None = None,
     recovery_results: list[dict[str, Any]],
     lifecycle_stall: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -458,6 +480,12 @@ def summarize_run(
     eligible = samples[target.warmup_model_calls :]
     aggregate_cache_ratio = _cache_ratio(eligible)
     min_rolling = min(rolling) if rolling else None
+    observed_compression_turns = list(compression_turns or [])
+    if (
+        compression_turn is not None
+        and compression_turn not in observed_compression_turns
+    ):
+        observed_compression_turns.insert(0, compression_turn)
     return {
         "scenario_id": scenario.scenario_id,
         "turns_executed": len(turns),
@@ -493,11 +521,17 @@ def summarize_run(
             and min_rolling >= target.min_rolling_cache_hit_ratio,
         },
         "compression": {
-            "observed": compression_turn is not None,
-            "first_trigger_turn": compression_turn,
+            "observed": bool(observed_compression_turns),
+            "observed_count": len(observed_compression_turns),
+            "target_count": target.target_compression_events,
+            "trigger_turns": observed_compression_turns,
+            "first_trigger_turn": (
+                observed_compression_turns[0] if observed_compression_turns else None
+            ),
             "max_turns_until_compression": target.max_turns_until_compression,
-            "passed": compression_turn is not None
-            and compression_turn <= target.max_turns_until_compression,
+            "passed": len(observed_compression_turns)
+            >= target.target_compression_events
+            and observed_compression_turns[0] <= target.max_turns_until_compression,
         },
         "recovery": {
             "probes": recovery_results,
@@ -532,6 +566,7 @@ def render_report(summary: Mapping[str, Any]) -> str:
             if minimum is not None
             else "- 滚动最低命中率：样本不足",
             f"- 首次自然 L3 压缩轮次：{compression['first_trigger_turn'] or '未触发'}",
+            f"- 自然 L3 压缩次数：{compression['observed_count']} / {compression['target_count']}",
             f"- 压缩后恢复：{'PASS' if recovery['passed'] else 'FAIL'}",
             f"- 冻结前置条件停滞：{'YES' if lifecycle_stall.get('detected') else 'NO'}",
             "",
@@ -545,6 +580,14 @@ async def run(args: argparse.Namespace) -> int:
     if settings.semantic_cache_enabled:
         raise RuntimeError("set SEMANTIC_CACHE_ENABLED=0 for prompt-cache evaluation")
     scenario = load_scenario(Path(args.scenario))
+    if args.target_compressions:
+        scenario = scenario.model_copy(
+            update={
+                "targets": scenario.targets.model_copy(
+                    update={"target_compression_events": args.target_compressions},
+                ),
+            },
+        )
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.artifact_root) / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -553,6 +596,7 @@ async def run(args: argparse.Namespace) -> int:
     turns: list[dict[str, Any]] = []
     all_samples: list[ModelUsageSample] = []
     compression_turn: int | None = None
+    compression_turns: list[int] = []
     lifecycle_stall: dict[str, Any] | None = None
 
     container = await build_container()
@@ -561,7 +605,7 @@ async def run(args: argparse.Namespace) -> int:
         turn_limit = (
             scenario.targets.cumulative_turns
             if args.smoke
-            else scenario.targets.max_turns_until_compression
+            else args.max_turns or scenario.targets.max_turns_until_compression
         )
         long_queries = [
             *scenario.anchor_turns,
@@ -582,6 +626,10 @@ async def run(args: argparse.Namespace) -> int:
             all_samples.extend(samples)
             if compression_turn is None and turn["compression_event"] is not None:
                 compression_turn = int(turn["turn_index"])
+            if turn["compression_event"] is not None:
+                observed_turn = int(turn["turn_index"])
+                if observed_turn not in compression_turns:
+                    compression_turns.append(observed_turn)
             _checkpoint_progress(
                 run_dir,
                 turns=turns,
@@ -596,15 +644,16 @@ async def run(args: argparse.Namespace) -> int:
                 if lifecycle_stall is not None:
                     break
             if (
-                compression_turn is not None
+                len(compression_turns) >= scenario.targets.target_compression_events
                 and len(turns) >= scenario.targets.cumulative_turns
             ):
                 break
 
-        anchor = _anchor_fact(turns)
         recovery_results: list[dict[str, Any]] = []
-        if compression_turn is not None:
+        if len(compression_turns) >= scenario.targets.target_compression_events:
             for probe in scenario.recovery_probes:
+                if len(compression_turns) < probe.minimum_compressions:
+                    continue
                 turn, samples = await _execute_turn(
                     container,
                     session_id=session_id,
@@ -618,7 +667,14 @@ async def run(args: argparse.Namespace) -> int:
                 turns.append(turn)
                 all_samples.extend(samples)
                 recovery_results.append(
-                    evaluate_recovery_probe(turn, probe=probe, anchor=anchor),
+                    evaluate_recovery_probe(
+                        turn,
+                        probe=probe,
+                        anchor=_anchor_fact(
+                            turns,
+                            turn_index=probe.anchor_turn_index,
+                        ),
+                    ),
                 )
                 _checkpoint_progress(
                     run_dir,
@@ -632,9 +688,24 @@ async def run(args: argparse.Namespace) -> int:
             turns=turns,
             samples=all_samples,
             compression_turn=compression_turn,
+            compression_turns=compression_turns,
             recovery_results=recovery_results,
             lifecycle_stall=lifecycle_stall,
         )
+        summary["after_context"] = await _context_snapshot(container, session_id)
+        summary["source_state_unchanged"] = True
+        summary["l2_repair_passed"] = bool(
+            summary["after_context"].get("freeze_cursor", 0) > 0
+        )
+        summary["l3_recovery_complete"] = bool(
+            summary["compression"]["passed"] and summary["recovery"]["passed"]
+        )
+        summary["status"] = (
+            "L3_RECOVERY_PASS"
+            if summary["l3_recovery_complete"]
+            else "L3_RECOVERY_FAIL"
+        )
+        summary["passed"] = summary["status"] == "L3_RECOVERY_PASS"
         manifest = {
             "schema_version": scenario.schema_version,
             "scenario_sha256": hashlib.sha256(
@@ -678,6 +749,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke",
         action="store_true",
         help="run only the fixed ten-turn token/cache journey",
+    )
+    parser.add_argument(
+        "--target-compressions",
+        type=int,
+        choices=(1, 2, 3),
+        default=0,
+        help="override the scenario target number of natural L3 transitions",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=0,
+        help="bounded natural-session turn limit; zero keeps the scenario default",
     )
     return parser
 

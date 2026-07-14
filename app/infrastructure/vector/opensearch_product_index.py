@@ -107,14 +107,14 @@ class OpenSearchProductIndex(ProductVectorIndex):
             raise ValueError("query embedding contains a non-finite value")
 
         with trace_span(
-            "globex.product.opensearch.hybrid",
+            "crossshop.product.opensearch.hybrid",
             {
-                "globex.opensearch.index": self._index_name,
-                "globex.opensearch.site_locale": self._site_locale or "all",
-                "globex.opensearch.top_n": top_n,
-                "globex.opensearch.query_digest": text_digest(query),
-                "globex.opensearch.vector_dimension": len(embedding),
-                "globex.opensearch.pipeline": RRF_PIPELINE_NAME,
+                "crossshop.opensearch.index": self._index_name,
+                "crossshop.opensearch.site_locale": self._site_locale or "all",
+                "crossshop.opensearch.top_n": top_n,
+                "crossshop.opensearch.query_digest": text_digest(query),
+                "crossshop.opensearch.vector_dimension": len(embedding),
+                "crossshop.opensearch.pipeline": RRF_PIPELINE_NAME,
             },
         ) as span:
             request_body = hybrid_query(
@@ -157,7 +157,7 @@ class OpenSearchProductIndex(ProductVectorIndex):
                     raise RuntimeError(f"non-finite score for Product {product_id}")
                 seen_product_ids.add(product_id)
                 hits.append(VectorHit(product_id=product_id, score=score))
-            set_span_attributes(span, {"globex.opensearch.hit_count": len(hits)})
+            set_span_attributes(span, {"crossshop.opensearch.hit_count": len(hits)})
             return hits
 
     async def close(self) -> None:

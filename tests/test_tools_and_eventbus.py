@@ -1,14 +1,23 @@
 # -*- coding: utf-8 -*-
 """工具层与事件总线单测：工具直调（绕过 LLM）+ EventBus 订阅。"""
+
 import asyncio
 import json
 
 import pytest
 
-from app.application.tools.order_tools import build_create_order_tool
+from app.application.tools.order_tools import (
+    build_cancel_order_tool,
+    build_create_order_tool,
+    build_query_order_tool,
+)
 from app.application.tools.product_search_tool import build_product_search_tool
 from app.application.usecases.catalog_search import CatalogSearchUseCase
-from app.application.usecases.order_usecases import PlaceOrderUseCase
+from app.application.usecases.order_usecases import (
+    CancelOrderUseCase,
+    PlaceOrderUseCase,
+    QueryOrderUseCase,
+)
 from app.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.persistence.in_memory_repositories import (
@@ -48,10 +57,14 @@ class TestToolsDirectInvoke:
     async def test_product_search_tool(self):
         bus = TradeEventBus()
         queue = bus.subscribe("s1")
-        tool = build_product_search_tool(CatalogSearchUseCase(InMemoryProductRepository()), bus)
+        tool = build_product_search_tool(
+            CatalogSearchUseCase(InMemoryProductRepository()), bus
+        )
 
         token = ShoppingContext.set(
-            ShoppingContextSnapshot(shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"),
+            ShoppingContextSnapshot(
+                shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"
+            ),
         )
         try:
             response = await tool(normalized_query="旅行三件套 抗造")
@@ -68,13 +81,19 @@ class TestToolsDirectInvoke:
         而不是在 schema 校验层被拒收（实测 price_max_major="300" 曾导致检索全程失败）。"""
         bus = TradeEventBus()
         queue = bus.subscribe("s1")
-        tool = build_product_search_tool(CatalogSearchUseCase(InMemoryProductRepository()), bus)
+        tool = build_product_search_tool(
+            CatalogSearchUseCase(InMemoryProductRepository()), bus
+        )
 
         token = ShoppingContext.set(
-            ShoppingContextSnapshot(shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"),
+            ShoppingContextSnapshot(
+                shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"
+            ),
         )
         try:
-            response = await tool(normalized_query="旅行三件套 抗造", price_max_major="300", top_k="3")
+            response = await tool(
+                normalized_query="旅行三件套 抗造", price_max_major="300", top_k="3"
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -90,13 +109,19 @@ class TestToolsDirectInvoke:
         """非法数字字符串应返回 [error] 而不是抛异常。"""
         bus = TradeEventBus()
         bus.subscribe("s1")
-        tool = build_product_search_tool(CatalogSearchUseCase(InMemoryProductRepository()), bus)
+        tool = build_product_search_tool(
+            CatalogSearchUseCase(InMemoryProductRepository()), bus
+        )
 
         token = ShoppingContext.set(
-            ShoppingContextSnapshot(shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"),
+            ShoppingContextSnapshot(
+                shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"
+            ),
         )
         try:
-            response = await tool(normalized_query="旅行三件套", price_max_major="不是数字")
+            response = await tool(
+                normalized_query="旅行三件套", price_max_major="不是数字"
+            )
         finally:
             ShoppingContext.reset(token)
 
@@ -105,11 +130,15 @@ class TestToolsDirectInvoke:
     async def test_create_order_tool_and_error_path(self):
         bus = TradeEventBus()
         product_repo = InMemoryProductRepository()
-        tool = build_create_order_tool(PlaceOrderUseCase(product_repo, InMemoryOrderRepository()), bus)
+        tool = build_create_order_tool(
+            PlaceOrderUseCase(product_repo, InMemoryOrderRepository()), bus
+        )
 
         # 买家身份由 ShoppingContext 注入，而非模型入参
         token = ShoppingContext.set(
-            ShoppingContextSnapshot(shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"),
+            ShoppingContextSnapshot(
+                shopping_session_id="s1", buyer_id="b1", locale="zh-CN", currency="CNY"
+            ),
         )
         try:
             ok = await tool(
@@ -128,3 +157,52 @@ class TestToolsDirectInvoke:
             assert bad.content[0].text.startswith("[error]")
         finally:
             ShoppingContext.reset(token)
+
+    async def test_query_and_cancel_tools_enforce_context_buyer(self):
+        bus = TradeEventBus()
+        product_repo = InMemoryProductRepository()
+        order_repo = InMemoryOrderRepository()
+        create = build_create_order_tool(
+            PlaceOrderUseCase(product_repo, order_repo),
+            bus,
+        )
+        query = build_query_order_tool(QueryOrderUseCase(order_repo), bus)
+        cancel = build_cancel_order_tool(
+            CancelOrderUseCase(product_repo, order_repo),
+            bus,
+        )
+        owner_token = ShoppingContext.set(
+            ShoppingContextSnapshot(
+                shopping_session_id="owner-session",
+                buyer_id="owner",
+                locale="zh-CN",
+                currency="CNY",
+            ),
+        )
+        try:
+            created = await create(
+                items=[
+                    {"product_id": "P1001", "sku_id": "P1001-S1", "quantity": 1},
+                ],
+                shipping_address=ADDRESS,
+            )
+            order_id = json.loads(created.content[0].text)["order_id"]
+        finally:
+            ShoppingContext.reset(owner_token)
+
+        other_token = ShoppingContext.set(
+            ShoppingContextSnapshot(
+                shopping_session_id="other-session",
+                buyer_id="other",
+                locale="zh-CN",
+                currency="CNY",
+            ),
+        )
+        try:
+            denied_query = await query(order_id=order_id)
+            denied_cancel = await cancel(order_id=order_id, reason="不是我的订单")
+        finally:
+            ShoppingContext.reset(other_token)
+
+        assert denied_query.content[0].text == "[error] 订单不存在或无权访问"
+        assert denied_cancel.content[0].text == "[error] 订单不存在或无权访问"

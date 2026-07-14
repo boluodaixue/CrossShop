@@ -1,4 +1,4 @@
-# Globex 评测回归用例集
+# CrossShop 评测回归用例集
 # 每条 case：多轮 queries 复用同一会话；rubric 分三级（P0 数字事实/安全底线，P1 行为与命中，P2 表达）
 # buyer_id 留空则用 case id 派生，避免长期记忆用例互相污染
 

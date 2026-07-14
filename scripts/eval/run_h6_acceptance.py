@@ -312,7 +312,7 @@ def _product(product_id: str, *, price: float = 100.0) -> Product:
     return Product(
         product_id=product_id,
         title=f"H6 商品 {product_id}",
-        brand="Globex",
+        brand="CrossShop",
         category="H6 测试品类",
         origin_country="CN",
         description="H6 deterministic fault acceptance",
@@ -404,8 +404,8 @@ async def run_fault_contracts() -> dict[str, Any]:
 
     async def product_search_tool(platform: str) -> ToolChunk:
         """Injected single product tool with platform-scoped dependency health."""
-        if platform == "taobao":
-            raise httpx.ConnectError("injected taobao connection failure")
+        if platform == "reference_seed":
+            raise httpx.ConnectError("injected reference_seed connection failure")
         return ToolChunk(
             content=[TextBlock(type="text", text=f"{platform}:ok")],
             state=ToolResultState.SUCCESS,
@@ -415,13 +415,13 @@ async def run_fault_contracts() -> dict[str, Any]:
         product_search_tool,
         middlewares=[ToolResilienceMiddleware(platform_registry)],
     )
-    await _call_function_tool(platform_tool, platform="taobao")
-    await _call_function_tool(platform_tool, platform="taobao")
-    taobao_short_circuit = await _call_function_tool(
+    await _call_function_tool(platform_tool, platform="reference_seed")
+    await _call_function_tool(platform_tool, platform="reference_seed")
+    reference_seed_short_circuit = await _call_function_tool(
         platform_tool,
-        platform="taobao",
+        platform="reference_seed",
     )
-    amazon_after_taobao_failure = await _call_function_tool(
+    amazon_after_reference_seed_failure = await _call_function_tool(
         platform_tool,
         platform="amazon",
     )
@@ -430,25 +430,25 @@ async def run_fault_contracts() -> dict[str, Any]:
             name="product-circuit-is-platform-scoped",
             classification="circuit_open",
             passed=(
-                platform_registry.status("product_search_tool:taobao") == "open"
+                platform_registry.status("product_search_tool:reference_seed") == "open"
                 and platform_registry.status("product_search_tool:amazon") == "closed"
-                and "已熔断" in taobao_short_circuit.content[0].text
-                and amazon_after_taobao_failure.state == ToolResultState.SUCCESS
+                and "已熔断" in reference_seed_short_circuit.content[0].text
+                and amazon_after_reference_seed_failure.state == ToolResultState.SUCCESS
             ),
             request={
                 "tool": "product_search_tool",
-                "failed_platform": "taobao",
+                "failed_platform": "reference_seed",
                 "healthy_platform": "amazon",
             },
             result={
-                "taobao_circuit": platform_registry.status(
-                    "product_search_tool:taobao"
+                "reference_seed_circuit": platform_registry.status(
+                    "product_search_tool:reference_seed"
                 ),
                 "amazon_circuit": platform_registry.status(
                     "product_search_tool:amazon"
                 ),
                 "amazon_available": (
-                    amazon_after_taobao_failure.state == ToolResultState.SUCCESS
+                    amazon_after_reference_seed_failure.state == ToolResultState.SUCCESS
                 ),
             },
         ),
@@ -877,7 +877,7 @@ async def run_fault_contracts() -> dict[str, Any]:
     )
 
     platform_bus = TradeEventBus()
-    injected_search_factory = _InjectedSearchFactory(platform_bus, "taobao")
+    injected_search_factory = _InjectedSearchFactory(platform_bus, "reference_seed")
     injected_trade_factory = SimpleNamespace()
     dispatch = build_task_dispatch_tool(
         injected_search_factory,  # type: ignore[arg-type]
@@ -901,7 +901,7 @@ async def run_fault_contracts() -> dict[str, Any]:
                     platform=platform,
                     site_locale=None,
                 )
-                for platform in ("globex_reference", "taobao", "amazon")
+                for platform in ("crossshop_reference", "reference_seed", "amazon")
             ),
         )
     finally:
@@ -912,7 +912,7 @@ async def run_fault_contracts() -> dict[str, Any]:
             "dispatch_result": json.loads(chunk.content[0].text),
         }
         for platform, chunk in zip(
-            ("globex_reference", "taobao", "amazon"),
+            ("crossshop_reference", "reference_seed", "amazon"),
             platform_chunks,
             strict=True,
         )
@@ -922,13 +922,13 @@ async def run_fault_contracts() -> dict[str, Any]:
             name="single-platform-failure-does-not-cancel-peer-results",
             classification="degraded_success",
             passed=(
-                platform_states["globex_reference"]["state"] == "success"
-                and platform_states["globex_reference"]["dispatch_result"][
+                platform_states["crossshop_reference"]["state"] == "success"
+                and platform_states["crossshop_reference"]["dispatch_result"][
                     "search_result_available"
                 ]
                 is True
-                and platform_states["taobao"]["state"] == "success"
-                and platform_states["taobao"]["dispatch_result"][
+                and platform_states["reference_seed"]["state"] == "success"
+                and platform_states["reference_seed"]["dispatch_result"][
                     "search_result_available"
                 ]
                 is False
@@ -939,13 +939,13 @@ async def run_fault_contracts() -> dict[str, Any]:
                 is True
             ),
             request={
-                "platforms": ["globex_reference", "taobao", "amazon"],
-                "injected_failure": "taobao",
+                "platforms": ["crossshop_reference", "reference_seed", "amazon"],
+                "injected_failure": "reference_seed",
             },
             result={
                 "platform_results": platform_states,
                 "boundary": "production task_dispatch correlation and aggregation",
-                "failed_dispatch_outer_state": platform_states["taobao"]["state"],
+                "failed_dispatch_outer_state": platform_states["reference_seed"]["state"],
                 "automatic_retry_calls": 0,
             },
         ),
@@ -959,7 +959,7 @@ async def run_fault_contracts() -> dict[str, Any]:
     startup_probe = SimpleNamespace(
         db_engine=None,
         task_queue=None,
-        product_indexes={"globex_reference": _UnavailableIndex()},
+        product_indexes={"crossshop_reference": _UnavailableIndex()},
         product_search_startup_check={},
         knowledge_base=None,
     )
@@ -969,7 +969,7 @@ async def run_fault_contracts() -> dict[str, Any]:
             name="opensearch-unavailable-does-not-block-chat-trade-startup",
             classification="transient_dependency_failure",
             passed=(
-                startup_probe.product_search_startup_check.get("globex_reference")
+                startup_probe.product_search_startup_check.get("crossshop_reference")
                 == "unavailable:RuntimeError"
             ),
             request={"operation": "Container.startup"},
@@ -1400,7 +1400,7 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
             )
     elif expectation == "cross_platform":
         platforms = {event["payload"].get("platform") for event in dispatches}
-        if platforms != {"globex_reference", "taobao", "amazon"}:
+        if platforms != {"crossshop_reference", "reference_seed", "amazon"}:
             failures.append(f"cross-platform dispatch mismatch: {sorted(platforms)}")
         overlap = _dispatch_overlap(events)
         if set(overlap["complete_platforms"]) != platforms:
@@ -1487,9 +1487,9 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
             if normalized_query != "降噪耳机":
                 failures.append(f"category switch did not form new request: {args}")
     elif expectation == "conditional_rewrite_filtered":
-        protocol_failures, evidence = _protocol(events, {"taobao"})
+        protocol_failures, evidence = _protocol(events, {"reference_seed"})
         failures.extend(protocol_failures)
-        calls = evidence["calls_by_platform"]["taobao"]
+        calls = evidence["calls_by_platform"]["reference_seed"]
         if len(calls) != 2:
             failures.append(f"expected one legal rewrite, observed {len(calls)} calls")
         elif not all(
@@ -1652,7 +1652,7 @@ async def _run_recorded_retrieval_turn(
     timeout_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Record the exact query crossing both real retrieval model boundaries."""
-    usecase = container.catalog_searches["taobao"]
+    usecase = container.catalog_searches["reference_seed"]
     original_embedder = usecase._embedder
     original_reranker = usecase._reranker
     embedder = _RecordingEmbedder(original_embedder)
@@ -1725,22 +1725,22 @@ async def run_online_acceptance(
             "explicit-cross-platform",
             f"h6-cross-{stamp}",
             f"h6-cross-buyer-{stamp}",
-            "同时比较 Globex、淘宝和 Amazon 的降噪耳机，三个平台都要查。",
+            "同时比较 CrossShop、示例平台和 Amazon 的降噪耳机，三个平台都要查。",
             "cross_platform",
         ),
         LiveTurn(
-            "single-globex",
-            f"h6-globex-{stamp}",
-            f"h6-globex-buyer-{stamp}",
-            "只看 Globex，帮我找轻便旅行背包，最多 5 件。",
-            "direct:globex_reference",
+            "single-crossshop",
+            f"h6-crossshop-{stamp}",
+            f"h6-crossshop-buyer-{stamp}",
+            "只看 CrossShop，帮我找轻便旅行背包，最多 5 件。",
+            "direct:crossshop_reference",
         ),
         LiveTurn(
-            "single-taobao",
-            f"h6-taobao-{stamp}",
-            f"h6-taobao-buyer-{stamp}",
-            "只看淘宝，帮我找轻便旅行背包，最多 5 件。",
-            "direct:taobao",
+            "single-reference_seed",
+            f"h6-reference_seed-{stamp}",
+            f"h6-reference_seed-buyer-{stamp}",
+            "只看示例平台，帮我找轻便旅行背包，最多 5 件。",
+            "direct:reference_seed",
         ),
         LiveTurn(
             "single-amazon",
@@ -1767,7 +1767,7 @@ async def run_online_acceptance(
             "shipping-filtered-rewrite",
             f"h6-shipping-filter-{stamp}",
             f"h6-shipping-filter-buyer-{stamp}",
-            "只看淘宝，找旅行背包，必须配送到南极洲 AQ。如果首次顶层原始 hits 少于 3，按既有规则只改 normalized_query 再查一次；之后停止并如实说明 filtered_out，不要报系统故障。",
+            "只看示例平台，找旅行背包，必须配送到南极洲 AQ。如果首次顶层原始 hits 少于 3，按既有规则只改 normalized_query 再查一次；之后停止并如实说明 filtered_out，不要报系统故障。",
             "conditional_rewrite_filtered",
         ),
     ]
@@ -1783,8 +1783,8 @@ async def run_online_acceptance(
             "constraint-base",
             constraint_session,
             constraint_buyer,
-            "只看淘宝，帮我找轻便旅行背包。",
-            "direct:taobao",
+            "只看示例平台，帮我找轻便旅行背包。",
+            "direct:reference_seed",
         ),
         LiveTurn(
             "constraint-followup",
@@ -1818,8 +1818,8 @@ async def run_online_acceptance(
             "quantity-three",
             more_session,
             more_buyer,
-            "只看淘宝找旅行背包，明确推荐 3 件。",
-            "direct:taobao",
+            "只看示例平台找旅行背包，明确推荐 3 件。",
+            "direct:reference_seed",
         ),
         timeout_seconds=timeout_seconds,
     )
@@ -1844,8 +1844,8 @@ async def run_online_acceptance(
             "trade-product-search",
             trade_session,
             trade_buyer,
-            "只看 Globex，搜索 QuietEar 硅胶隔音耳塞，我后面要买。",
-            "direct:globex_reference",
+            "只看 CrossShop，搜索 QuietEar 硅胶隔音耳塞，我后面要买。",
+            "direct:crossshop_reference",
         ),
         timeout_seconds=timeout_seconds,
     )
@@ -1929,7 +1929,7 @@ async def run_online_acceptance(
     )
     try:
         preference_query = (
-            "只看淘宝，帮我找轻便旅行背包；本轮 normalized_query "
+            "只看示例平台，帮我找轻便旅行背包；本轮 normalized_query "
             "严格使用“轻便旅行背包”，不添加同义词。"
         )
         preferred, preferred_retrieval = await _run_recorded_retrieval_turn(
@@ -1939,7 +1939,7 @@ async def run_online_acceptance(
                 f"h6-pref-{stamp}",
                 preferred_buyer,
                 preference_query,
-                "direct:taobao",
+                "direct:reference_seed",
             ),
             timeout_seconds=timeout_seconds,
         )
@@ -1950,7 +1950,7 @@ async def run_online_acceptance(
                 f"h6-plain-{stamp}",
                 plain_buyer,
                 preference_query,
-                "direct:taobao",
+                "direct:reference_seed",
             ),
             timeout_seconds=timeout_seconds,
         )
@@ -2177,7 +2177,7 @@ async def run_online_acceptance(
         for name, turn in same_platform_turns.items()
     }
     isolation = {
-        "platform": "taobao",
+        "platform": "reference_seed",
         "session_product_refs": session_refs,
         "all_sessions_populated": all(session_refs.values()),
         "owner_and_request_checks": owner_checks,
@@ -2359,7 +2359,7 @@ async def run_real_empty_result_probes(
                 {"search_pipeline": RRF_PIPELINE_NAME} if name == "hybrid" else None
             )
             response = await client.post(
-                f"/{INDEX_NAMES['globex_reference']}/_search",
+                f"/{INDEX_NAMES['crossshop_reference']}/_search",
                 params=params,
                 json=body,
             )
@@ -2373,7 +2373,7 @@ async def run_real_empty_result_probes(
             }
     return {
         "query_label": "redacted-impossible-token",
-        "index": INDEX_NAMES["globex_reference"],
+        "index": INDEX_NAMES["crossshop_reference"],
         "embedding_dimension": len(vector),
         "results": results,
         "passed": all(item["passed"] for item in results.values()),

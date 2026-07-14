@@ -35,7 +35,7 @@ from scripts.index.build_product_opensearch import (
 
 def _product() -> dict:
     return {
-        "brand": "Globex",
+        "brand": "CrossShop",
         "category": "服饰",
         "description": "轻便",
         "highlights": [{"detail": "透气", "label": "面料"}],
@@ -121,7 +121,7 @@ def test_reference_locale_is_null_because_source_has_no_locale_fact() -> None:
     reference = next(
         partition
         for partition in PARTITIONS
-        if partition.partition_id == "globex_reference"
+        if partition.partition_id == "crossshop_reference"
     )
     assert reference.locale is None
 
@@ -184,11 +184,11 @@ def test_item_text_exactly_matches_v2_product_searchable_text() -> None:
 
 def test_three_frozen_indexes_and_rrf_pipeline() -> None:
     assert INDEX_NAMES == {
-        "globex_reference": "globex-products-reference-v1",
-        "taobao": "globex-products-taobao-v1",
-        "amazon": "globex-products-amazon-v1",
+        "crossshop_reference": "crossshop-products-reference-v1",
+        "reference_seed": "crossshop-products-reference_seed-v1",
+        "amazon": "crossshop-products-amazon-v1",
     }
-    assert RRF_PIPELINE_NAME == "globex-products-rrf-v1"
+    assert RRF_PIPELINE_NAME == "crossshop-products-rrf-v1"
     combination = rrf_pipeline_body()["phase_results_processors"][0][
         "score-ranker-processor"
     ]["combination"]
@@ -238,8 +238,8 @@ def test_hybrid_query_rejects_unknown_amazon_site_locale() -> None:
 
 def test_partition_plan_uses_product_sources_and_one_amazon_index() -> None:
     assert [partition.partition_id for partition in PARTITIONS] == [
-        "globex_reference",
-        "taobao",
+        "crossshop_reference",
+        "reference_seed",
         "amazon_us",
         "amazon_es",
         "amazon_jp",

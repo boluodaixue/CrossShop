@@ -26,11 +26,11 @@ class HttpReranker(Reranker):
         if not documents:
             return []
         with trace_span(
-            "globex.product.rerank",
+            "crossshop.product.rerank",
             {
-                "globex.reranker.model": self._model,
-                "globex.reranker.query_digest": text_digest(query),
-                "globex.reranker.document_count": len(documents),
+                "crossshop.reranker.model": self._model,
+                "crossshop.reranker.query_digest": text_digest(query),
+                "crossshop.reranker.document_count": len(documents),
             },
         ) as span:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -45,7 +45,7 @@ class HttpReranker(Reranker):
                 response.raise_for_status()
                 body = response.json()
             scores = self._parse_scores(body, expected_count=len(documents))
-            set_span_attributes(span, {"globex.reranker.score_count": len(scores)})
+            set_span_attributes(span, {"crossshop.reranker.score_count": len(scores)})
             return scores
 
     @staticmethod

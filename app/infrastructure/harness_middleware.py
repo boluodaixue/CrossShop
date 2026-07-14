@@ -50,11 +50,13 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
         loop_detector: LoopDetector,
         bus: TradeEventBus | None = None,
         content_filter_enabled: bool = True,
+        loop_feedback_enabled: bool = True,
     ) -> None:
         self._sequencing = sequencing
         self._loop_detector = loop_detector
         self._bus = bus
         self._content_filter_enabled = content_filter_enabled
+        self._loop_feedback_enabled = loop_feedback_enabled
         self._active_dispatches: dict[str, set[str]] = defaultdict(set)
 
     def _publish(self, tool_name: str, payload: dict) -> None:
@@ -108,9 +110,15 @@ class HarnessToolMiddleware(ToolMiddlewareBase):
             else self._loop_detector.check(session_id, tool_name)
         )
         if converge_hint:
-            logger.info("Harness 循环收敛提示：%s", tool_name)
-            self._publish(tool_name, {"harness": "loop_detected"})
-            notices.append(converge_hint)
+            if self._loop_feedback_enabled:
+                logger.info("Harness 循环收敛提示：%s", tool_name)
+                self._publish(tool_name, {"harness": "loop_detected"})
+                notices.append(converge_hint)
+            else:
+                # 评测消融仍运行同一个 detector 并保留被动证据，只旁路
+                # 注入模型 observation 的收敛提示。线上构造不传此参数。
+                logger.info("Harness 循环命中但评测旁路反馈：%s", tool_name)
+                self._publish(tool_name, {"harness": "loop_would_trigger"})
 
         # 记录调用（供后续顺序断言使用）
         self._sequencing.record(session_id, tool_name)

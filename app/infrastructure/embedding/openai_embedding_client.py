@@ -43,12 +43,12 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         if not texts:
             return []
         attributes = {
-            "globex.embedding.model": self._model,
-            "globex.embedding.input_count": len(texts),
+            "crossshop.embedding.model": self._model,
+            "crossshop.embedding.input_count": len(texts),
         }
         if len(texts) == 1:
-            attributes["globex.embedding.input_digest"] = text_digest(texts[0])
-        with trace_span("globex.embedding.request", attributes) as span:
+            attributes["crossshop.embedding.input_digest"] = text_digest(texts[0])
+        with trace_span("crossshop.embedding.request", attributes) as span:
             vectors: list[list[float]] = []
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 # 分片串行请求：批量上限是网关侧约束，超限不会报错只会返回空 body
@@ -58,8 +58,8 @@ class OpenAIEmbeddingClient(EmbeddingClient):
             set_span_attributes(
                 span,
                 {
-                    "globex.embedding.output_count": len(vectors),
-                    "globex.embedding.dimension": len(vectors[0]) if vectors else 0,
+                    "crossshop.embedding.output_count": len(vectors),
+                    "crossshop.embedding.dimension": len(vectors[0]) if vectors else 0,
                 },
             )
             return vectors

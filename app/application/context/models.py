@@ -15,7 +15,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 SCHEMA_VERSION = "session-context-v1"
-STAGE_SUMMARY_SCHEMA_VERSION = "stage-summary-v1"
+STAGE_SUMMARY_SCHEMA_VERSION = "stage-summary-v4"
+_LEGACY_STAGE_SUMMARY_SCHEMA_VERSIONS = {
+    "stage-summary-v1",
+    "stage-summary-v2",
+    "stage-summary-v3",
+}
+_JOURNEY_STAGE_SUMMARY_SCHEMA_VERSIONS = {
+    "stage-summary-v3",
+    STAGE_SUMMARY_SCHEMA_VERSION,
+}
 
 
 def now_iso() -> str:
@@ -151,16 +160,28 @@ class FrozenSegment:
 
 @dataclass(frozen=True)
 class StageSummary:
-    """Deterministic L3 view with a verifiable source-segment manifest."""
+    """One bounded L3 summary plus a complete audit-only source manifest.
+
+    ``source_segments`` remains in persisted state so every source hash can be
+    re-verified.  ``to_prompt_dict`` deliberately exposes only the manifest
+    count and combined hash; putting the complete manifest in every prompt was
+    one of the causes of repeated-compression growth.
+    """
 
     source_segments: tuple[dict[str, str], ...]
     user_requests: tuple[str, ...]
     tool_facts: tuple[dict[str, Any], ...]
     assistant_outcomes: tuple[str, ...]
+    shopping_journeys: tuple[dict[str, Any], ...] = ()
     source_message_start: int | None = None
     source_message_end: int | None = None
     context_revision: int = 0
     schema_version: str = STAGE_SUMMARY_SCHEMA_VERSION
+    generation: int = 1
+    target_tokens: int = 0
+    estimated_tokens: int = 0
+    refinement: str = "none"
+    omitted_counts: dict[str, int] = field(default_factory=dict)
     combined_source_hash: str = ""
     summary_hash: str = ""
 
@@ -171,7 +192,7 @@ class StageSummary:
         if self.combined_source_hash and self.combined_source_hash != combined:
             raise ValueError("stage summary combined source hash mismatch")
         object.__setattr__(self, "combined_source_hash", combined)
-        body = {
+        body: dict[str, Any] = {
             "schema_version": self.schema_version,
             "source_segments": self.source_segments,
             "source_message_start": self.source_message_start,
@@ -184,6 +205,18 @@ class StageSummary:
                 "assistant_outcomes": self.assistant_outcomes,
             },
         }
+        if self.schema_version in _JOURNEY_STAGE_SUMMARY_SCHEMA_VERSIONS:
+            body["content"]["shopping_journeys"] = self.shopping_journeys
+        if self.schema_version != "stage-summary-v1":
+            body.update(
+                {
+                    "generation": self.generation,
+                    "target_tokens": self.target_tokens,
+                    "estimated_tokens": self.estimated_tokens,
+                    "refinement": self.refinement,
+                    "omitted_counts": self.omitted_counts,
+                },
+            )
         summary_hash = hashlib.sha256(canonical_json(body).encode()).hexdigest()
         if self.summary_hash and self.summary_hash != summary_hash:
             raise ValueError("stage summary content hash mismatch")
@@ -202,11 +235,55 @@ class StageSummary:
                 "source_message_start": self.source_message_start,
                 "source_message_end": self.source_message_end,
                 "context_revision": self.context_revision,
+                "generation": self.generation,
+                "target_tokens": self.target_tokens,
+                "estimated_tokens": self.estimated_tokens,
+                "refinement": self.refinement,
+                "omitted_counts": self.omitted_counts,
                 "combined_source_hash": self.combined_source_hash,
                 "content": {
                     "user_requests": self.user_requests,
                     "tool_facts": self.tool_facts,
                     "assistant_outcomes": self.assistant_outcomes,
+                    "shopping_journeys": self.shopping_journeys,
+                },
+                "summary_hash": self.summary_hash,
+            },
+        )
+
+    def to_prompt_dict(self) -> dict[str, Any]:
+        """Return the bounded model-visible projection, not audit evidence."""
+
+        return jsonable(
+            {
+                "schema_version": self.schema_version,
+                "source_segment_count": len(self.source_segments),
+                "source_message_start": self.source_message_start,
+                "source_message_end": self.source_message_end,
+                "context_revision": self.context_revision,
+                "generation": self.generation,
+                "combined_source_hash": self.combined_source_hash,
+                "conflict_policy": (
+                    "newest source state wins; canceled, replaced, removed, or "
+                    "excluded state must not be revived; session-context is "
+                    "authoritative for exact current facts"
+                ),
+                "turn_reference_policy": (
+                    "shopping_journeys.authored_turn_start/end are the original "
+                    "buyer-authored business turn numbers; use them to resolve "
+                    "questions such as 第N轮; recovery probes are excluded"
+                ),
+                "content": {
+                    "user_requests": self.user_requests,
+                    "tool_facts": self.tool_facts,
+                    "assistant_outcomes": self.assistant_outcomes,
+                    "shopping_journeys": self.shopping_journeys,
+                },
+                "summary_budget": {
+                    "target_tokens": self.target_tokens,
+                    "estimated_tokens": self.estimated_tokens,
+                    "refinement": self.refinement,
+                    "omitted_counts": self.omitted_counts,
                 },
                 "summary_hash": self.summary_hash,
             },
@@ -214,7 +291,11 @@ class StageSummary:
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> StageSummary:
-        if raw.get("schema_version") != STAGE_SUMMARY_SCHEMA_VERSION:
+        schema_version = str(raw.get("schema_version", ""))
+        if schema_version not in {
+            STAGE_SUMMARY_SCHEMA_VERSION,
+            *_LEGACY_STAGE_SUMMARY_SCHEMA_VERSIONS,
+        }:
             raise ValueError("unsupported stage summary schema")
         content = raw.get("content")
         sources = raw.get("source_segments")
@@ -240,9 +321,23 @@ class StageSummary:
             assistant_outcomes=tuple(
                 str(item) for item in content.get("assistant_outcomes") or ()
             ),
+            shopping_journeys=tuple(
+                dict(item)
+                for item in content.get("shopping_journeys") or ()
+                if isinstance(item, Mapping)
+            ),
             source_message_start=raw.get("source_message_start"),
             source_message_end=raw.get("source_message_end"),
             context_revision=int(raw.get("context_revision", 0)),
+            schema_version=schema_version,
+            generation=max(1, int(raw.get("generation", 1))),
+            target_tokens=max(0, int(raw.get("target_tokens", 0))),
+            estimated_tokens=max(0, int(raw.get("estimated_tokens", 0))),
+            refinement=str(raw.get("refinement", "none")),
+            omitted_counts={
+                str(key): max(0, int(value))
+                for key, value in (raw.get("omitted_counts") or {}).items()
+            },
             combined_source_hash=str(raw.get("combined_source_hash", "")),
             summary_hash=str(raw.get("summary_hash", "")),
         )

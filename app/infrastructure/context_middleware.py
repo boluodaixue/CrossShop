@@ -29,9 +29,10 @@ from app.application.context import (
     reduce_l4,
 )
 from app.infrastructure.context import ShoppingContext
+from app.infrastructure.security.content_filter import sanitize_tool_output
 from app.infrastructure.tracing import trace_span
 
-CONTEXT_NAMESPACE = "globex_context_v1"
+CONTEXT_NAMESPACE = "crossshop_context_v1"
 _MAX_ARTIFACT_REFERENCES = 100
 
 
@@ -66,28 +67,39 @@ def _prompt_breakdown_attributes(
             continue
 
     return {
-        "globex.prompt.agent": agent_name,
-        "globex.prompt.system_tokens": _tokens("fixed_prompt"),
-        "globex.prompt.tool_schema_tokens": _tokens("tool_schemas"),
-        "globex.prompt.recent_history_tokens": (
+        "crossshop.prompt.agent": agent_name,
+        "crossshop.prompt.system_tokens": _tokens("fixed_prompt"),
+        "crossshop.prompt.tool_schema_tokens": _tokens("tool_schemas"),
+        "crossshop.prompt.recent_history_tokens": (
             _tokens("l4_candidate") + _tokens("active") + _tokens("current")
         ),
-        "globex.prompt.frozen_context_tokens": _tokens("history"),
-        "globex.prompt.tool_result_tokens": tool_result_tokens,
-        "globex.prompt.total_estimated_tokens": max(
+        "crossshop.prompt.frozen_context_tokens": _tokens("history"),
+        "crossshop.prompt.tool_result_tokens": tool_result_tokens,
+        "crossshop.prompt.total_estimated_tokens": max(
             0,
             int(report.get("total_input_tokens") or 0),
         ),
-        "globex.prompt.stable_prefix_estimated_tokens": max(
+        "crossshop.prompt.stable_prefix_estimated_tokens": max(
             0,
             int(report.get("stable_prefix_estimated_tokens") or 0),
         ),
-        "globex.prompt.stable_prefix_sha256": str(
+        "crossshop.prompt.stable_prefix_sha256": str(
             report.get("stable_prefix_sha256") or "",
         ),
-        "globex.prompt.estimated": bool(report.get("estimated", True)),
-        "globex.prompt.counter_method": str(report.get("counter_method") or "unknown"),
-        "globex.prompt.budget_decision": str(report.get("decision") or "unknown"),
+        "crossshop.prompt.stage_summary_estimated_tokens": max(
+            0,
+            int(report.get("stage_summary_model_visible_estimated_tokens") or 0),
+        ),
+        "crossshop.prompt.stage_summary_source_count": max(
+            0,
+            int(report.get("stage_summary_source_manifest_count") or 0),
+        ),
+        "crossshop.prompt.stage_summary_source_manifest_sha256": str(
+            report.get("stage_summary_source_manifest_hash") or "",
+        ),
+        "crossshop.prompt.estimated": bool(report.get("estimated", True)),
+        "crossshop.prompt.counter_method": str(report.get("counter_method") or "unknown"),
+        "crossshop.prompt.budget_decision": str(report.get("decision") or "unknown"),
     }
 
 
@@ -157,17 +169,29 @@ class ContextLifecycleMiddleware(MiddlewareBase):
         safety_margin_tokens: int = 1_024,
         soft_limit_ratio: float = 0.70,
         budget_mode: str = "observe_only",
+        summary_target_tokens: int = 8_000,
+        summary_hard_limit_tokens: int = 12_000,
+        recent_raw_turns: int = 10,
+        recent_raw_token_limit: int = 16_000,
+        l2_hot_turns: int = 1,
+        tool_output_reduction_enabled: bool = True,
     ) -> None:
         if not 0 < soft_limit_ratio <= 1:
             raise ValueError("soft_limit_ratio must be within (0, 1]")
         self._artifacts = ToolArtifactStore(artifact_root)
         self._tool_result_limit = tool_result_limit
+        self._tool_output_reduction_enabled = tool_output_reduction_enabled
         self._policy = ContextBudgetPolicy(
             model_context_tokens=model_context_tokens,
             reply_reserved_tokens=reply_reserved_tokens,
             safety_margin_tokens=safety_margin_tokens,
             soft_limit_tokens=int(model_context_tokens * soft_limit_ratio),
             mode=budget_mode,
+            l2_hot_turns=l2_hot_turns,
+            l3_keep_recent_frozen_segments=recent_raw_turns,
+            l3_recent_frozen_token_limit=recent_raw_token_limit,
+            summary_target_tokens=summary_target_tokens,
+            summary_hard_limit_tokens=summary_hard_limit_tokens,
         )
 
     async def get_middleware_key(self) -> str:
@@ -287,16 +311,27 @@ class ContextLifecycleMiddleware(MiddlewareBase):
                 },
             )
             if call.name in TOOL_OUTPUT_CONTRACTS:
-                bounded = format_tool_output(
-                    call.name,
-                    raw,
-                    artifact_store=self._artifacts,
-                    configured_limit=self._tool_result_limit,
-                )
-                metadata = {**chunk.metadata, "globex_artifact_ref": reference}
+                if self._tool_output_reduction_enabled:
+                    model_text = format_tool_output(
+                        call.name,
+                        raw,
+                        artifact_store=self._artifacts,
+                        configured_limit=self._tool_result_limit,
+                    )
+                else:
+                    # 评测夹具在进入本层前必须已清理且有界。这里仍执行与
+                    # full 组相同的安全过滤，只旁路字段/列表/字符投影。
+                    _hit, model_text = sanitize_tool_output(raw)
+                metadata = {
+                    **chunk.metadata,
+                    "crossshop_artifact_ref": reference,
+                    "crossshop_raw_output_chars": len(raw),
+                    "crossshop_model_output_chars": len(model_text),
+                    "crossshop_tool_output_reduced": (self._tool_output_reduction_enabled),
+                }
                 chunk = chunk.model_copy(
                     update={
-                        "content": [TextBlock(type="text", text=bounded)],
+                        "content": [TextBlock(type="text", text=model_text)],
                         "metadata": metadata,
                     },
                 )
@@ -357,7 +392,7 @@ class ContextLifecycleMiddleware(MiddlewareBase):
             updated.get("budget_report") or {},
             agent_name=str(getattr(agent, "name", "unknown")),
         )
-        with trace_span("globex.prompt.breakdown", breakdown):
+        with trace_span("crossshop.prompt.breakdown", breakdown):
             return await next_handler(**{**input_kwargs, "messages": model_view})
 
     async def on_compress_context(

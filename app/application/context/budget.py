@@ -27,9 +27,21 @@ class ContextBudgetPolicy:
     safety_margin_tokens: int = 0
     soft_limit_tokens: int = 0
     mode: str = "observe_only"
-    l3_keep_recent_frozen_segments: int = 1
+    # Low-level callers retain legacy eager freezing; production passes its
+    # explicit CONTEXT_L2_HOT_TURNS (default 1) through the middleware.
+    l2_hot_turns: int = 1
+    l3_keep_recent_frozen_segments: int = 10
+    l3_min_recent_frozen_segments: int = 8
+    l3_max_recent_frozen_segments: int = 12
+    l3_recent_frozen_token_limit: int = 16_000
+    summary_target_tokens: int = 8_000
+    summary_hard_limit_tokens: int = 12_000
+    post_compression_target_ratio: float = 0.55
+    post_compression_max_ratio: float = 0.60
 
     def __post_init__(self) -> None:
+        if self.l2_hot_turns < 1:
+            raise ValueError("L2 hot window must include at least the current turn")
         if self.mode not in {"observe_only", "enforce"}:
             raise ValueError("context budget mode must be observe_only or enforce")
         if any(
@@ -40,9 +52,24 @@ class ContextBudgetPolicy:
                 self.safety_margin_tokens,
                 self.soft_limit_tokens,
                 self.l3_keep_recent_frozen_segments,
+                self.l3_min_recent_frozen_segments,
+                self.l3_max_recent_frozen_segments,
+                self.l3_recent_frozen_token_limit,
+                self.summary_target_tokens,
+                self.summary_hard_limit_tokens,
             )
         ):
             raise ValueError("context budget token values cannot be negative")
+        if not self.summary_target_tokens or not self.summary_hard_limit_tokens:
+            raise ValueError("summary token limits must be positive")
+        if self.summary_target_tokens > self.summary_hard_limit_tokens:
+            raise ValueError("summary target cannot exceed hard limit")
+        if not 0 < self.post_compression_target_ratio <= 1:
+            raise ValueError("post-compression target ratio must be within (0, 1]")
+        if not 0 < self.post_compression_max_ratio <= 1:
+            raise ValueError("post-compression max ratio must be within (0, 1]")
+        if self.post_compression_target_ratio > self.post_compression_max_ratio:
+            raise ValueError("post-compression target cannot exceed max ratio")
 
 
 def _text(value: Any) -> str:

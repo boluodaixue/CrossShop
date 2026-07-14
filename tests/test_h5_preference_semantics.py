@@ -108,7 +108,7 @@ class _ControlledPreferenceModel(ChatModelBase):
         if not has_result:
             args = {
                 "normalized_query": "咖啡杯",
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "category": "咖啡杯",
                 "ship_to": "CN",
                 "locale": "zh-CN",
@@ -295,14 +295,14 @@ async def test_task_dispatch_never_injects_buyer_preferences() -> None:
 
     await tool(
         subagent_type="search_agent",
-        demands="淘宝找咖啡杯，预算 100 元",
-        platform="taobao",
+        demands="示例平台找咖啡杯，预算 100 元",
+        platform="reference_seed",
     )
 
     messages = _messages(search.worker.inputs)
     assert len(messages) == 1
     text = messages[0].get_text_content() or ""
-    assert text == "淘宝找咖啡杯，预算 100 元"
+    assert text == "示例平台找咖啡杯，预算 100 元"
     assert "<buyer-preferences>" not in text
 
 
@@ -371,7 +371,7 @@ async def test_controlled_main_search_args_stable_and_preferences_final_only() -
 
     current_request = UserMsg(
         "buyer-1",
-        "只在淘宝推荐咖啡杯，100 元以内，送到中国，最多 5 件",
+        "只在示例平台推荐咖啡杯，100 元以内，送到中国，最多 5 件",
     )
     plain_args, plain_text = await run([current_request])
     preferred_args, preferred_text = await run(

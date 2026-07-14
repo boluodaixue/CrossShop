@@ -137,7 +137,7 @@ def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
         "p1": 35.0,
         "p2": 40.0,
     }
-    assert len(suite.cases) == 27
+    assert len(suite.cases) == 36
     memory_recall = next(case for case in suite.cases if case.id == "memory-recall")
     assert memory_recall.depends_on == ["memory-write"]
     assert memory_recall.rubric.p2[0].score_1_anchor
@@ -149,6 +149,28 @@ def test_v3_case_file_validates_policy_and_dependencies_are_ordered() -> None:
     )
     assert isolation.depends_on == ["memory-write"]
     assert isolation.buyer_id == "eval-isolation-buyer"
+    compression = next(
+        case
+        for case in suite.cases
+        if case.id == "natural-context-compression-recovery"
+    )
+    assert compression.execution_profile == "context-compression-artifact"
+    repeated = next(
+        case
+        for case in suite.cases
+        if case.id == "repeated-context-compression-recovery"
+    )
+    assert repeated.execution_profile == "context-repeated-compression-artifact"
+    assert {
+        case.execution_profile
+        for case in suite.cases
+        if case.scenario_family == "exception-degradation"
+    } >= {
+        "fault-opensearch-unavailable",
+        "fault-repository-inconsistency",
+        "fault-embedding-timeout",
+        "fault-reranker-fallback",
+    }
 
 
 def test_judge_prompt_contains_refs_schema_and_no_weighted_score_instruction() -> None:

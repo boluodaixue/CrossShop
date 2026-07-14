@@ -210,7 +210,7 @@ class TestHarnessMiddleware:
                         demands="找降噪耳机",
                         platform=platform,
                     )
-                    for platform in ("globex_reference", "taobao", "amazon")
+                    for platform in ("crossshop_reference", "reference_seed", "amazon")
                 )
             )
             for chunk in chunks:
@@ -223,7 +223,7 @@ class TestHarnessMiddleware:
                     tool,
                     subagent_type="search_agent",
                     demands="再次找降噪耳机",
-                    platform="taobao",
+                    platform="reference_seed",
                 )
         finally:
             ShoppingContext.reset(token)
@@ -254,7 +254,7 @@ class TestHarnessMiddleware:
             _harness(),
             ToolResilienceMiddleware(
                 registry,
-                fixed_product_platform="taobao",
+                fixed_product_platform="reference_seed",
             ),
         ]
 
@@ -271,7 +271,7 @@ class TestHarnessMiddleware:
         try:
             first = await _call(failing)
             assert first.state == ToolResultState.ERROR
-            assert registry.status("product_search_tool:taobao") == "open"
+            assert registry.status("product_search_tool:reference_seed") == "open"
 
             second = await _call(failing)
         finally:

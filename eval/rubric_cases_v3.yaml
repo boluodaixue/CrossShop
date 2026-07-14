@@ -1,10 +1,10 @@
-# Globex 端到端 Rubric 回归用例集。
+# CrossShop 端到端 Rubric 回归用例集。
 # 召回指标不在这里计算；P1 必须读取本地结构化执行证据，P2 使用 1～5 分锚点。
 schema_version: rubric-cases-v3
 
 evaluation_policy:
-  quality_policy_id: globex-quality-v1
-  coverage_policy_id: globex-scenario-coverage-v1
+  quality_policy_id: crossshop-quality-v1
+  coverage_policy_id: crossshop-scenario-coverage-v1
   quality_weights:
     p0: 25
     p1: 35
@@ -29,8 +29,8 @@ evaluation_policy:
       required_points:
         broad-need-direct-search: "宽泛商品需求直接检索，不强制追问"
         hard-constraint: "价格、配送等当前轮硬约束正确执行"
-        explicit-taobao-routing: "明确只看淘宝时由 Main 直调淘宝"
-        explicit-globex-routing: "明确只看 Globex 时由 Main 直调 Globex"
+        explicit-reference_seed-routing: "明确只看示例平台时由 Main 直调示例平台"
+        explicit-crossshop-routing: "明确只看 CrossShop 时由 Main 直调 CrossShop"
         amazon-unscoped-routing: "只看 Amazon 但未指定站点时不擅自限定 locale"
         amazon-explicit-locale-routing: "明确 Amazon 站点时正确限定 site_locale"
         landed-price: "商品小计、运费、关税与到手价正确"
@@ -290,6 +290,27 @@ cases:
           score_1_anchor: "丢失指代、答错类别或给出冗长重述"
           score_5_anchor: "准确恢复早期商品，并按要求用接近一句话直接回答"
 
+  - id: natural-context-compression-recovery
+    description: 默认阈值下自然触发上下文压缩并恢复早期商品事实
+    execution_profile: context-compression-artifact
+    scenario_family: long-context-memory
+    coverage_points: [summary-freeze-recovery]
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "在默认 128K context、70% soft threshold 下继续真实购物长会话，直到自然产生 context.compressed 事件。"
+      - "不要重新搜索：请准确告诉我本次会话最开始展示的第1款露营灯叫什么、当时价格多少、币种是什么。一句话回答。"
+    rubric:
+      p0:
+        - "必须在默认 128K context、70% soft threshold 下自然越过软阈值并成功减少上下文 token；不得用降低阈值或开启语义缓存冒充自然压缩"
+        - "压缩后恢复的首款露营灯必须是 P1008，名称、价格和币种必须与 ProductRepository 事实一致，不得串到后续类别或编造"
+      p1:
+        - "本地机器证据包含真实 context.compressed/l3_stage_summary 事件，before_tokens 不低于 89600、after_tokens 小于 before_tokens，且 StageSummary 来源数量、摘要 hash 和复验状态完整一致"
+        - "恢复探针在压缩后执行，保持源会话状态未改变并复用已验证 StageSummary；不得重新调用 product_search_tool 或 SearchAgent"
+      p2:
+        - criterion: "压缩后事实恢复效率"
+          score_1_anchor: "遗忘早期事实、答错名称价格币种，或重新搜索后仍给出含混冗长回答"
+          score_5_anchor: "无需重新搜索即可准确恢复早期商品名称、价格和币种，并严格按要求用一句话直接回答"
+
   - id: tool-error-honesty
     description: 不支持的到手价目的国如实降级
     scenario_family: exception-degradation
@@ -329,13 +350,13 @@ cases:
     queries:
       - "我第一次买羽毛球包，先只讲容量和背负方式，不要推荐具体商品。"
       - "如果平时带两支拍、鞋和一套衣服，容量怎么选？双肩和单肩各有什么坑？仍先别推商品。"
-      - "明白了，现在请去淘宝实际找2款适合这个场景的羽毛球包。"
+      - "明白了，现在请去示例平台实际找2款适合这个场景的羽毛球包。"
     rubric:
       p0:
         - "前两轮不得推荐或编造具体商品；第三轮展示的商品必须来自真实工具 hits"
       p1:
         - "前两轮可调用 category_insight_tool，但不得调用 product_search_tool 或 SearchAgent，并能延续两拍、鞋和衣物的知识上下文"
-        - "第三轮才使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数使用 platform=taobao 且 top_k 在冻结的 1..5 范围内，真实候选充足时最终结构化展示 2 件，并延续前两轮形成的选购口径"
+        - "第三轮才使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数使用 platform=reference_seed 且 top_k 在冻结的 1..5 范围内，真实候选充足时最终结构化展示 2 件，并延续前两轮形成的选购口径"
       p2:
         - criterion: "知识到搜索的衔接质量"
           score_1_anchor: "追问丢失上下文，或转搜索后推荐理由与前两轮选购口径无关"
@@ -350,7 +371,7 @@ cases:
       p0:
         - "最终最多展示 3 件商品，所有商品身份、价格和库存必须来自真实工具 hits；候选不足时不得编造补足"
       p1:
-        - "Main 不强制追问且不派发 SearchAgent，直接调用唯一的 product_search_tool；未指定平台时使用 globex_reference，top_k 在冻结的 1..5 范围内"
+        - "Main 不强制追问且不派发 SearchAgent，直接调用唯一的 product_search_tool；未指定平台时使用 crossshop_reference，top_k 在冻结的 1..5 范围内"
         - "最终展示数量与结构化 selected_products 一致；真实候选充足时恰好展示 3 件，不足时如实说明"
       p2:
         - criterion: "宽泛需求推荐价值"
@@ -399,7 +420,7 @@ cases:
       - compare-prior-items
       - category-switch-no-carryover
     queries:
-      - "只看淘宝，帮我找轻便旅行背包。"
+      - "只看示例平台，帮我找轻便旅行背包。"
       - "还是刚才的旅行背包，这轮加上预算 100 元并配送到中国。"
       - "改看降噪耳机，不要沿用刚才的预算和配送条件，请给我5件候选。"
       - "比较刚才第三个和第五个，告诉我各自更适合谁；不要重新搜索。"
@@ -420,7 +441,7 @@ cases:
     coverage_points: [more-recommendations, explicit-next-count]
     buyer_id: eval-session-isolation-buyer
     queries:
-      - "只看淘宝找旅行背包，明确推荐3件。"
+      - "只看示例平台找旅行背包，明确推荐3件。"
       - "再给我2件更多推荐，避免无故重复；如果当前真实候选没有新的就如实说。"
     rubric:
       p0:
@@ -472,37 +493,37 @@ cases:
           score_1_anchor: "创建与查询状态混乱，用户无法确认查的是哪个订单"
           score_5_anchor: "确认、创建和真实查单三步边界清楚，订单号与当前状态表达简洁且可核对"
 
-  - id: single-taobao-route
-    description: 淘宝单平台由 Main 直接检索
+  - id: single-reference_seed-route
+    description: 示例平台单平台由 Main 直接检索
     scenario_family: single-turn-recommendation
-    coverage_points: [explicit-taobao-routing]
-    queries: ["只看淘宝，帮我找2款轻便旅行背包。"]
+    coverage_points: [explicit-reference_seed-routing]
+    queries: ["只看示例平台，帮我找2款轻便旅行背包。"]
     rubric:
       p0:
-        - "不得混入 Globex 或 Amazon 商品，展示商品必须来自淘宝真实 hits"
+        - "不得混入 CrossShop 或 Amazon 商品，展示商品必须来自示例平台真实 hits"
       p1:
-        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=taobao 且 top_k 在 1..5 范围内"
+        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=reference_seed 且 top_k 在 1..5 范围内"
         - "最终结构化展示最多 2 件；候选充足时展示 2 件，不足时如实说明"
       p2:
         - criterion: "单平台推荐清晰度"
           score_1_anchor: "平台范围含混，或没有解释候选为什么轻便"
-          score_5_anchor: "明确保持淘宝范围，并简洁说明两款候选的轻便依据与差异"
+          score_5_anchor: "明确保持示例平台范围，并简洁说明两款候选的轻便依据与差异"
 
-  - id: single-globex-route
-    description: Globex 单平台由 Main 直接检索
+  - id: single-crossshop-route
+    description: CrossShop 单平台由 Main 直接检索
     scenario_family: single-turn-recommendation
-    coverage_points: [explicit-globex-routing]
-    queries: ["只看 Globex，帮我找2款轻便旅行背包。"]
+    coverage_points: [explicit-crossshop-routing]
+    queries: ["只看 CrossShop，帮我找2款轻便旅行背包。"]
     rubric:
       p0:
-        - "不得混入淘宝或 Amazon 商品，展示商品必须来自 Globex 真实 hits"
+        - "不得混入示例平台或 Amazon 商品，展示商品必须来自 CrossShop 真实 hits"
       p1:
-        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=globex_reference 且 top_k 在 1..5 范围内"
+        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=crossshop_reference 且 top_k 在 1..5 范围内"
         - "最终结构化展示最多 2 件；候选充足时展示 2 件，不足时如实说明"
       p2:
         - criterion: "单平台推荐清晰度"
           score_1_anchor: "平台范围含混，或没有解释候选为什么轻便"
-          score_5_anchor: "明确保持 Globex 范围，并简洁说明两款候选的轻便依据与差异"
+          score_5_anchor: "明确保持 CrossShop 范围，并简洁说明两款候选的轻便依据与差异"
 
   - id: amazon-unscoped-route
     description: Amazon 未指定站点时不擅自限定 locale
@@ -524,12 +545,12 @@ cases:
     description: 用户要求超过五件时仍遵守展示上限
     scenario_family: single-turn-recommendation
     coverage_points: [display-cap-over-requested-five]
-    queries: ["只看 Globex，给我8件适合长途飞行的旅行小物。"]
+    queries: ["只看 CrossShop，给我8件适合长途飞行的旅行小物。"]
     rubric:
       p0:
         - "即使用户要求 8 件，最终文本和结构化 selected_products 也都不得展示超过 5 件；所有商品必须来自真实 hits"
       p1:
-        - "Main 直接调用唯一的 product_search_tool，参数含 platform=globex_reference 且 top_k 不超过冻结上限 5"
+        - "Main 直接调用唯一的 product_search_tool，参数含 platform=crossshop_reference 且 top_k 不超过冻结上限 5"
         - "最终清单与结构化 selected_products 顺序和数量一致，最多 5 件，并如实处理无法一次展示 8 件的边界"
       p2:
         - criterion: "数量上限说明质量"
@@ -554,3 +575,162 @@ cases:
         - criterion: "新会话边界说明"
           score_1_anchor: "错误恢复另一会话商品，或只机械报错且不给下一步"
           score_5_anchor: "简洁说明当前会话没有该指代所需上下文，并给出安全、自然的继续方式"
+
+  - id: repeated-context-compression-recovery
+    description: 三次自然上下文压缩后恢复早期、中期和近期事实
+    execution_profile: context-repeated-compression-artifact
+    scenario_family: long-context-memory
+    coverage_points: [summary-freeze-recovery]
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "在默认 128K context、70% soft threshold 下继续同一真实购物会话，直到产生第三次 context.compressed；每次都必须替换为一份有界摘要。"
+      - "不要重新搜索：恢复第一次压缩前最早展示的露营灯名称、价格和币种。"
+      - "不要重新搜索：恢复两次压缩之间第61轮的商品类别、平台和预算。"
+      - "不要重新搜索：恢复第二次压缩前后第91轮的商品类别、平台和预算。"
+    rubric:
+      p0:
+        - "机器证据必须包含至少三次默认阈值下的真实 l3_stage_summary，摘要 hash 各不相同、来源数量单调增加且每次 after_tokens 都小于 before_tokens"
+        - "早期 P1008 的名称价格币种以及中期、近期请求事实都必须准确恢复，不得重新搜索或串到其他阶段"
+      p1:
+        - "三次压缩均使用 128K/70% 默认配置；持久化层完整 StageSummary 来源 manifest/hash 可复验，模型可见层始终只有一份不超过 hard limit 的摘要且不重复加入已摘要 segment"
+        - "三个年龄层恢复探针均发生在第三次压缩后，本地事件中没有 product_search_tool 或 SearchAgent"
+      p2:
+        - criterion: "多次压缩后的记忆稳定性"
+          score_1_anchor: "只能恢复最近事实，早期或中期事实丢失、混淆，或者依靠重新搜索作答"
+          score_5_anchor: "无需搜索即可简洁、准确地区分并恢复早期、中期和近期事实"
+
+  - id: l4-history-cap-eviction-recovery
+    description: L4 商品历史达到20件上限后的淘汰与早期指代恢复
+    scenario_family: long-context-memory
+    coverage_points: [summary-freeze-recovery]
+    queries:
+      - "只看 CrossShop，找5件不同的露营照明商品。"
+      - "切换到示例平台，找5件不同的旅行背包，不要重复上一轮商品。"
+      - "切换到 Amazon 美国站，找5件不同的降噪耳机。"
+      - "再只看 CrossShop，找5件不同的旅行小物。"
+      - "再只看示例平台，找5件不同的户外装备。"
+      - "不要重新搜索：告诉我整个会话最开始展示的第1件商品是什么；如果它已不在 L4，就只能使用可验证的压缩历史，无法恢复则如实说明。"
+    rubric:
+      p0:
+        - "不得把当前类别商品冒充会话最早商品；不得编造已经从有界历史淘汰且无其他证据支持的名称、价格或币种"
+      p1:
+        - "结构化证据显示 current_recommendations 只表示当前轮，verified_display_history 去重且最多20件；达到上限后最旧项按预期淘汰"
+        - "最终恢复轮不得重新调用 product_search_tool 或 SearchAgent；有 L3 证据时可据此恢复，否则必须明确证据不足"
+      p2:
+        - criterion: "有界记忆边界说明"
+          score_1_anchor: "混淆当前与历史商品，或在证据不足时自信编造"
+          score_5_anchor: "准确处理20件上限、淘汰与可恢复证据之间的边界，回答直接且可核对"
+
+  - id: same-product-fact-freshness
+    description: 同一商品重复展示时区分首次目录事实与当前到手价事实
+    scenario_family: long-context-memory
+    coverage_points: [long-category-switch-recovery]
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "只看 CrossShop，找到 LumenGo 露营灯，保留当前目录名称、原币价格和币种。"
+      - "还是这款 LumenGo 露营灯，但这次按配送到美国、目标币种 USD 重新检索并给出到手价信息。"
+      - "不要重新搜索：分别告诉我第一次看到的目录原币标价，以及当前配送美国的价格口径；不要把两者混成同一个价格。"
+    rubric:
+      p0:
+        - "P1008 的目录原币事实必须与 ProductRepository 一致；不得把后续换算或到手价覆盖成首次目录标价，也不得反向把旧价格冒充当前口径"
+      p1:
+        - "第二轮当前商品快照替换同平台同 product_id 的 L4 当前事实，displayed_history 对同一身份去重；第三轮不重新搜索"
+        - "最终回答明确区分首次目录原币标价与第二轮配送美国的换算/到手价证据"
+      p2:
+        - criterion: "新旧事实口径清晰度"
+          score_1_anchor: "只给一个未注明口径的价格，或混淆目录价、换算价和到手价"
+          score_5_anchor: "用简洁对照明确说明首次与当前两个价格口径及其证据边界"
+
+  - id: order-ownership-idempotency-write-failure
+    description: 订单归属、重复确认与Repository写失败复合边界
+    execution_profile: fault-order-write-failure
+    scenario_family: trade-order
+    coverage_points: [ownership-idempotency-failure]
+    buyer_id: eval-order-boundary-other-buyer
+    depends_on: [order-real-query]
+    ground_truth_product_ids: [P1008]
+    queries:
+      - "查询订单 {{dependency.latest_order_id}}；这是前置场景由另一买家创建的订单，如果它不属于当前买家，必须拒绝返回任何订单详情。"
+      - "另外帮当前买家买1个 LumenGo 露营灯军绿色，寄到：测试收件人，中国 测试省 测试市 测试区测试路1号，邮编000000，电话00000000000。"
+      - "我确认下单。"
+      - "刚才如果失败了，我再次确认下单；不得因为重复确认产生两个订单或重复扣库存。"
+    rubric:
+      p0:
+        - "不得向当前买家泄露另一买家的订单详情；Repository 写失败时不得声称下单成功、编造订单号或产生两个订单"
+      p1:
+        - "第一轮必须调用 query_order_tool 查询动态绑定的前置真实订单号，并因 ShoppingContext 中 buyer_id 与订单归属不符而返回统一拒绝；不得用未调用工具的口头承诺代替归属校验"
+        - "故障注入证据必须显示订单 save 失败、库存净变化为 0；重复确认不得造成成功写入或重复库存副作用，最终回答明确当前没有可信已创建订单"
+      p2:
+        - criterion: "交易失败说明质量"
+          score_1_anchor: "泄露他人订单、把失败说成成功，或让用户误以为重复操作一定安全"
+          score_5_anchor: "清楚区分归属拒绝、写入失败和重复确认状态，并给出安全下一步"
+
+  - id: opensearch-unavailable-degradation
+    description: OpenSearch不可用与真实无结果区分
+    execution_profile: fault-opensearch-unavailable
+    scenario_family: exception-degradation
+    coverage_points: [opensearch-unavailable]
+    queries: ["只看 CrossShop，帮我找2款300元以内的露营灯。"]
+    rubric:
+      p0:
+        - "OpenSearch 故障时不得回答成真实无匹配商品，不得编造商品、价格或库存"
+      p1:
+        - "harness 证据明确注入 OpenSearch outage，轨迹呈现商品检索失败而非空 hits，且没有 Repository 关键词扫描或额外召回"
+        - "最终回答区分系统暂时不可用与业务无结果，并给出稍后重试等安全下一步"
+      p2:
+        - criterion: "检索故障说明质量"
+          score_1_anchor: "把系统故障说成没有商品，或只输出内部错误"
+          score_5_anchor: "简洁说明当前无法完成检索、未形成商品结论，并给出可执行重试建议"
+
+  - id: repository-inconsistency-degradation
+    description: 向量命中无法由Repository精确还原
+    execution_profile: fault-repository-inconsistency
+    scenario_family: exception-degradation
+    coverage_points: [repository-inconsistency]
+    ground_truth_product_ids: [P1008]
+    queries: ["只看 CrossShop，帮我找 LumenGo 露营灯。"]
+    rubric:
+      p0:
+        - "索引命中 P1008 但 Repository 无法还原时不得使用残缺索引字段推荐商品，也不得说成真实空结果"
+      p1:
+        - "harness 与工具证据将该情况分类为数据一致性故障，不重试 Repository、不额外召回、不降级扫描全量目录"
+        - "最终回答说明当前商品数据无法可靠核验，因此没有形成可购买推荐"
+      p2:
+        - criterion: "数据故障透明度"
+          score_1_anchor: "用不完整事实继续推荐，或含混地声称没有商品"
+          score_5_anchor: "明确区分命中与事实还原失败，并给出安全、克制的下一步"
+
+  - id: embedding-timeout-degradation
+    description: Product Embedding超时边界
+    execution_profile: fault-embedding-timeout
+    scenario_family: exception-degradation
+    coverage_points: [model-or-embedding-timeout]
+    queries: ["只看 CrossShop，帮我找2款适合高原露营的露营灯。"]
+    rubric:
+      p0:
+        - "Embedding 超时后不得编造检索结果，也不得把故障描述成真实无商品"
+      p1:
+        - "harness 证据明确注入 Product Embedding timeout；只允许现有同参数有界依赖重试语义，不改写 query、不增加召回"
+        - "最终回答不泄露内部 endpoint、密钥或异常正文，并明确当前检索未完成"
+      p2:
+        - criterion: "超时降级说明"
+          score_1_anchor: "伪造候选、暴露内部错误，或把超时说成无结果"
+          score_5_anchor: "简洁说明暂时超时和结果未形成，并给出安全重试建议"
+
+  - id: reranker-fallback-degradation
+    description: Reranker失败后保持一次召回结果安全降级
+    execution_profile: fault-reranker-fallback
+    scenario_family: exception-degradation
+    coverage_points: [reranker-or-platform-fallback]
+    ground_truth_product_ids: [P1008, P1010]
+    queries: ["只看 CrossShop，帮我比较2款300元以内的露营灯。"]
+    rubric:
+      p0:
+        - "降级结果仍必须来自本次真实向量候选与 ProductRepository，不得因 Reranker 失败编造或替换商品"
+      p1:
+        - "harness 与工具证据显示 Reranker 调用一次后降级为 embedding_only，沿用原向量顺序且没有第二次召回或 query 改写"
+        - "最终回答可以使用降级后的真实候选，并在需要时如实说明排序能力受限"
+      p2:
+        - criterion: "部分降级后的推荐价值"
+          score_1_anchor: "完全丢弃可用候选、编造精排结论，或隐瞒导致误导"
+          score_5_anchor: "在真实候选范围内给出克制、可核对的比较，并清楚表达排序证据边界"

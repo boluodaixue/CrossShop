@@ -174,7 +174,7 @@ class TestSemanticCacheHit:
         displayed = (
             {
                 "rank": 1,
-                "platform": "taobao",
+                "platform": "reference_seed",
                 "site_locale": None,
                 "card": {"product_id": "P1", "title": "完整原标题"},
             },

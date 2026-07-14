@@ -7,7 +7,7 @@
     output_guard    L4 输出审核——最终回复推给买家之前拦内部信息泄露
 
 L1（工具白名单）由 app/application/agents/permissions.py 承担，
-L2（System/User 角色隔离 + 边界声明）在 app/application/prompts/globex.yml 里，
+L2（System/User 角色隔离 + 边界声明）在 app/application/prompts/crossshop.yml 里，
 本模块只补 L3/L4 两层。四层各管一段、互为兜底。
 """
 from app.infrastructure.security.content_filter import (

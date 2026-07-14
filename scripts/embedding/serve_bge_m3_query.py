@@ -31,7 +31,7 @@ except ImportError:  # The dedicated model environment may use stdlib HTTP only.
     HTTPException = None  # type: ignore[assignment,misc]
     Request = Any  # type: ignore[assignment,misc]
 
-LOGGER = logging.getLogger("globex.bge_m3_query")
+LOGGER = logging.getLogger("crossshop.bge_m3_query")
 
 MODEL_ID = "BAAI/bge-m3"
 DEFAULT_MODEL_PATH = Path(r"D:\models\bge-m3")
@@ -268,7 +268,7 @@ def create_app(
         LOGGER.info("BGE-M3 Query encoder ready: %s", service.health())
         yield
 
-    application = FastAPI(title="Globex BGE-M3 Query Encoder", lifespan=lifespan)
+    application = FastAPI(title="CrossShop BGE-M3 Query Encoder", lifespan=lifespan)
 
     def get_service(request: Request) -> EmbeddingService:
         return request.app.state.embedding_service
@@ -314,7 +314,7 @@ def _serve_stdlib(config: ServiceConfig, port: int) -> None:
     LOGGER.info("BGE-M3 Query encoder ready: %s", service.health())
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "GlobexBgeM3Query/1.0"
+        server_version = "CrossShopBgeM3Query/1.0"
 
         def _write_json(self, status: int, payload: object) -> None:
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode(

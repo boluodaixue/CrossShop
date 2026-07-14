@@ -22,11 +22,11 @@ class ShoppingContextSnapshot:
 
 
 _current_snapshot: ContextVar[Optional[ShoppingContextSnapshot]] = ContextVar(
-    "globex_shopping_context",
+    "crossshop_shopping_context",
     default=None,
 )
 _current_search_dispatch_id: ContextVar[str | None] = ContextVar(
-    "globex_search_dispatch_id",
+    "crossshop_search_dispatch_id",
     default=None,
 )
 

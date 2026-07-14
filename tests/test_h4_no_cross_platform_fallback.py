@@ -40,7 +40,7 @@ class _EmptyPlatformIndex:
         return []
 
 
-@pytest.mark.parametrize("route", ["taobao", "amazon:jp"])
+@pytest.mark.parametrize("route", ["reference_seed", "amazon:jp"])
 async def test_platform_failure_never_scans_shared_catalog(route: str) -> None:
     repository = _RecordingSharedRepository()
     usecases = {

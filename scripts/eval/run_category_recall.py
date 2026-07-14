@@ -24,7 +24,7 @@ import asyncio
 import hashlib
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -227,7 +227,8 @@ async def main() -> None:
     expected_sources = expected_document_sources(cases)
     print(f"标注集 {dataset_path}：{len(cases)} 条，K={args.top_k}")
 
-    settings = load_settings()
+    # This frozen 64-card evaluator remains the Qdrant v1 baseline, not v2 quality.
+    settings = replace(load_settings(), category_kb_backend="qdrant")
     knowledge_base = build_category_knowledge_base(settings)
     inserted = await bootstrap_category_knowledge(knowledge_base)
     documents = await knowledge_base.list_documents()

@@ -90,18 +90,18 @@ _SAFE_ARGUMENT_FIELDS = (
 _SAFE_SPAN_ATTRIBUTES = frozenset(
     {
         "gen_ai.request.model",
-        "globex.agent",
-        "globex.budget_tier",
-        "globex.dependency.attempts",
-        "globex.dependency.retried",
-        "globex.dependency.retry_reason",
-        "globex.embedding.batch_size",
-        "globex.embedding.vector_count",
-        "globex.opensearch.hit_count",
-        "globex.platform",
-        "globex.reranker.score_count",
-        "globex.recommended_count",
-        "globex.site_locale",
+        "crossshop.agent",
+        "crossshop.budget_tier",
+        "crossshop.dependency.attempts",
+        "crossshop.dependency.retried",
+        "crossshop.dependency.retry_reason",
+        "crossshop.embedding.batch_size",
+        "crossshop.embedding.vector_count",
+        "crossshop.opensearch.hit_count",
+        "crossshop.platform",
+        "crossshop.reranker.score_count",
+        "crossshop.recommended_count",
+        "crossshop.site_locale",
     },
 )
 
@@ -233,6 +233,53 @@ def _safe_product_summaries(value: Any, *, filtered: bool) -> list[dict[str, Any
     return result
 
 
+def _safe_order_summary(value: Any) -> dict[str, Any] | None:
+    """Keep bounded order facts while excluding buyer and shipping PII."""
+
+    if not isinstance(value, Mapping):
+        return None
+    safe: dict[str, Any] = {}
+    for key in (
+        "order_id",
+        "status",
+        "total_amount_major",
+        "currency",
+        "created_at",
+        "cancel_reason",
+    ):
+        item = value.get(key)
+        if isinstance(item, (str, int, float)):
+            safe[key] = redact_text(item) if isinstance(item, str) else item
+    lines = value.get("lines")
+    if not isinstance(lines, list):
+        lines = value.get("items")
+    if isinstance(lines, list):
+        safe_lines: list[dict[str, Any]] = []
+        for line in lines[:10]:
+            if not isinstance(line, Mapping):
+                continue
+            projected: dict[str, Any] = {}
+            for key in (
+                "product_id",
+                "sku_id",
+                "title",
+                "unit_price_major",
+                "subtotal_major",
+                "quantity",
+                "currency",
+            ):
+                item = line.get(key)
+                if isinstance(item, (str, int, float)):
+                    projected[key] = (
+                        redact_text(item) if isinstance(item, str) else item
+                    )
+            if projected:
+                safe_lines.append(projected)
+        if safe_lines:
+            safe["items"] = safe_lines
+    return safe or None
+
+
 def _safe_result_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for key in (
@@ -259,13 +306,9 @@ def _safe_result_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         payload.get("filtered_out"),
         filtered=True,
     )
-    order = payload.get("order")
-    if isinstance(order, Mapping):
-        summary["order"] = {
-            key: order[key]
-            for key in ("order_id", "status", "total_amount_major", "currency")
-            if key in order and isinstance(order[key], (str, int, float))
-        }
+    order = _safe_order_summary(payload.get("order"))
+    if order is not None:
+        summary["order"] = order
     if "saved" in payload:
         summary["saved"] = bool(payload.get("saved"))
     if "deleted" in payload:
@@ -578,8 +621,8 @@ def _state_product_refs(values: Any) -> list[ProductReferenceEvidence]:
         product_id = card.get("product_id") if isinstance(card, Mapping) else None
         platform = value.get("platform")
         if not isinstance(product_id, str) or platform not in {
-            "globex_reference",
-            "taobao",
+            "crossshop_reference",
+            "reference_seed",
             "amazon",
         }:
             continue
@@ -627,16 +670,7 @@ def build_structured_state_evidence(
             arguments.append(safe)
     recommendation = context.get("last_recommendation")
     recommendation = recommendation if isinstance(recommendation, Mapping) else {}
-    order = context.get("order")
-    safe_order = (
-        {
-            key: order[key]
-            for key in ("order_id", "status", "currency", "total_amount_major")
-            if key in order and isinstance(order[key], (str, int, float))
-        }
-        if isinstance(order, Mapping)
-        else None
-    )
+    safe_order = _safe_order_summary(context.get("order"))
     history = recommendation.get("displayed_history")
     if not isinstance(history, list):
         history = recommendation.get("displayed_products")
@@ -663,7 +697,13 @@ def build_structured_state_evidence(
     compression = namespace.get("context_compression")
     compression = compression if isinstance(compression, Mapping) else {}
     action = str(compression.get("action") or "none")
-    if action not in {"none", "l3_stage_summary", "l3_no_gain"}:
+    if action not in {
+        "none",
+        "l3_stage_summary",
+        "l3_no_gain",
+        "l3_failed",
+        "l3_target_missed",
+    }:
         action = "none"
     budget = namespace.get("budget_report")
     budget = budget if isinstance(budget, Mapping) else {}
@@ -697,6 +737,19 @@ def build_structured_state_evidence(
                 stage.source_message_end if stage is not None else None
             ),
             stage_summary_hash=(stage.summary_hash if stage is not None else None),
+            stage_source_manifest_hash=(
+                stage.combined_source_hash if stage is not None else None
+            ),
+            stage_summary_generation=(stage.generation if stage is not None else 0),
+            stage_summary_estimated_tokens=(
+                stage.estimated_tokens if stage is not None else 0
+            ),
+            stage_summary_target_tokens=(
+                stage.target_tokens if stage is not None else 0
+            ),
+            stage_summary_hard_limit_tokens=max(
+                0, int(compression.get("summary_hard_limit_tokens") or 0)
+            ),
             stage_summary_verified=stage_verified,
             compression_action=action,
             before_tokens=(
@@ -708,6 +761,23 @@ def build_structured_state_evidence(
                 int(compression["after_tokens"])
                 if isinstance(compression.get("after_tokens"), int)
                 else None
+            ),
+            compression_ratio=(
+                float(compression["compression_ratio"])
+                if isinstance(compression.get("compression_ratio"), (int, float))
+                else None
+            ),
+            recent_raw_segment_count=max(
+                0, int(compression.get("recent_raw_segment_count") or 0)
+            ),
+            post_compression_target_tokens=max(
+                0, int(compression.get("post_compression_target_tokens") or 0)
+            ),
+            post_compression_max_tokens=max(
+                0, int(compression.get("post_compression_max_tokens") or 0)
+            ),
+            post_compression_target_met=bool(
+                compression.get("post_compression_target_met", False)
             ),
             budget_decision=str(namespace.get("budget_decision") or ""),
             total_input_tokens=max(0, int(budget.get("total_input_tokens") or 0)),

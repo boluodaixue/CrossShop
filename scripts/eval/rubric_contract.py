@@ -145,10 +145,10 @@ class EvaluationPolicy(BaseModel):
         total = sum(family.weight for family in self.scenario_families.values())
         if abs(total - 100.0) > 1e-9:
             raise ValueError("scenario family weights must sum to 100")
-        if self.quality_policy_id == "globex-quality-v1" and (
+        if self.quality_policy_id == "crossshop-quality-v1" and (
             self.quality_weights.model_dump() != {"p0": 25.0, "p1": 35.0, "p2": 40.0}
         ):
-            raise ValueError("globex-quality-v1 requires P0/P1/P2=25/35/40")
+            raise ValueError("crossshop-quality-v1 requires P0/P1/P2=25/35/40")
         return self
 
 
@@ -159,6 +159,16 @@ class RubricCaseSpec(BaseModel):
 
     id: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9-]*$")
     description: str = Field(min_length=1)
+    execution_profile: Literal[
+        "standard",
+        "context-compression-artifact",
+        "context-repeated-compression-artifact",
+        "fault-opensearch-unavailable",
+        "fault-repository-inconsistency",
+        "fault-embedding-timeout",
+        "fault-reranker-fallback",
+        "fault-order-write-failure",
+    ] = "standard"
     queries: list[str] = Field(min_length=1)
     buyer_id: str | None = None
     depends_on: list[str] = Field(default_factory=list)
@@ -293,7 +303,7 @@ class PreferenceStateEvidence(BaseModel):
 class ProductReferenceEvidence(BaseModel):
     """Identity-only verified reference stored in L4 context."""
 
-    platform: Literal["globex_reference", "taobao", "amazon"]
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"]
     product_id: str = Field(min_length=1)
     site_locale: Literal["us", "es", "jp"] | None = None
 
@@ -312,10 +322,29 @@ class ContextLifecycleEvidence(BaseModel):
         default=None,
         pattern=r"^[0-9a-f]{64}$",
     )
+    stage_source_manifest_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    stage_summary_generation: int = Field(default=0, ge=0)
+    stage_summary_estimated_tokens: int = Field(default=0, ge=0)
+    stage_summary_target_tokens: int = Field(default=0, ge=0)
+    stage_summary_hard_limit_tokens: int = Field(default=0, ge=0)
     stage_summary_verified: bool = False
-    compression_action: Literal["none", "l3_stage_summary", "l3_no_gain"] = "none"
+    compression_action: Literal[
+        "none",
+        "l3_stage_summary",
+        "l3_no_gain",
+        "l3_failed",
+        "l3_target_missed",
+    ] = "none"
     before_tokens: int | None = Field(default=None, ge=0)
     after_tokens: int | None = Field(default=None, ge=0)
+    compression_ratio: float | None = Field(default=None, ge=0, le=1)
+    recent_raw_segment_count: int = Field(default=0, ge=0)
+    post_compression_target_tokens: int = Field(default=0, ge=0)
+    post_compression_max_tokens: int = Field(default=0, ge=0)
+    post_compression_target_met: bool = False
     budget_decision: str = ""
     total_input_tokens: int = Field(default=0, ge=0)
     soft_limit_tokens: int = Field(default=0, ge=0)
@@ -418,7 +447,7 @@ class DisplayedProductEvidence(BaseModel):
 
     rank: int = Field(ge=1, le=5)
     product_id: str = Field(min_length=1)
-    platform: Literal["globex_reference", "taobao", "amazon"]
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"]
     site_locale: Literal["us", "es", "jp"] | None = None
 
 
@@ -427,7 +456,7 @@ class AgentDispatchEvidence(BaseModel):
 
     order: int = Field(ge=1)
     agent: Literal["search_agent", "trade_agent"]
-    platform: Literal["globex_reference", "taobao", "amazon"] | None = None
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"] | None = None
     site_locale: Literal["us", "es", "jp"] | None = None
     correlation_id: str | None = None
     elapsed_ms: float | None = Field(default=None, ge=0)

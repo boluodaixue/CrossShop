@@ -5,6 +5,7 @@ MainAgent 单干与 TradeAgent 派发两条路径共用。工具层只做参数�
 
 注意：本模块不能用 `from __future__ import annotations`（AgentScope schema 生成依赖运行时注解）。
 """
+
 import json
 
 from agentscope.message import TextBlock, ToolResultState
@@ -53,7 +54,14 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
         snapshot_ctx = ShoppingContext.current()
         buyer_id = snapshot_ctx.buyer_id if snapshot_ctx else "anonymous"
         session_id = ShoppingContext.current_session_id()
-        bus.publish(session_id, "tool.invoke", {"tool": "create_order_tool", "args": {"buyer_id": buyer_id, "items": items}})
+        bus.publish(
+            session_id,
+            "tool.invoke",
+            {
+                "tool": "create_order_tool",
+                "args": {"buyer_id": buyer_id, "items": items},
+            },
+        )
         try:
             order_items = [
                 OrderItemInput(
@@ -72,11 +80,19 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
                 postal_code=shipping_address.get("postal_code", ""),
                 phone=shipping_address.get("phone", ""),
             )
-            snapshot = await usecase.execute(buyer_id=buyer_id, items=order_items, shipping_address=address)
+            snapshot = await usecase.execute(
+                buyer_id=buyer_id, items=order_items, shipping_address=address
+            )
         except (ValueError, KeyError) as err:
-            bus.publish(session_id, "tool.result", {"tool": "create_order_tool", "error": str(err)})
+            bus.publish(
+                session_id,
+                "tool.result",
+                {"tool": "create_order_tool", "error": str(err)},
+            )
             return _fail(str(err))
-        bus.publish(session_id, "tool.result", {"tool": "create_order_tool", "order": snapshot})
+        bus.publish(
+            session_id, "tool.result", {"tool": "create_order_tool", "order": snapshot}
+        )
         return _ok(snapshot)
 
     return create_order_tool
@@ -84,20 +100,32 @@ def build_create_order_tool(usecase: PlaceOrderUseCase, bus: TradeEventBus):
 
 def build_query_order_tool(usecase: QueryOrderUseCase, bus: TradeEventBus):
     async def query_order_tool(order_id: str) -> ToolChunk:
-        """查询订单详情。
+        """查询当前买家的订单详情。买家身份由系统会话上下文自动注入。
 
         Args:
             order_id (`str`):
                 订单号，如 "GBX-000001"。
         """
+        snapshot_ctx = ShoppingContext.current()
+        buyer_id = snapshot_ctx.buyer_id if snapshot_ctx else "anonymous"
         session_id = ShoppingContext.current_session_id()
-        bus.publish(session_id, "tool.invoke", {"tool": "query_order_tool", "args": {"order_id": order_id}})
+        bus.publish(
+            session_id,
+            "tool.invoke",
+            {"tool": "query_order_tool", "args": {"order_id": order_id}},
+        )
         try:
-            snapshot = await usecase.execute(order_id)
+            snapshot = await usecase.execute(buyer_id=buyer_id, order_id=order_id)
         except ValueError as err:
-            bus.publish(session_id, "tool.result", {"tool": "query_order_tool", "error": str(err)})
+            bus.publish(
+                session_id,
+                "tool.result",
+                {"tool": "query_order_tool", "error": str(err)},
+            )
             return _fail(str(err))
-        bus.publish(session_id, "tool.result", {"tool": "query_order_tool", "order": snapshot})
+        bus.publish(
+            session_id, "tool.result", {"tool": "query_order_tool", "order": snapshot}
+        )
         return _ok(snapshot)
 
     return query_order_tool
@@ -105,7 +133,7 @@ def build_query_order_tool(usecase: QueryOrderUseCase, bus: TradeEventBus):
 
 def build_cancel_order_tool(usecase: CancelOrderUseCase, bus: TradeEventBus):
     async def cancel_order_tool(order_id: str, reason: str) -> ToolChunk:
-        """取消订单（仅 CONFIRMED 态可取消），取消后自动回补库存。
+        """取消当前买家的订单（仅 CONFIRMED 态可取消），取消后自动回补库存。
 
         Args:
             order_id (`str`):
@@ -113,14 +141,33 @@ def build_cancel_order_tool(usecase: CancelOrderUseCase, bus: TradeEventBus):
             reason (`str`):
                 取消原因，必填。
         """
+        snapshot_ctx = ShoppingContext.current()
+        buyer_id = snapshot_ctx.buyer_id if snapshot_ctx else "anonymous"
         session_id = ShoppingContext.current_session_id()
-        bus.publish(session_id, "tool.invoke", {"tool": "cancel_order_tool", "args": {"order_id": order_id, "reason": reason}})
+        bus.publish(
+            session_id,
+            "tool.invoke",
+            {
+                "tool": "cancel_order_tool",
+                "args": {"order_id": order_id, "reason": reason},
+            },
+        )
         try:
-            snapshot = await usecase.execute(order_id, reason)
+            snapshot = await usecase.execute(
+                buyer_id=buyer_id,
+                order_id=order_id,
+                reason=reason,
+            )
         except ValueError as err:
-            bus.publish(session_id, "tool.result", {"tool": "cancel_order_tool", "error": str(err)})
+            bus.publish(
+                session_id,
+                "tool.result",
+                {"tool": "cancel_order_tool", "error": str(err)},
+            )
             return _fail(str(err))
-        bus.publish(session_id, "tool.result", {"tool": "cancel_order_tool", "order": snapshot})
+        bus.publish(
+            session_id, "tool.result", {"tool": "cancel_order_tool", "order": snapshot}
+        )
         return _ok(snapshot)
 
     return cancel_order_tool

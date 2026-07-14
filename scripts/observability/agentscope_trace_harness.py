@@ -25,12 +25,12 @@ from app.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from app.infrastructure.eventbus import TradeEventBus
 from app.infrastructure.tracing import set_span_attributes, trace_intent
 
-_PLATFORMS = ("globex_reference", "taobao", "amazon")
+_PLATFORMS = ("crossshop_reference", "reference_seed", "amazon")
 
 
 async def product_search_tool(
     normalized_query: str,
-    platform: Literal["globex_reference", "taobao", "amazon"] | None = None,
+    platform: Literal["crossshop_reference", "reference_seed", "amazon"] | None = None,
 ) -> ToolChunk:
     """Return one synthetic product after a small deterministic async delay."""
 
@@ -38,7 +38,7 @@ async def product_search_tool(
     payload = {
         "hits": [
             {
-                "product_id": f"controlled-private-product-{platform or 'taobao'}",
+                "product_id": f"controlled-private-product-{platform or 'reference_seed'}",
                 "title": "controlled private product card",
             },
         ],
@@ -96,7 +96,7 @@ class _ControlledTraceModel(ChatModelBase):
                     input=json.dumps(
                         {
                             "normalized_query": "controlled private single query",
-                            "platform": "taobao",
+                            "platform": "reference_seed",
                         },
                     ),
                     state=ToolCallState.PENDING,
@@ -201,7 +201,7 @@ async def _run_agent(
             locale="zh-CN",
             currency="CNY",
         ) as root:
-            set_span_attributes(root, {"globex.acceptance.scenario": scenario})
+            set_span_attributes(root, {"crossshop.acceptance.scenario": scenario})
             await agent.reply(UserMsg("controlled-private-buyer", request))
     finally:
         ShoppingContext.reset(token)
@@ -248,7 +248,7 @@ async def run_agentscope_scenarios() -> dict[str, object]:
     )
     error_calls = await run_agentscope_error_scenario()
     return {
-        "single_platform": "taobao",
+        "single_platform": "reference_seed",
         "cross_platforms": search_factory.created_platforms,
         "single_main_model_calls": single_model._call_count,
         "cross_main_model_calls": cross_model._call_count,

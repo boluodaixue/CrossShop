@@ -44,7 +44,7 @@ def build_task_dispatch_tool(
     async def task_dispatch(
         subagent_type: Literal["search_agent", "trade_agent"],
         demands: str,
-        platform: Literal["globex_reference", "taobao", "amazon"] | None = None,
+        platform: Literal["crossshop_reference", "reference_seed", "amazon"] | None = None,
         site_locale: Literal["us", "es", "jp"] | None = None,
     ) -> ToolChunk:
         """调度专家子代理执行子任务，返回子代理的结论（JSON 字符串）。

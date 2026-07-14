@@ -243,19 +243,19 @@ def test_evidence_requires_contiguous_turns_and_unique_tool_order() -> None:
         call_id="call-1",
         agent="main",
         tool="product_search_tool",
-        arguments={"platform": "taobao"},
+        arguments={"platform": "reference_seed"},
         result_summary={"hit_count": 5},
     )
     turn = TurnEvidence(
         turn_index=1,
-        user_input="只看淘宝露营灯",
+        user_input="只看示例平台露营灯",
         route="main.direct",
         tool_calls=[tool],
         displayed_products=[
             DisplayedProductEvidence(
                 rank=1,
-                product_id="taobao:123",
-                platform="taobao",
+                product_id="reference_seed:123",
+                platform="reference_seed",
             ),
         ],
         structured_state=_state(),
@@ -304,7 +304,7 @@ def test_displayed_products_require_unique_contiguous_identity() -> None:
                 DisplayedProductEvidence(
                     rank=2,
                     product_id="P1",
-                    platform="globex_reference",
+                    platform="crossshop_reference",
                 ),
             ],
         )
@@ -315,12 +315,12 @@ def test_displayed_products_require_unique_contiguous_identity() -> None:
                 DisplayedProductEvidence(
                     rank=1,
                     product_id="P1",
-                    platform="globex_reference",
+                    platform="crossshop_reference",
                 ),
                 DisplayedProductEvidence(
                     rank=2,
                     product_id="P1",
-                    platform="globex_reference",
+                    platform="crossshop_reference",
                 ),
             ],
         )

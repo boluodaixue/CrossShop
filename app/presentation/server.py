@@ -28,7 +28,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, Header, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -89,7 +89,7 @@ def build_app() -> FastAPI:
             state.pop("c", None)
             await c.shutdown()
 
-    api = FastAPI(title="Globex 跨境电商 Agent", version="0.4.0", lifespan=lifespan)
+    api = FastAPI(title="CrossShop 跨境电商 Agent", version="0.4.0", lifespan=lifespan)
 
     def container() -> Container:
         if "c" not in state:
@@ -209,16 +209,30 @@ def build_app() -> FastAPI:
         await state["connections"].serve(websocket)
 
     @api.get("/commerce/orders/{order_id}")
-    async def get_order(order_id: str) -> dict:
+    async def get_order(
+        order_id: str,
+        buyer_id: str = Header(alias="X-Buyer-ID"),
+    ) -> dict:
         try:
-            return await container().query_order.execute(order_id)
+            return await container().query_order.execute(
+                buyer_id=buyer_id,
+                order_id=order_id,
+            )
         except ValueError as err:
             raise HTTPException(status_code=404, detail=str(err)) from err
 
     @api.post("/commerce/orders/{order_id}/cancel")
-    async def cancel_order_endpoint(order_id: str, body: CancelOrderRequest) -> dict:
+    async def cancel_order_endpoint(
+        order_id: str,
+        body: CancelOrderRequest,
+        buyer_id: str = Header(alias="X-Buyer-ID"),
+    ) -> dict:
         try:
-            return await container().cancel_order.execute(order_id, body.reason)
+            return await container().cancel_order.execute(
+                buyer_id=buyer_id,
+                order_id=order_id,
+                reason=body.reason,
+            )
         except ValueError as err:
             raise HTTPException(status_code=400, detail=str(err)) from err
 
@@ -234,7 +248,7 @@ async def _queue_priority(c: Container, session_id: str) -> int:
     """
     if not c.settings.queue_priority_enabled or not c.cache.enabled:
         return 0
-    key = f"globex:turns:{session_id}"
+    key = f"crossshop:turns:{session_id}"
     try:
         current = int(await c.cache.get_raw(key) or 0) + 1
         await c.cache.set_json(key, current, _TURN_COUNTER_TTL_SECONDS)

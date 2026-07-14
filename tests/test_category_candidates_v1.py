@@ -11,9 +11,9 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 SOURCE_DIR = ROOT / "data" / "category_insight" / "sources"
-TAOBAO_SOURCE_DIR = SOURCE_DIR / "taobao_zh"
+TAOBAO_SOURCE_DIR = SOURCE_DIR / "reference_seed_zh"
 PUBLISHED_DIR = ROOT / "data" / "processed" / "category-insight-v1"
-H0_PRODUCTS = ROOT / "data" / "processed" / "catalogs-v2" / "taobao" / "products.jsonl"
+H0_PRODUCTS = ROOT / "data" / "processed" / "catalogs-v2" / "reference_seed" / "products.jsonl"
 
 LEGACY_FIELDS = {
     "card_id",
@@ -37,19 +37,19 @@ CANDIDATE_FIELDS = {
     "review_status",
 }
 EXPECTED_SEED_HASHES = {
-    "category_card_manifest_taobao_zh.json": (
+    "category_card_manifest_reference_seed_zh.json": (
         "f8e804a3a89c076a1bbdec04ce87c1c3d5e28f145832375eb913dac8dfdcb5cf"
     ),
-    "category_card_provenance_taobao_zh.jsonl": (
+    "category_card_provenance_reference_seed_zh.jsonl": (
         "4b2b8c30e4d5ff884a07384f239df919bcf947a906c08dc48f5564f002231a11"
     ),
-    "category_cards_taobao_zh.jsonl": (
+    "category_cards_reference_seed_zh.jsonl": (
         "e2e21da46087de496c1c8e02b417a894f14722e0fba335d9e9cbc97322ff3879"
     ),
-    "category_taxonomy_taobao_zh.json": (
+    "category_taxonomy_reference_seed_zh.json": (
         "1a46d7a963a3aef9f6018b3bb2a282fb49fe24f1d66b0187563ad243003f5722"
     ),
-    "category_item_facts_taobao_zh.jsonl": (
+    "category_item_facts_reference_seed_zh.jsonl": (
         "c42a8a7be3e0f0dcb5064f97ad9f3c85cd058e837e155172ac5740010532e58c"
     ),
 }
@@ -84,7 +84,7 @@ def test_legacy_seed_files_are_byte_exact_and_cards_are_strict() -> None:
     for filename, expected_hash in EXPECTED_SEED_HASHES.items():
         assert _sha256(TAOBAO_SOURCE_DIR / filename) == expected_hash
 
-    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl")
+    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     assert len(cards) == 48
     assert len({card["card_id"] for card in cards}) == 48
     assert Counter(card["card_type"] for card in cards) == {
@@ -106,7 +106,7 @@ def test_knowledge_candidates_use_the_approved_promotion_contract() -> None:
     candidates = _read_jsonl(SOURCE_DIR / "knowledge_candidates.jsonl")
     legacy_cards = {
         row["card_id"]: row
-        for row in _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl")
+        for row in _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     }
     assert len(candidates) == 16
     assert len({row["candidate_id"] for row in candidates}) == 16
@@ -153,9 +153,9 @@ def test_review_checklist_exactly_mirrors_candidate_contract() -> None:
 
 
 def test_provenance_exactly_covers_cards_and_all_source_ids_exist_in_h0() -> None:
-    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl")
+    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     provenance = _read_jsonl(
-        TAOBAO_SOURCE_DIR / "category_card_provenance_taobao_zh.jsonl"
+        TAOBAO_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
     )
     assert len(provenance) == 48
     assert {row["card_id"] for row in provenance} == {row["card_id"] for row in cards}
@@ -211,10 +211,10 @@ def test_published_dataset_hashes_and_rebuild_are_stable(tmp_path: Path) -> None
         "legacy_source_item_ids": 779,
     }
     assert (PUBLISHED_DIR / "legacy_category_cards.jsonl").read_bytes() == (
-        TAOBAO_SOURCE_DIR / "category_cards_taobao_zh.jsonl"
+        TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl"
     ).read_bytes()
     assert (PUBLISHED_DIR / "legacy_category_card_provenance.jsonl").read_bytes() == (
-        TAOBAO_SOURCE_DIR / "category_card_provenance_taobao_zh.jsonl"
+        TAOBAO_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
     ).read_bytes()
 
 
@@ -352,7 +352,7 @@ def test_legacy_fact_validation_is_fail_closed(
     message: str,
 ) -> None:
     source = _copy_sources(tmp_path, f"fact-{name}")
-    path = source / "taobao_zh" / "category_item_facts_taobao_zh.jsonl"
+    path = source / "reference_seed_zh" / "category_item_facts_reference_seed_zh.jsonl"
     rows = _read_jsonl(path)
     mutate(rows[0])
     _write_jsonl(path, rows)

@@ -69,7 +69,7 @@ def test_render_report_uses_actual_run_metadata() -> None:
     metadata = RecallRunMetadata(
         dataset_path=r"D:\custom\recall.jsonl",
         embedding_model="BAAI/bge-m3",
-        collection="globex_category_kb_v1",
+        collection="crossshop_category_kb_v1",
         release_manifest_sha256="a" * 64,
         approved_cards_sha256="b" * 64,
         expected_document_count=64,
@@ -81,7 +81,7 @@ def test_render_report_uses_actual_run_metadata() -> None:
 
     assert r"D:\custom\recall.jsonl" in report
     assert "BAAI/bge-m3" in report
-    assert "globex_category_kb_v1" in report
+    assert "crossshop_category_kb_v1" in report
     assert "a" * 64 in report
     assert "b" * 64 in report
     assert "| Expected documents | 64 |" in report
@@ -90,5 +90,5 @@ def test_render_report_uses_actual_run_metadata() -> None:
     console = metadata_console_line(metadata)
     assert r"dataset=D:\custom\recall.jsonl" in console
     assert "embedding_model=BAAI/bge-m3" in console
-    assert "collection=globex_category_kb_v1" in console
+    assert "collection=crossshop_category_kb_v1" in console
     assert "expected_documents=64 actual_documents=64 inserted=0" in console

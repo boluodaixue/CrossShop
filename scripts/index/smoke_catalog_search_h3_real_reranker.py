@@ -125,7 +125,7 @@ async def _warm_reranker(
     *,
     query: str,
 ) -> dict[str, Any]:
-    document = "Globex reranker warmup product document"
+    document = "CrossShop reranker warmup product document"
     started = time.perf_counter()
     scores = await reranker.rerank(query, [document])
     elapsed_seconds = time.perf_counter() - started

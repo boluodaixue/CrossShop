@@ -24,16 +24,16 @@ LEGACY_CARDS = (
     / "data"
     / "category_insight"
     / "sources"
-    / "taobao_zh"
-    / "category_cards_taobao_zh.jsonl"
+    / "reference_seed_zh"
+    / "category_cards_reference_seed_zh.jsonl"
 )
 LEGACY_PROVENANCE = (
     ROOT
     / "data"
     / "category_insight"
     / "sources"
-    / "taobao_zh"
-    / "category_card_provenance_taobao_zh.jsonl"
+    / "reference_seed_zh"
+    / "category_card_provenance_reference_seed_zh.jsonl"
 )
 RELEASE_DIR = ROOT / "data" / "category_insight" / "releases" / "category-insight-v1"
 RUNTIME_DIR = ROOT / "knowledge" / "category-insight-v1"
@@ -53,7 +53,7 @@ FORBIDDEN_RUNTIME_TERMS = {
     "审核",
     "置信度",
     "尚未外部验证",
-    "当前淘宝目录",
+    "当前示例平台目录",
     "已删除原文",
 }
 
@@ -328,7 +328,7 @@ def test_manifest_hashes_cover_release_and_runtime_documents() -> None:
     assert acceptance.is_file()
     assert acceptance.name not in json.dumps(manifest, ensure_ascii=False)
     assert manifest["release_version"] == "category-insight-v1"
-    assert manifest["runtime"]["collection_default"] == "globex_category_kb_v1"
+    assert manifest["runtime"]["collection_default"] == "crossshop_category_kb_v1"
     assert manifest["runtime"]["knowledge_directory"] == "knowledge/category-insight-v1"
     for name, entry in manifest["outputs"].items():
         if name == "runtime_documents":
@@ -377,7 +377,7 @@ def test_default_runtime_directory_and_collection_are_versioned(
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("CATEGORY_KB_COLLECTION", raising=False)
     settings = load_settings()
-    assert settings.category_kb_collection == "globex_category_kb_v1"
+    assert settings.category_kb_collection == "crossshop_category_kb_v1"
 
 
 _TERM_GROUPS = (

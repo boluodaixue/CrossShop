@@ -14,6 +14,7 @@ from .budget import (
     measure_budget,
 )
 from .compactor import (
+    SummaryBudgetError,
     compact_interaction,
     freeze_settled_units,
     summarize_frozen_segments,
@@ -55,6 +56,7 @@ __all__ = [
     "SessionContext",
     "SessionContextSnapshot",
     "StageSummary",
+    "SummaryBudgetError",
     "ToolArtifactStore",
     "ToolInteraction",
     "ToolOutputContract",

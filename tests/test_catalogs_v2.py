@@ -17,11 +17,11 @@ def _load_builder():
 BUILDER = _load_builder()
 
 EXPECTED_PRODUCTS = {
-    "globex_reference": (
+    "crossshop_reference": (
         60,
         "0d9cf6b39e2d0ef7a9ac182175118b5a8af1ce336311a816808042817744d2ca",
     ),
-    "taobao": (
+    "reference_seed": (
         23409,
         "775b35edeeafaba9d9745b9538683b06c9a0ab769191b7b41d053f396f843294",
     ),
@@ -46,7 +46,7 @@ def _row(platform: str, locale: str, item_id: str, **overrides) -> dict:
         "same_group_id": f"{platform}:{item_id}",
         "platform": platform,
         "locale": locale,
-        "language": "zh" if platform == "taobao" else "en",
+        "language": "zh" if platform == "reference_seed" else "en",
         "title": "测试商品",
         "description": "测试描述",
         "brand": None,
@@ -82,14 +82,14 @@ def test_amazon_conversion_is_strict_and_deterministic():
     assert set(first["skus"][0]) == BUILDER.SKU_FIELDS
 
 
-def test_taobao_uses_shop_name_and_stable_delivery_and_stock():
+def test_reference_seed_uses_shop_name_and_stable_delivery_and_stock():
     row = _row(
-        "taobao",
+        "reference_seed",
         "cn",
         "T-1",
         variants=[
             {
-                "variant_id": "taobao:variant:T-1",
+                "variant_id": "reference_seed:variant:T-1",
                 "options": [{"name": "颜色", "value": "黑色"}],
                 "price_cny": "12.50",
                 "price_source": "observed",
@@ -97,8 +97,8 @@ def test_taobao_uses_shop_name_and_stable_delivery_and_stock():
             }
         ],
     )
-    first = BUILDER._convert_taobao(row).product.to_dict()
-    second = BUILDER._convert_taobao(row).product.to_dict()
+    first = BUILDER._convert_reference_seed(row).product.to_dict()
+    second = BUILDER._convert_reference_seed(row).product.to_dict()
     assert first == second
     assert first["brand"] == "测试店铺"
     assert first["origin_country"] == "CN"
@@ -110,8 +110,8 @@ def test_published_catalog_has_only_strict_fields():
     root = Path(__file__).parents[1] / "data" / "processed" / "catalogs-v2"
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     assert set(manifest["partitions"]) == {
-        "globex_reference",
-        "taobao",
+        "crossshop_reference",
+        "reference_seed",
         "amazon/us",
         "amazon/es",
         "amazon/jp",

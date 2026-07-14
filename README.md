@@ -1,224 +1,55 @@
-# Globex - 跨境电商 Agent（AgentScope 2.0）
+# CrossShop Agent
 
-基于 AgentScope 2.0 的跨境电商超级搜索框 Agent 系统，DDD 洋葱架构落地：
+CrossShop Agent is a reference cross-border shopping assistant built with AgentScope 2.x. It searches a normalized product catalog, explains category knowledge, remembers conversation context, and supports a controlled order workflow. It does not execute real payments.
 
-- **MainAgent**（CommerceConcierge）：超级框总调度，**持有全部业务工具可直接单干**；
-  内置 Task 计划四件套管理任务清单；满足"可并行 / 上下文隔离 / 链深"任一条件时经 `task_dispatch` 派发子 Agent；
-  发现稳定偏好时经 `remember_preference_tool` 写入长期记忆
-- **SearchAgent**（CatalogSearchAgent）：商品检索专家，query 改写 → 三个平台固定 OpenSearch 索引的
-  **BGE-M3 Query + ANN/BM25/RRF Hybrid + rerank**，
-  在线路由只允许 Reranker 失败时保留 Hybrid 原排序；可选 web_search 兜底跨境政策/关税问答
-- **TradeAgent**（OrderTradeAgent）：下单交易专家（订单创建 / 查询 / 取消，买家身份由 ShoppingContext 注入）
+## Architecture
 
-分期设计脉络、关键取舍与踩坑记录见 [docs/设计演进记录.md](docs/设计演进记录.md)。
+- **Product facts:** read-only normalized JSONL (`JsonlProductRepository`).
+- **Product retrieval:** OpenSearch Product Index with ANN + BM25 hybrid retrieval and RRF, followed by optional reranking.
+- **CategoryInsight:** an independent OpenSearch Knowledge Index for category guidance and source-aware explanations.
+- **Application state:** SQLite stores conversations, events, orders, preferences, and the latest complete `AgentState` snapshot. At the end of each turn the snapshot for a session is overwritten; historical state rollback is not provided. With `DATABASE_URL=file`, session snapshots are written under `DATA_DIR/sessions/` instead.
+- **Redis:** optional semantic/embedding cache, Stream queue, Pub/Sub event bridge, and resilience coordination.
 
-## 技术栈
+Order tables are the source of truth for transaction state; an AgentState snapshot is only conversational context.
 
-- Python 3.11 + uv
-- AgentScope 2.x（Agent + ContextConfig 上下文压缩 + Toolkit/FunctionTool + 内置 Task 计划工具
-  + reply_stream 类型化事件流 + TracingMiddleware / ReplyBudgetControlMiddleware / 自定义工具中间件）
-- 商品检索：BGE-M3 Query/Item 双塔 + 三个平台 OpenSearch 2.19.1 ANN/BM25/RRF Hybrid
-  + HTTP Reranker；Qdrant 继续用于品类知识库，不承担在线商品召回
-- 知识库：AgentScope `rag.KnowledgeBase`（品类洞察 Markdown → 切片 → Qdrant）
-- FastAPI + Uvicorn + WebSocket；React 18 + Vite + TS 前端；Docker Compose（app + worker + qdrant + redis + frontend）
-- 持久化：SQLite（SQLAlchemy 2.0 async）存对话流水/事件轨迹/会话状态/订单/偏好；
-  商品目录由严格 `JsonlProductRepository` 从 `data/processed/catalogs-v2` 全量只读装载
-- 缓存与削峰：Redis（可选）——语义缓存 + embedding 缓存 + 幂等键 + Stream 任务队列 + 跨进程事件背板
+## Quick start
 
-## 架构
-
-```text
-app/
-├── domain/            # 领域层：Product/Sku/Money、Order 状态机、汇率表、关税运费规则、偏好、会话/队列/仓储端口
-├── application/
-│   ├── usecases/      # CatalogSearch（二阶段召回+到手价内联）、PlaceOrder/QueryOrder/CancelOrder
-│   ├── tools/         # product_search、订单三工具、web_search、remember_preference、task_dispatch
-│   ├── agents/        # MainAgent / SearchAgent / TradeAgent 工厂 + Orchestrator + SessionRegistry
-│   └── prompts/       # globex.yml：主 / 子 Agent 系统提示词
-├── infrastructure/    # llm/embedding/qdrant/reranker/tracing、rag 知识库、缓存、队列、韧性与闸门、仓储
-├── presentation/      # FastAPI 路由、WebSocket ConnectionManager、DTO
-├── composition.py     # 装配容器（API 与 worker 共用一份接线）
-└── worker.py          # 意图消费进程入口
-knowledge/
-├── category-insight-v1/ # 当前品类洞察 release：64 篇 Markdown，服务启动时幂等入库
-└── *.md                 # 历史教学样例；保留但不再由默认运行时读取
-frontend/              # React + Vite 前端：对话流 + 商品卡 + 事件时间线
-eval/                  # 评测用例集 cases.yaml + 回归报告
-docs/                  # 设计演进记录（分期取舍与踩坑档案）
-docker/                # docker-compose.yaml（app + worker + qdrant + redis + frontend）
-```
-
-关键设计（对齐参考实现与教程口径）：
-
-- **网关配额治理**：`GatewayThrottle` 同时限并发（`LLM_MAX_CONCURRENCY`，默认 3）与请求起点间隔
-  （`LLM_MIN_INTERVAL_SECONDS`）；流式请求的名额持有到流耗尽才释放；瞬时故障指数退避重试，
-  用尽后回退 `LLM_FALLBACK_MODEL` 并发 `model.fallback` 事件（不静默降级）
-- **语义缓存**：相似问句（余弦 ≥ `SEMANTIC_CACHE_THRESHOLD`，默认 0.95）直接复用历史回复，
-  命中即零模型调用并发 `cache.hit` 事件；**写操作意图（下单/取消）与上下文依赖问句不入缓存**，
-  按 buyer 分桶避免跨买家复用
-- **存储可替换**：`SessionStore` / `ConversationStore` / `OrderRepository` / `PreferenceStore` 四个端口，
-  SQLite（默认）/ JSON 文件两套实现共存，换存储只改 `app/composition.py`
-- **异步削峰**：`TaskQueue` 端口 + Redis Stream 实现（消费者组 / ack / pending 重投 / 死信），
-  独立 worker 进程消费；`POST /commerce/intents` **同步语义不变**（内部入队+等结果），
-  另提供 `/commerce/intents/async` + `/commerce/tasks/{id}`；队列是 at-least-once，靠幂等键防重复下单
-- **跨进程事件**：worker 与 API 是两个进程，事件总线接 Redis Pub/Sub 背板后前端仍能收到流式事件；
-  广播带 `origin` 标识以跳过自己发的消息（否则事件会回环投递两次）
-- **主 Agent 单干优先**：MainAgent 与子 Agent 持有同一批业务工具（`build_tools()` 复用），
-  只在"可并行 / 上下文隔离 / 调用链深"时派发
-- **二阶段召回**：BGE-M3 Query embed → 固定平台 OpenSearch Hybrid 召回 topN → rerank 精排 topK；
-  独立教学装配默认保留 `embedding_rerank → embedding_only → keyword_2gram` 三级降级，
-  H4 在线平台路由则显式禁用本地关键词 fallback：Query Encoding/OpenSearch 故障直接报错，
-  正常 Hybrid 空结果保持真实空结果，不扫描共享全量目录二查；`recall_strategy` 如实标注；
-  价格等硬约束走工具参数结构化过滤（price_max_major），不交给模型
-- **过滤可观测**：被 ship_to / 价格上限挡掉的候选以 `filtered_out`（含 reason）回传，
-  让模型能区分"库里没有"与"有但不满足约束"，避免把超预算商品答成"没有这个商品"
-- **品类洞察 RAG**：`category_insight_tool` 查 AgentScope `rag.KnowledgeBase`；默认只把
-  `knowledge/category-insight-v1` 的 64 篇正式文档（48 张历史目录 CategoryCard + 16 张已批准
-  选购/避坑卡）幂等写入 Qdrant collection
-  `globex_category_kb_v1`。`knowledge/*.md` 顶层旧文件仅作历史教学样例，不是默认运行时来源；
-  `cross-border-guide.md` 未复制进本 release。该工具只提供目录样本款型、属性分布、人民币历史
-  价格区间及经批准的选购/避坑提示，不承诺实时热销、销量排行、市场份额、实时价格、免税额度
-  或动态跨境通则
-- **上下文工程**：Main 保留原始 AgentState，由 ContextLifecycleMiddleware 将完整交互冻结为
-  hash 可证 L2，并在 70% soft threshold 后仅于 token 真减少时形成确定性 L3；L4 单独保存
-  商品/订单事实，pre-model assembler 重建模型视图。L3 hash 变化会推送脱敏的
-  `context.compressed` 事件；Search/Trade 仍可使用 AgentScope 常规 ContextConfig
-- **工具韧性**：ToolResilienceMiddleware 分级超时 + 按工具熔断（closed→open→half_open），
-  触发时返回 [error] 让模型如实告知，不编造数字
-- **真并行**：同一轮内多个 `task_dispatch` 由 2.0 并发批执行（`is_concurrency_safe`），
-  `scripts/verify_parallel.py` 用事件时间戳比对并行/串行墙钟耗时
-- **到手价内联**：传 ship_to 时商品卡自动内联 landed_price（小计+运费+关税，汇率统一折算），
-  比价/运费不单独暴露工具，减少不必要的工具调用轮次
-- **长期记忆**：写路径 remember_preference_tool → Store；读路径由 orchestrator 向 Main 注入
-  全量 dislike + 当前需求相关 like Top-K。SearchAgent 不接收历史偏好；Main 只能在
-  `hits/filtered_out` 返回后用偏好挑选和说明候选，偏好不得进入商品 Query/Reranker 文本
-- **会话持久化**：AgentState 每轮落盘 DATA_DIR/sessions/，服务重启后恢复多轮对话
-- **SubAgent as Tool**：2.0 库级无 subagent 原语（官方 Agent Team 在 agentscope.app 平台层），
-  用 FunctionTool 包装 `task_dispatch(subagent_type, demands)` 实现同等语义
-- **事件流**：reply_stream → token.delta / plan.update；工具自身发布 tool.invoke/tool.result；
-  TradeEventBus 按会话路由 WebSocket
-- **可观测**：全部 Agent 复用 AgentScope `TracingMiddleware`；可选导出到 LangFuse/OTLP，
-  默认不采集输入输出，并对会话标识、工具载荷与错误信息做导出前脱敏
-
-## 启动
-
-```bash
-uv sync
-# 敏感配置通过环境变量注入（推荐），不落盘、不入库
-export LLM_BASE_URL=<OpenAI 兼容网关地址>
-export LLM_API_KEY=<密钥>
-export LLM_MODEL=qwen-plus   # 可选，缺省 qwen3-max（限流时自动回退 LLM_FALLBACK_MODEL，缺省 qwen-plus）
-# 商品 Query endpoint 必须提供 OpenAI 兼容 /v1/embeddings，并返回 1024 维 BGE-M3 向量
-export PRODUCT_EMBEDDING_BASE_URL=<BGE-M3 Query endpoint>
-export PRODUCT_EMBEDDING_MODEL=BAAI/bge-m3
-export OPENSEARCH_ENDPOINT=http://127.0.0.1:9200
-# 可选：启用真实 BGE Reranker
-export RERANKER_BASE_URL=http://127.0.0.1:8001
-export RERANKER_MODEL=BAAI/bge-reranker-v2-m3
-uv run uvicorn app.presentation.server:app --port 8000
-
-# 启用队列削峰时（需 REDIS_URL）另起消费进程：
-uv run python -m app.worker
-```
-
-> 本地开发也可 `cp .env.example .env` 填值兜底（已被 gitignore，勿提交真实密钥）；
-> 同名环境变量优先于 .env。
-
-### 本地 BGE-M3 品类召回验收
-
-先启动与离线向量同模型的本地 OpenAI 兼容服务，再在另一终端运行评测；命令不包含密钥：
-
-```bash
-python -m scripts.embedding.serve_bge_m3_query
-
-export EMBEDDING_BASE_URL=http://127.0.0.1:8002/v1
-export EMBEDDING_MODEL=BAAI/bge-m3
-uv run python scripts/eval/run_category_recall.py --top-k 3
-```
-
-评测会先幂等 bootstrap，再强制核对 Qdrant 文档集合与 release 的 64 张标注完全一致；重复运行
-允许 `inserted=0`。控制台和报告会记录实际数据集路径、embedding model、collection、release
-manifest/approved cards 哈希、预期与实际文档数以及本次新增数。若 collection 含缺失或多余文档，
-评测会在计算 Recall/MRR/NDCG 前阻断。
-
-### 可选 LangFuse Trace
-
-设置 `LANGFUSE_ENABLED=1` 并在本地环境提供 `LANGFUSE_PUBLIC_KEY`、
-`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST` 后，AgentScope 的 Main/Search/Trade、模型与
-工具 span 会通过 OTLP 导出。商品链路另记录 BGE Query、OpenSearch Hybrid、硬约束摘要
-与 Reranker 子 span。LangFuse 直连会自动携带 v4 实时 ingestion 标头；未配置时不会创建
-exporter 或发送网络请求。
-
-`LANGFUSE_CAPTURE_INPUT` 与 `LANGFUSE_CAPTURE_OUTPUT` 默认均为 `0`；常规验收只保留
-模型名、token、平台、索引、候选数量、耗时和错误状态。`.env` 已被 Git 忽略，禁止把
-LangFuse 或模型密钥写入受跟踪文件。即使显式开启 capture，也只导出内容摘要指纹和
-JSON 顶层结构，不导出完整 query、模型回复、商品卡、地址或凭据。
-
-配置完成后可执行真实 OTLP 连通检查；脚本只发送固定测试标签和哈希身份，不发送用户内容：
+Requirements: Python 3.11–3.13, `uv`, and Node.js 18+ for the frontend. Copy `.env.example` to `.env` and provide an OpenAI-compatible model endpoint. Start OpenSearch (and optionally Redis/Qdrant), then run:
 
 ```powershell
-.venv\Scripts\python.exe -m scripts.observability.smoke_langfuse_otlp
+uv sync
+uv run uvicorn app.presentation.server:create_app --factory --reload
 ```
 
-中国大陆连接日本区时建议保留 `LANGFUSE_FLUSH_TIMEOUT_SECONDS=20`；该超时只约束后台
-Trace 导出和退出 flush，导出失败仍为 fail-open，不会把观测平台升级成业务依赖。
+To build the frontend:
 
-## API 概览
-
-- `POST /commerce/intents` 提交买家自然语言意图（同步返回最终回复）
-- `WS   /commerce/events` 订阅会话事件流（连上后先发 `{"shopping_session_id": "..."}`）
-- `GET  /commerce/orders/{order_id}` 查询订单
-- `POST /commerce/orders/{order_id}/cancel` 取消订单
-- `GET  /health` 健康检查
-
-## 验证
-
-```bash
-uv run ruff check .                    # 统一静态检查；规则由 pyproject.toml 固定
-uv run pytest                          # 完整单测回归
-uv run python scripts/smoke_e2e.py    # 端到端冒烟：WS 订阅 + 提交意图，实时打印事件流
-uv run python scripts/verify_parallel.py   # 并行验证：同轮多派 vs 串行的墙钟耗时与事件重叠数对比
-SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.rubric_runner  # Rubric v3：质量总分、P0 门禁与用户场景覆盖
-SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_compression_runner  # 默认 128K/70%：10+ 轮单次 token 上限、累计成本、Ark Prompt Cache、自然 L3 与压缩后恢复
-SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_compression_runner --smoke  # 只跑固定十轮，先核对 token/cache 与成本
-SEMANTIC_CACHE_ENABLED=0 uv run python -m scripts.eval.context_resume_runner --source-session-id <session> --source-artifact-dir <artifact> --max-trigger-turns 2  # 克隆持久化长会话，仅追加少量轮次验证 L2/L3 与恢复
+```powershell
+cd frontend
+npm ci
+npm run build
 ```
 
-上下文专项场景固定在 `eval/context_compression_scenario_v1.yaml`。运行器不会降低
-`CONTEXT_SIZE` 或 soft threshold；它逐轮记录全部 Main/子 Agent 模型调用的
-input/output/total token 以及 Ark `cached_tokens`，在首次真实 `context.compressed`
-后验证 StageSummary 来源 hash，并要求不重新搜索即可恢复会话最开始的商品名称、价格和币种。
-Langfuse 中每次模型调用还会产生一个 `globex.prompt.breakdown` Span，仅记录 system、tool schema、
-recent history、frozen context、tool result 和 total estimated token 数字；评测 manifest 保存脱敏后的
-`langfuse_trace_session_hash`，用于把本地报告与 Langfuse Trace 对齐，不上传原始会话 ID 或正文。
-报告默认写入 `artifacts/context-compression/<run-id>/`。该命令会产生真实模型与检索调用，
-应先运行本地测试，再单独安排小规模冒烟和正式评测。
-续跑命令同样不会降低默认阈值；若克隆会话只验证到 L2 冻结推进、尚未自然触发 L3，
-报告会明确标记 `L2_PASS_L3_NOT_REACHED`，不会把它冒充为压缩恢复通过。
-从已有续跑克隆继续时，运行器会从持久化 AgentState 自动计算已完成轮数；若增量 artifact
-不含最初商品锚点，可用 `--anchor-artifact-dir <original-artifact>` 指向原始完整证据。
+Product and knowledge indexes are built offline. See `scripts/index/` and `scripts/data/`; no generated index or local database is committed.
 
-当前用例和版本化评分/覆盖协议位于 `eval/rubric_cases_v3.yaml`。P1 使用本地 EventBus/OTel 执行证据，
-商品事实来自当前 `ProductRepository`；LangFuse 只用于外部观察，不是评分依赖。
-运行器按 run scope 隔离买家身份，依赖用例只有在前置 P0 全过且 P1 零失败时才执行；
-每轮保存脱敏输入、工具/Trace、L4 状态投影与偏好前后指纹，并在根目录写源码、用例和
-catalog manifest 哈希。汇总器按已批准的 P0/P1/P2=`25/35/40` 确定性计算质量总分，
-同时保留 P0 一票否决；场景覆盖按闲聊、品类、单轮、短多轮、长上下文、订单和异常七个
-用户旅程族的必要场景点去重计算，重复堆相似题不能刷分。`SCORED` 只表示协议完成且未触发
-P0，不自动等同于发布 `PASS`；任一 `ERROR` 会使批次质量总分标记为不完整。
+## Configuration
 
-完整运行证据默认写入被 Git 忽略的 `artifacts/`，只保存在当前受控本机，避免把完整对话和
-知识正文提交到仓库；因此 Git clone 只能复跑评测，不能还原某次本地报告。品类知识正文不
-发送给外部 Judge，Judge 只检查路由、回答边界和表达；知识数字的真实性由正式卡发布审核及
-独立的品类 Recall/MRR/NDCG 评测负责，运行 manifest 通过 release/cards 哈希锚定知识版本。
+All settings are documented in `.env.example`. Important variables include `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `PRODUCT_CATALOG_ROOT`, `OPENSEARCH_ENDPOINT`, `CATEGORY_KB_BACKEND`, `CATEGORY_KNOWLEDGE_INDEX`, `DATABASE_URL`, and optional Redis settings. Never commit `.env` or credentials.
 
-## Docker 部署
+## Tests and evaluation
 
-```bash
-export LLM_BASE_URL=<网关地址> LLM_API_KEY=<密钥>   # 敏感配置走环境变量，compose 透传
-docker compose -f docker/docker-compose.yaml up -d --build   # app + OpenSearch + Qdrant(RAG) + frontend
-# 前端 http://localhost:5173  后端 http://localhost:8000
+The default suite is offline and uses fakes/in-memory repositories where possible:
+
+```powershell
+uv run ruff check .
+uv run pytest
 ```
 
-本地开发时商品 OpenSearch 仍须可达；商品索引由 H1 离线构建，在线启动只校验三个冻结索引，
-不会建库或写文档。`QDRANT_URL` 置空只表示品类 RAG 使用 qdrant-client 本地嵌入模式。
+OpenSearch, embedding, reranker, and LLM checks are opt-in integration checks. Evaluation cases and contracts live under `eval/`; generated reports and private run artifacts are ignored.
+
+## Data and licensing
+
+Application code is licensed under Apache-2.0. See `NOTICE` and `THIRD_PARTY_DATA.md` for provenance and redistribution boundaries. External catalogs and generated indexes must be obtained or generated separately under their terms.
+
+## Limitations and roadmap
+
+This is a reference implementation, not a production marketplace: prices, delivery, tax, carrier rules, and availability are not live guarantees. Authentication, payment, and multi-region deployment are outside the current scope. Future work may add per-session serialization, multi-instance coordination, richer synthetic fixtures, and production observability.

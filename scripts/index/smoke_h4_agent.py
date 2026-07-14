@@ -1,7 +1,7 @@
 """Reproducible H4 acceptance for one search tool and platform-scoped agents.
 
 The real-infrastructure section builds the production composition root and invokes
-the single ``product_search_tool`` against Reference, Taobao, Amazon, and Amazon JP.
+the single ``product_search_tool`` against Reference, ReferenceSeed, Amazon, and Amazon JP.
 Recording wrappers observe the already-wired BGE-M3 query encoder, OpenSearch index,
 and HTTP reranker without substituting any of them.
 
@@ -54,8 +54,8 @@ class SearchCase:
 
 REAL_CASES = (
     SearchCase(
-        name="globex_reference",
-        platform="globex_reference",
+        name="crossshop_reference",
+        platform="crossshop_reference",
         normalized_query="降噪耳机",
         locale="zh-CN",
         ship_to="CN",
@@ -63,8 +63,8 @@ REAL_CASES = (
         target_currency="USD",
     ),
     SearchCase(
-        name="taobao",
-        platform="taobao",
+        name="reference_seed",
+        platform="reference_seed",
         normalized_query="轻便旅行背包",
         locale="zh-CN",
         ship_to="CN",
@@ -452,8 +452,8 @@ async def run_deterministic_protocol() -> dict[str, Any]:
     # A simple single-platform request is a direct call to the same public tool.
     bus = TradeEventBus()
     direct_queue = bus.subscribe("h4-direct-main")
-    direct_usecase = _FakeUseCase("taobao")
-    direct_tool = build_product_search_tool({"taobao": direct_usecase}, bus)  # type: ignore[arg-type]
+    direct_usecase = _FakeUseCase("reference_seed")
+    direct_tool = build_product_search_tool({"reference_seed": direct_usecase}, bus)  # type: ignore[arg-type]
     token = ShoppingContext.set(
         ShoppingContextSnapshot(
             shopping_session_id="h4-direct-main",
@@ -464,7 +464,7 @@ async def run_deterministic_protocol() -> dict[str, Any]:
     )
     try:
         direct_result = _chunk_json(
-            await direct_tool(normalized_query="旅行背包", platform="taobao")
+            await direct_tool(normalized_query="旅行背包", platform="reference_seed")
         )
     finally:
         ShoppingContext.reset(token)
@@ -496,12 +496,12 @@ async def run_deterministic_protocol() -> dict[str, Any]:
             dispatch_tool(
                 subagent_type="search_agent",
                 demands="reference search",
-                platform="globex_reference",
+                platform="crossshop_reference",
             ),
             dispatch_tool(
                 subagent_type="search_agent",
-                demands="taobao search",
-                platform="taobao",
+                demands="reference_seed search",
+                platform="reference_seed",
             ),
             dispatch_tool(
                 subagent_type="search_agent",
@@ -512,8 +512,8 @@ async def run_deterministic_protocol() -> dict[str, Any]:
     finally:
         ShoppingContext.reset(token)
     expected_scopes = {
-        ("globex_reference", None),
-        ("taobao", None),
+        ("crossshop_reference", None),
+        ("reference_seed", None),
         ("amazon", None),
     }
     if set(search_factory.scopes) != expected_scopes:
@@ -582,7 +582,7 @@ async def run_deterministic_protocol() -> dict[str, Any]:
         "evidence_type": "deterministic_protocol_only_not_llm_behavior",
         "simple_single_platform": {
             "tool": "product_search_tool",
-            "platform": "taobao",
+            "platform": "reference_seed",
             "product_search_calls": len(direct_usecase.specs),
             "agent_dispatch_calls": 0,
         },
@@ -947,22 +947,22 @@ def evaluate_real_main_case(
     ]
     overlap = _dispatch_overlap(events)
 
-    if name == "single-taobao":
+    if name == "single-reference_seed":
         protocol_failures, search_protocol = _evaluate_product_search_protocol(
             events,
-            expected_platforms={"taobao"},
+            expected_platforms={"reference_seed"},
         )
         failures.extend(protocol_failures)
         if search_dispatches:
-            failures.append("single Taobao search dispatched a SearchAgent")
+            failures.append("single ReferenceSeed search dispatched a SearchAgent")
         if not 1 <= len(product_invokes) <= 2:
             failures.append(
-                "single Taobao search must directly invoke the tool once or twice"
+                "single ReferenceSeed search must directly invoke the tool once or twice"
             )
-        if any(_invoke_platform(event) != "taobao" for event in product_invokes):
-            failures.append("single Taobao search invoked a non-Taobao platform")
+        if any(_invoke_platform(event) != "reference_seed" for event in product_invokes):
+            failures.append("single ReferenceSeed search invoked a non-ReferenceSeed platform")
         route = {
-            "expected": "direct product_search_tool platform=taobao",
+            "expected": "direct product_search_tool platform=reference_seed",
             "product_search_invoke_count": len(product_invokes),
             "product_search_platforms": [
                 _invoke_platform(event) for event in product_invokes
@@ -973,11 +973,11 @@ def evaluate_real_main_case(
     elif name == "cross-platform":
         protocol_failures, search_protocol = _evaluate_product_search_protocol(
             events,
-            expected_platforms={"globex_reference", "taobao", "amazon"},
+            expected_platforms={"crossshop_reference", "reference_seed", "amazon"},
         )
         failures.extend(protocol_failures)
         platforms = [event["payload"].get("platform") for event in search_dispatches]
-        expected = {"globex_reference", "taobao", "amazon"}
+        expected = {"crossshop_reference", "reference_seed", "amazon"}
         if len(search_dispatches) != 3 or set(platforms) != expected:
             failures.append(
                 "cross-platform search did not dispatch exactly three platforms"
@@ -1129,12 +1129,12 @@ async def run_real_main_agent(
     """Attempt two real MainAgent conversations and report behavior, never infer it."""
     cases = (
         (
-            "single-taobao",
-            "只在淘宝帮我找轻便旅行背包，预算 100 元以内，收货到中国，最多推荐 5 件。",
+            "single-reference_seed",
+            "只在示例平台帮我找轻便旅行背包，预算 100 元以内，收货到中国，最多推荐 5 件。",
         ),
         (
             "cross-platform",
-            "请同时比较 Globex、淘宝和 Amazon 的降噪耳机，预算 300 元以内，收货到中国，最多推荐 5 件。",
+            "请同时比较 CrossShop、示例平台和 Amazon 的降噪耳机，预算 300 元以内，收货到中国，最多推荐 5 件。",
         ),
     )
     report: dict[str, Any] = {"attempted": True, "cases": {}}
@@ -1244,7 +1244,7 @@ def _render_readme(report: dict[str, Any], args: argparse.Namespace) -> str:
 工具调用对应一次 BGE-M3 Query、一次 OpenSearch Hybrid，以及硬约束后的单次真实
 `bge-reranker-v2-m3` 调用；Amazon JP 使用同一个 Amazon 索引和 `site_locale=jp`。
 
-确定性协议验收：简单淘宝查询直接调用同一工具且派发数为 0；三个固定平台 SearchAgent
+确定性协议验收：简单示例平台查询直接调用同一工具且派发数为 0；三个固定平台 SearchAgent
 区间实际重叠 {report["deterministic_protocol"]["concurrent_dispatch"]["overlap_seconds"]:.3f} 秒；
 候选不足由当前调用者显式改写一次，只有 `normalized_query` 改变，工具内部没有隐藏重试。
 

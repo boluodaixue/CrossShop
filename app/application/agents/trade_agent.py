@@ -7,6 +7,7 @@ create_order_tool / query_order_tool / cancel_order_tool。
 同 SearchAgent 一样，通过 task_dispatch 工具被 MainAgent 调度，每次调度新建独立实例；
 `build_tools()` 同时供 MainAgent 复用——主 Agent 持有同一批业务工具，可以不派发自己单干。
 """
+
 from __future__ import annotations
 
 from agentscope.agent import Agent, ReActConfig
@@ -26,6 +27,10 @@ from app.application.usecases.order_usecases import (
     QueryOrderUseCase,
 )
 from app.infrastructure.eventbus import TradeEventBus
+from app.infrastructure.evaluation_controls import (
+    FULL_HARNESS_CONTROLS,
+    EvaluationHarnessControls,
+)
 from app.infrastructure.llm import create_chat_model
 from app.infrastructure.throttle import GatewayThrottle
 from app.infrastructure.resilience import (
@@ -46,6 +51,7 @@ class TradeAgentFactory:
         bus: TradeEventBus,
         circuit_registry: CircuitBreakerRegistry,
         throttle: GatewayThrottle,
+        evaluation_controls: EvaluationHarnessControls = FULL_HARNESS_CONTROLS,
     ) -> None:
         self._settings = settings
         self._place_order = place_order
@@ -54,9 +60,16 @@ class TradeAgentFactory:
         self._bus = bus
         self._circuit_registry = circuit_registry
         self._throttle = throttle
+        self._evaluation_controls = evaluation_controls
 
     def _resilience(self) -> list:
-        return [ToolResilienceMiddleware(self._circuit_registry, self._bus)]
+        return [
+            ToolResilienceMiddleware(
+                self._circuit_registry,
+                self._bus,
+                timeout_enforced=self._evaluation_controls.timeout_enforced,
+            )
+        ]
 
     def build_tools(self) -> list[FunctionTool]:
         """TradeAgent 的业务工具集，MainAgent 单干时持有同一批（均带超时+熔断保护）。"""
@@ -82,7 +95,9 @@ class TradeAgentFactory:
             Agent(
                 name=prompts["name"],
                 system_prompt=prompts["system_prompt"],
-                model=create_chat_model(self._settings, throttle=self._throttle, bus=self._bus),
+                model=create_chat_model(
+                    self._settings, throttle=self._throttle, bus=self._bus
+                ),
                 toolkit=Toolkit(tools=list(self.build_tools())),
                 middlewares=build_agent_middlewares(self._settings),
                 context_config=build_context_config(

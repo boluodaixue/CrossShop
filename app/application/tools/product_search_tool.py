@@ -20,7 +20,7 @@ from app.domain.catalog.product_search_spec import ProductSearchSpec
 from app.infrastructure.context import SearchDispatchContext, ShoppingContext
 from app.infrastructure.eventbus import TradeEventBus
 
-_PLATFORMS = frozenset({"globex_reference", "taobao", "amazon"})
+_PLATFORMS = frozenset({"crossshop_reference", "reference_seed", "amazon"})
 _AMAZON_SITE_LOCALES = frozenset({"us", "es", "jp"})
 
 
@@ -34,7 +34,7 @@ def build_product_search_tool(
     """构建唯一公开的商品检索工具。
 
     单平台旧装配仍可直接传 ``CatalogSearchUseCase``；H4 三平台装配传映射，键为
-    ``globex_reference`` / ``taobao`` / ``amazon``。Amazon 明确站点可额外提供
+    ``crossshop_reference`` / ``reference_seed`` / ``amazon``。Amazon 明确站点可额外提供
     ``amazon:us`` / ``amazon:es`` / ``amazon:jp`` 对应的 UseCase。平台与站点只在
     工具层选择已装配的 UseCase，不写入 ProductSearchSpec 或商品领域对象。
 
@@ -51,7 +51,7 @@ def build_product_search_tool(
 
     async def product_search_tool(
         normalized_query: str,
-        platform: Literal["globex_reference", "taobao", "amazon"] | None = None,
+        platform: Literal["crossshop_reference", "reference_seed", "amazon"] | None = None,
         site_locale: Literal["us", "es", "jp"] | None = None,
         category: str | None = None,
         ship_to: str | None = None,
@@ -69,7 +69,7 @@ def build_product_search_tool(
                 标准化检索词，保留品类词与关键属性词
                 （如"旅行三件套 抗造 轻便 无塑料"）。
             platform (`str | None`):
-                商品平台："globex_reference"、"taobao" 或 "amazon"。
+                商品平台："crossshop_reference"、"reference_seed" 或 "amazon"。
                 三平台装配时必须明确传入；它只选择固定平台索引，不进入
                 ProductSearchSpec。
             site_locale (`str | None`):

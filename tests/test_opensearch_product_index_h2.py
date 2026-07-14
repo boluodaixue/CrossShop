@@ -114,7 +114,7 @@ def test_site_locale_is_restricted_to_the_amazon_index() -> None:
     with pytest.raises(ValueError, match="only valid for the Amazon"):
         OpenSearchProductIndex(
             "http://127.0.0.1:9200",
-            INDEX_NAMES["taobao"],
+            INDEX_NAMES["reference_seed"],
             site_locale="jp",
         )
     with pytest.raises(ValueError, match="unsupported Amazon site locale"):
@@ -139,7 +139,7 @@ async def test_adapter_rejects_identity_mismatch() -> None:
         return_value=client,
     ):
         index = OpenSearchProductIndex(
-            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+            "http://127.0.0.1:9200", INDEX_NAMES["crossshop_reference"]
         )
         with pytest.raises(RuntimeError, match="identity mismatch"):
             await index.search(query="耳机", embedding=_vector(), top_n=1)
@@ -153,7 +153,7 @@ async def test_adapter_rejects_duplicate_product_id_hits() -> None:
         return_value=client,
     ):
         index = OpenSearchProductIndex(
-            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+            "http://127.0.0.1:9200", INDEX_NAMES["crossshop_reference"]
         )
         with pytest.raises(RuntimeError, match="duplicate Product hit"):
             await index.search(query="耳机", embedding=_vector(), top_n=2)
@@ -175,7 +175,7 @@ async def test_adapter_retries_503_once_with_identical_hybrid_request() -> None:
         patch("app.infrastructure.transient._RETRY_DELAY_SECONDS", 0),
     ):
         index = OpenSearchProductIndex(
-            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+            "http://127.0.0.1:9200", INDEX_NAMES["crossshop_reference"]
         )
         hits = await index.search(query="耳机", embedding=_vector(), top_n=1)
 
@@ -197,7 +197,7 @@ async def test_adapter_does_not_retry_http_500() -> None:
         return_value=client,
     ):
         index = OpenSearchProductIndex(
-            "http://127.0.0.1:9200", INDEX_NAMES["globex_reference"]
+            "http://127.0.0.1:9200", INDEX_NAMES["crossshop_reference"]
         )
         with pytest.raises(httpx.HTTPStatusError):
             await index.search(query="耳机", embedding=_vector(), top_n=1)
@@ -206,7 +206,7 @@ async def test_adapter_does_not_retry_http_500() -> None:
 
 
 async def test_adapter_verifies_mapping_and_forbids_online_upsert() -> None:
-    index_name = INDEX_NAMES["globex_reference"]
+    index_name = INDEX_NAMES["crossshop_reference"]
     client = AsyncMock()
     client.get.return_value = _response(
         {
@@ -233,7 +233,7 @@ async def test_adapter_verifies_mapping_and_forbids_online_upsert() -> None:
 
 def test_adapter_accepts_only_the_three_frozen_indexes() -> None:
     with pytest.raises(ValueError, match="unsupported frozen product index"):
-        OpenSearchProductIndex("http://127.0.0.1:9200", "globex-products-all-v1")
+        OpenSearchProductIndex("http://127.0.0.1:9200", "crossshop-products-all-v1")
 
 
 async def test_qdrant_keeps_vector_only_behavior_and_ignores_query() -> None:

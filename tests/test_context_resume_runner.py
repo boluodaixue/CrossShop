@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 from agentscope.message import AssistantMsg, UserMsg
@@ -6,10 +7,15 @@ from agentscope.state import AgentState
 
 from scripts.eval.context_compression_runner import DEFAULT_SCENARIO, load_scenario
 from scripts.eval.context_resume_runner import (
+    _compression_history,
+    _load_checkpoint_turns,
+    _match_session_id_by_hash,
     classify_resume_status,
     clone_session_state_json,
     completed_turns_from_state_json,
     evaluate_warm_cache_window,
+    natural_scenario_cursor,
+    recovery_query_for_session,
     remaining_natural_queries,
 )
 
@@ -19,7 +25,7 @@ def test_clone_session_state_retargets_copy_and_keeps_source_immutable() -> None
         session_id="source-agent-session",
         context=[UserMsg(name="buyer-1", content="私密原始问题")],
         middle_context={
-            "globex_context_v1": {
+            "crossshop_context_v1": {
                 "current_intent": {
                     "shopping_session_id": "source-shopping-session",
                     "buyer_id": "buyer-1",
@@ -43,7 +49,7 @@ def test_clone_session_state_retargets_copy_and_keeps_source_immutable() -> None
 
     assert source.model_dump_json() == source_json
     cloned = AgentState.model_validate_json(cloned_json)
-    namespace = cloned.middle_context["globex_context_v1"]
+    namespace = cloned.middle_context["crossshop_context_v1"]
     assert buyer_id == "buyer-1"
     assert cloned.session_id == "target-session"
     assert namespace["current_intent"]["shopping_session_id"] == "target-session"
@@ -68,7 +74,7 @@ def test_clone_session_state_falls_back_to_buyer_message_name() -> None:
     assert buyer_id == "buyer-fallback"
     cloned = json.loads(cloned_json)
     assert (
-        cloned["middle_context"]["globex_context_v1"]["current_intent"]["buyer_id"]
+        cloned["middle_context"]["crossshop_context_v1"]["current_intent"]["buyer_id"]
         == "buyer-fallback"
     )
 
@@ -96,6 +102,92 @@ def test_remaining_queries_continue_after_source_turn_count() -> None:
         )
         == all_queries[60:63]
     )
+
+
+def test_resume_artifact_separates_natural_cursor_from_recovery_turn(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "summary.json").write_text(
+        json.dumps(
+            {
+                "source_turns": 85,
+                "trigger_turns_executed": 1,
+                "compression": {"trigger_turn": 86},
+            },
+        ),
+        encoding="utf-8",
+    )
+    trigger = {
+        "turn_index": 86,
+        "phase": "resume-trigger",
+        "compression_event": {"type": "context.compressed"},
+    }
+    recovery = {
+        "turn_index": 87,
+        "phase": "resume-recovery:recover-first-product",
+        "compression_event": None,
+    }
+    (tmp_path / "turns.json").write_text(
+        json.dumps([trigger, recovery]),
+        encoding="utf-8",
+    )
+
+    assert natural_scenario_cursor(tmp_path, completed_session_turns=87) == 86
+    assert _compression_history(tmp_path) == (85, [86], [trigger])
+
+
+def test_checkpoint_resume_reads_only_incremental_partial_turns(
+    tmp_path: Path,
+) -> None:
+    prior_trigger = {"turn_index": 86, "compression_event": {"type": "old"}}
+    incremental = {"turn_index": 88, "compression_event": None}
+    (tmp_path / "turns.json").write_text(
+        json.dumps([prior_trigger, incremental]),
+        encoding="utf-8",
+    )
+    (tmp_path / "turns.partial.json").write_text(
+        json.dumps([incremental]),
+        encoding="utf-8",
+    )
+
+    assert _load_checkpoint_turns(tmp_path) == [incremental]
+
+
+def test_session_hash_resolves_without_exposing_raw_id() -> None:
+    from app.infrastructure.tracing import text_digest
+
+    session_id = "context-resume-private"
+
+    assert (
+        _match_session_id_by_hash(
+            ["unrelated", session_id],
+            text_digest(session_id),
+        )
+        == session_id
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        _match_session_id_by_hash([], text_digest(session_id))
+
+
+def test_recovery_query_maps_authored_turn_across_inserted_probe() -> None:
+    query, actual_turn = recovery_query_for_session(
+        "请恢复第91轮的类别、平台和预算。",
+        authored_turn_index=91,
+        source_scenario_cursor=86,
+        completed_source_turns=87,
+    )
+
+    assert actual_turn == 92
+    assert "第92轮" in query
+
+    earlier_query, earlier_turn = recovery_query_for_session(
+        "请恢复第61轮的类别、平台和预算。",
+        authored_turn_index=61,
+        source_scenario_cursor=86,
+        completed_source_turns=87,
+    )
+    assert earlier_turn == 61
+    assert "第61轮" in earlier_query
 
 
 def test_completed_turns_are_derived_from_persisted_state() -> None:

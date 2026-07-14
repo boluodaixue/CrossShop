@@ -86,7 +86,7 @@ class TestEngineSelection:
 
         settings = load_settings()
         assert settings.database_url.startswith("sqlite+aiosqlite:///")
-        assert settings.database_url.endswith("globex.db")
+        assert settings.database_url.endswith("crossshop.db")
 
     async def test_explicit_database_url_wins(self, tmp_path, monkeypatch):
         from app.infrastructure.settings import load_settings

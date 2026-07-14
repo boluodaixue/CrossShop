@@ -38,6 +38,7 @@ from app.application.context import (
     settled_prefix_units,
     summarize_frozen_segments,
 )
+from app.application.context.assembler import _summary_rebuild_inputs
 from app.infrastructure.context import ShoppingContext, ShoppingContextSnapshot
 from app.infrastructure.context_middleware import (
     CONTEXT_NAMESPACE,
@@ -191,7 +192,7 @@ def test_phase_a_l4_is_idempotent_and_ignores_orphan_and_failed_results() -> Non
                 "tool_call_id": "ok",
                 "args": {
                     "normalized_query": "轻便背包",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "top_k": 5,
                 },
             },
@@ -228,7 +229,7 @@ def test_phase_a_l4_is_idempotent_and_ignores_orphan_and_failed_results() -> Non
     )
     assert success.last_search == {
         "tool_call_id": "ok",
-        "args": {"normalized_query": "轻便背包", "platform": "taobao", "top_k": 5},
+        "args": {"normalized_query": "轻便背包", "platform": "reference_seed", "top_k": 5},
         "status": "succeeded",
         "returned_count": 1,
         "product_refs": ["P-1"],
@@ -251,7 +252,7 @@ def test_l4_accepts_verified_structured_selection_without_parsing_prose() -> Non
                 "tool_call_id": "search-1",
                 "args": {
                     "normalized_query": "背包",
-                    "platform": "taobao",
+                    "platform": "reference_seed",
                     "top_k": 5,
                 },
             },
@@ -294,11 +295,11 @@ def test_l4_accepts_verified_structured_selection_without_parsing_prose() -> Non
                     "final_text": "推荐 P-2 完整原标题二",
                     "selected_products": [
                         {
-                            "platform": "taobao",
+                            "platform": "reference_seed",
                             "product_id": "P-2",
                         },
                         {
-                            "platform": "taobao",
+                            "platform": "reference_seed",
                             "product_id": "UNKNOWN",
                         },
                     ],
@@ -325,6 +326,63 @@ def test_l4_accepts_verified_structured_selection_without_parsing_prose() -> Non
     )
 
 
+def test_l4_keeps_bounded_order_lines_and_created_at() -> None:
+    state = reduce_l4(
+        {"shopping_session_id": "session-order", "raw_query": "查订单"},
+        [
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "query_order_tool",
+                    "tool_call_id": "query-1",
+                    "args": {"order_id": "GBX-1"},
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "query_order_tool",
+                    "tool_call_id": "query-1",
+                    "raw_output": {
+                        "order_id": "GBX-1",
+                        "status": "CONFIRMED",
+                        "currency": "CNY",
+                        "total_amount_major": 89.0,
+                        "created_at": "2026-08-31T00:00:00+00:00",
+                        "shipping_address": "must not enter L4",
+                        "lines": [
+                            {
+                                "product_id": "P1008",
+                                "sku_id": "P1008-S1",
+                                "title": "LumenGo 便携露营灯 可充电",
+                                "unit_price_major": 89.0,
+                                "quantity": 1,
+                            }
+                        ],
+                    },
+                },
+            },
+        ],
+    )
+
+    assert state.order == {
+        "order_id": "GBX-1",
+        "status": "CONFIRMED",
+        "currency": "CNY",
+        "total_amount_major": 89.0,
+        "created_at": "2026-08-31T00:00:00+00:00",
+        "items": [
+            {
+                "product_id": "P1008",
+                "sku_id": "P1008-S1",
+                "title": "LumenGo 便携露营灯 可充电",
+                "unit_price_major": 89.0,
+                "quantity": 1,
+            }
+        ],
+    }
+
+
 def test_l4_keeps_verified_display_history_across_category_switches() -> None:
     first = reduce_l4(
         {"shopping_session_id": "session-1", "raw_query": "找露营灯"},
@@ -337,7 +395,7 @@ def test_l4_keeps_verified_display_history_across_category_switches() -> None:
                     "args": {
                         "normalized_query": "露营灯",
                         "category": "户外照明",
-                        "platform": "globex_reference",
+                        "platform": "crossshop_reference",
                     },
                 },
             },
@@ -358,7 +416,7 @@ def test_l4_keeps_verified_display_history_across_category_switches() -> None:
                         "final_text": "推荐露营灯",
                         "selected_products": [
                             {
-                                "platform": "globex_reference",
+                                "platform": "crossshop_reference",
                                 "product_id": "P1008",
                             },
                         ],
@@ -378,7 +436,7 @@ def test_l4_keeps_verified_display_history_across_category_switches() -> None:
                     "args": {
                         "normalized_query": "速干毛巾",
                         "category": "旅行装备",
-                        "platform": "globex_reference",
+                        "platform": "crossshop_reference",
                     },
                 },
             },
@@ -399,7 +457,7 @@ def test_l4_keeps_verified_display_history_across_category_switches() -> None:
                         "final_text": "推荐毛巾",
                         "selected_products": [
                             {
-                                "platform": "globex_reference",
+                                "platform": "crossshop_reference",
                                 "product_id": "P1007",
                             },
                         ],
@@ -416,6 +474,123 @@ def test_l4_keeps_verified_display_history_across_category_switches() -> None:
         item["card"]["product_id"]
         for item in switched.last_recommendation["displayed_history"]
     ] == ["P1007", "P1008"]
+
+
+def test_l4_evicts_oldest_after_twenty_and_refreshes_same_product_fact() -> None:
+    state = L4Context()
+    for index in range(22):
+        product_id = f"P-{index:02d}"
+        state = reduce_l4(
+            {
+                "shopping_session_id": "session-1",
+                "raw_query": f"查找商品 {product_id}",
+            },
+            [
+                {
+                    "type": "tool.invoke",
+                    "payload": {
+                        "tool": "product_search_tool",
+                        "tool_call_id": f"search-{index}",
+                        "args": {
+                            "normalized_query": product_id,
+                            "platform": "crossshop_reference",
+                        },
+                    },
+                },
+                {
+                    "type": "tool.result",
+                    "payload": {
+                        "tool": "product_search_tool",
+                        "tool_call_id": f"search-{index}",
+                        "raw_output": {
+                            "hits": [
+                                {
+                                    "product_id": product_id,
+                                    "title": f"商品 {index}",
+                                    "price_major": index + 1,
+                                    "currency": "CNY",
+                                },
+                            ],
+                        },
+                    },
+                },
+                {
+                    "type": "final.result",
+                    "payload": {
+                        "structured_output": {
+                            "final_text": f"推荐 {product_id}",
+                            "selected_products": [
+                                {
+                                    "platform": "crossshop_reference",
+                                    "product_id": product_id,
+                                },
+                            ],
+                        },
+                    },
+                },
+            ],
+            state,
+        )
+
+    recommendation = state.last_recommendation or {}
+    history = recommendation["displayed_history"]
+    history_ids = [item["card"]["product_id"] for item in history]
+    assert recommendation["product_refs"] == ["P-21"]
+    assert len(history_ids) == 20
+    assert history_ids == [f"P-{index:02d}" for index in range(21, 1, -1)]
+
+    refreshed = reduce_l4(
+        {"shopping_session_id": "session-1", "raw_query": "重新查看 P-10"},
+        [
+            {
+                "type": "tool.invoke",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-refresh",
+                    "args": {
+                        "normalized_query": "P-10",
+                        "platform": "crossshop_reference",
+                    },
+                },
+            },
+            {
+                "type": "tool.result",
+                "payload": {
+                    "tool": "product_search_tool",
+                    "tool_call_id": "search-refresh",
+                    "raw_output": {
+                        "hits": [
+                            {
+                                "product_id": "P-10",
+                                "title": "商品 10 新快照",
+                                "price_major": 999,
+                                "currency": "CNY",
+                            },
+                        ],
+                    },
+                },
+            },
+            {
+                "type": "final.result",
+                "payload": {
+                    "structured_output": {
+                        "final_text": "重新展示 P-10",
+                        "selected_products": [
+                            {
+                                "platform": "crossshop_reference",
+                                "product_id": "P-10",
+                            },
+                        ],
+                    },
+                },
+            },
+        ],
+        state,
+    )
+    refreshed_history = (refreshed.last_recommendation or {})["displayed_history"]
+    assert refreshed_history[0]["card"]["product_id"] == "P-10"
+    assert refreshed_history[0]["card"]["price_major"] == 999
+    assert sum(item["card"]["product_id"] == "P-10" for item in refreshed_history) == 1
 
 
 @pytest.mark.asyncio
@@ -500,7 +675,9 @@ def test_phase_c_call_id_pairing_and_settled_prefix_guards() -> None:
         in group_interaction_units([complete[0], missing])[0].incomplete_reason
     )
     failed = _turn("背包", "失败", result_state=ToolResultState.ERROR)
-    assert "failed_tool_result" in group_interaction_units(failed)[0].incomplete_reason
+    failed_unit = group_interaction_units(failed)[0]
+    assert failed_unit.complete
+    assert failed_unit.tools[0].result.state == ToolResultState.ERROR
 
 
 def test_phase_c_parallel_tool_results_pair_by_call_id() -> None:
@@ -586,6 +763,35 @@ def test_phase_d_l0_contract_preserves_exact_artifact() -> None:
     assert store.read(rendered["artifact_ref"]) == raw
 
 
+def test_phase_d_order_contract_keeps_domain_lines() -> None:
+    store = ToolArtifactStore(_ARTIFACT_ROOT)
+    rendered = json.loads(
+        format_tool_output(
+            "query_order_tool",
+            {
+                "order_id": "GBX-1",
+                "status": "CONFIRMED",
+                "created_at": "2026-08-31T00:00:00+00:00",
+                "lines": [
+                    {
+                        "product_id": "P1008",
+                        "sku_id": "P1008-S1",
+                        "title": "LumenGo 便携露营灯 可充电",
+                        "unit_price_major": 89.0,
+                        "quantity": 1,
+                    }
+                ],
+            },
+            artifact_store=store,
+            configured_limit=8_000,
+        ),
+    )
+
+    assert rendered["lines"][0]["product_id"] == "P1008"
+    assert rendered["lines"][0]["quantity"] == 1
+    assert rendered["created_at"] == "2026-08-31T00:00:00+00:00"
+
+
 @pytest.mark.asyncio
 async def test_phase_d_on_acting_pairs_event_and_artifact() -> None:
     middleware = _middleware()
@@ -610,7 +816,7 @@ async def test_phase_d_on_acting_pairs_event_and_artifact() -> None:
         "tool.result",
     ]
     assert namespace["tool_artifacts"][0]["tool_call_id"] == "call-1"
-    assert output[0].metadata["globex_artifact_ref"]["sha256"]
+    assert output[0].metadata["crossshop_artifact_ref"]["sha256"]
 
 
 def test_phase_e_l3_is_deterministic_and_hash_verified() -> None:
@@ -777,6 +983,7 @@ async def test_phase_f_on_model_call_uses_view_and_persists_middle_context() -> 
         for message in captured["messages"]
     )
     restored = AgentState.model_validate_json(state.model_dump_json())
+    # Complete previous interaction freezes; current buyer turn stays hot.
     assert restored.middle_context[CONTEXT_NAMESPACE]["freeze_cursor"] == 2
 
 
@@ -830,21 +1037,21 @@ async def test_phase_f_model_call_exports_privacy_safe_prompt_breakdown(
         handler,
     )
 
-    assert observed["name"] == "globex.prompt.breakdown"
+    assert observed["name"] == "crossshop.prompt.breakdown"
     attributes = observed["attributes"]
-    assert attributes["globex.prompt.agent"] == "Main"
+    assert attributes["crossshop.prompt.agent"] == "Main"
     for key in (
-        "globex.prompt.system_tokens",
-        "globex.prompt.tool_schema_tokens",
-        "globex.prompt.recent_history_tokens",
-        "globex.prompt.frozen_context_tokens",
-        "globex.prompt.tool_result_tokens",
-        "globex.prompt.total_estimated_tokens",
-        "globex.prompt.stable_prefix_estimated_tokens",
+        "crossshop.prompt.system_tokens",
+        "crossshop.prompt.tool_schema_tokens",
+        "crossshop.prompt.recent_history_tokens",
+        "crossshop.prompt.frozen_context_tokens",
+        "crossshop.prompt.tool_result_tokens",
+        "crossshop.prompt.total_estimated_tokens",
+        "crossshop.prompt.stable_prefix_estimated_tokens",
     ):
         assert isinstance(attributes[key], int)
         assert attributes[key] >= 0
-    assert len(attributes["globex.prompt.stable_prefix_sha256"]) == 64
+    assert len(attributes["crossshop.prompt.stable_prefix_sha256"]) == 64
     serialized = json.dumps(attributes, ensure_ascii=False)
     assert "private prompt" not in serialized
     assert "private schema" not in serialized
@@ -880,6 +1087,503 @@ def test_phase_f_soft_threshold_builds_l3_but_keeps_recent_l2() -> None:
     assert any(
         "frozen-2-4" in (message.get_text_content() or "") for message in model_view
     )
+
+
+def test_phase_f_repeated_l3_grows_verified_sources_without_duplicates() -> None:
+    policy = ContextBudgetPolicy(
+        model_context_tokens=8_000,
+        soft_limit_tokens=1,
+        l3_keep_recent_frozen_segments=1,
+    )
+    first_messages = [
+        *_turn("第一轮", "一" * 2_000, call_id="call-1"),
+        *_turn("第二轮", "二" * 2_000, call_id="call-2"),
+        UserMsg(name="buyer", content="第三轮"),
+    ]
+    first_state, _ = advance_context_state(
+        context_messages=first_messages,
+        namespace={"session_context": L4Context(revision=2).to_dict()},
+        fixed_messages=[],
+        tool_schemas=[],
+        policy=policy,
+        has_pending=False,
+        has_interrupt=False,
+    )
+    first_summary = StageSummary.from_dict(first_state["stage_summary"])
+    assert first_summary.source_segment_ids == ("frozen-0-2",)
+
+    second_messages = [
+        *_turn("第一轮", "一" * 2_000, call_id="call-1"),
+        *_turn("第二轮", "二" * 2_000, call_id="call-2"),
+        *_turn("第三轮", "三" * 2_000, call_id="call-3"),
+        *_turn("第四轮", "四" * 2_000, call_id="call-4"),
+        UserMsg(name="buyer", content="第五轮"),
+    ]
+    second_state, second_view = advance_context_state(
+        context_messages=second_messages,
+        namespace=first_state,
+        fixed_messages=[],
+        tool_schemas=[],
+        policy=policy,
+        has_pending=False,
+        has_interrupt=False,
+    )
+    second_summary = StageSummary.from_dict(second_state["stage_summary"])
+
+    assert second_summary.source_segment_ids == (
+        "frozen-0-2",
+        "frozen-2-4",
+        "frozen-4-6",
+    )
+    assert len(second_summary.source_segment_ids) == len(
+        set(second_summary.source_segment_ids)
+    )
+    assert second_summary.summary_hash != first_summary.summary_hash
+    visible_summaries = [
+        message.get_text_content() or ""
+        for message in second_view
+        if "<stage-summary>" in (message.get_text_content() or "")
+    ]
+    assert len(visible_summaries) == 1
+    assert second_summary.summary_hash in visible_summaries[0]
+    assert first_summary.summary_hash not in visible_summaries[0]
+    assert '"source_segments"' not in visible_summaries[0]
+    assert second_state["context_compression"]["action"] == "l3_stage_summary"
+    assert (
+        second_state["context_compression"]["after_tokens"]
+        < second_state["context_compression"]["before_tokens"]
+    )
+
+    restored = AgentState.model_validate_json(
+        AgentState(
+            session_id="session-repeat",
+            context=second_messages,
+            middle_context={CONTEXT_NAMESPACE: second_state},
+        ).model_dump_json(),
+    )
+    restored_summary = StageSummary.from_dict(
+        restored.middle_context[CONTEXT_NAMESPACE]["stage_summary"],
+    )
+    assert restored_summary == second_summary
+
+
+def _summary_segment(
+    index: int,
+    *,
+    user: str | None = None,
+    tools: list[dict] | None = None,
+    assistant: str | None = None,
+) -> FrozenSegment:
+    return FrozenSegment(
+        segment_id=f"summary-source-{index}",
+        content=json.dumps(
+            {
+                "user": user or f"第 {index} 轮需求",
+                "tools": tools or [],
+                "assistant": assistant or f"第 {index} 轮结果",
+            },
+            ensure_ascii=False,
+        ),
+        source_message_start=index * 2,
+        source_message_end=index * 2 + 2,
+        context_revision=index,
+    )
+
+
+@pytest.mark.parametrize("generations", [1, 2, 3, 5])
+def test_l3_recompression_keeps_one_bounded_summary_and_complete_manifest(
+    generations: int,
+) -> None:
+    summary = None
+    all_segments: list[FrozenSegment] = []
+    for generation in range(generations):
+        new_segments = [
+            _summary_segment(
+                generation * 20 + index,
+                user=(f"阶段 {generation} 事实 {index}: " + ("需求证据" * 30)),
+                assistant=(f"阶段 {generation} 结果 {index}: " + ("结果证据" * 30)),
+            )
+            for index in range(20)
+        ]
+        all_segments.extend(new_segments)
+        summary = summarize_frozen_segments(
+            new_segments,
+            existing=summary,
+            target_tokens=8_000,
+            hard_limit_tokens=12_000,
+        )
+
+    assert summary is not None
+    assert summary.generation == generations
+    assert summary.estimated_tokens <= 12_000
+    assert summary.source_segment_ids == tuple(item.segment_id for item in all_segments)
+    assert [item["content_hash"] for item in summary.source_segments] == [
+        item.content_hash for item in all_segments
+    ]
+    prompt = summary.to_prompt_dict()
+    assert prompt["source_segment_count"] == len(all_segments)
+    assert "source_segments" not in prompt
+    assert prompt["summary_budget"]["refinement"].startswith("semantic_journey_")
+    assert len(summary.shopping_journeys) == 1
+    assert len(summary.shopping_journeys[0]["focus"]) == generations * 20 - 1
+
+
+def test_l3_recompression_applies_newest_state_and_never_invents_facts() -> None:
+    placed = _summary_segment(
+        0,
+        user="预算=1000；改成商品 P-OLD",
+        tools=[
+            {
+                "tool": "order_status_tool",
+                "tool_call_id": "placed",
+                "args": {"order_id": "ORDER-7"},
+                "status": "placed",
+                "refs": ["ORDER-7"],
+            }
+        ],
+    )
+    canceled = _summary_segment(
+        1,
+        user="预算=600；换成商品 P-NEW，并排除红色",
+        tools=[
+            {
+                "tool": "order_status_tool",
+                "tool_call_id": "canceled",
+                "args": {"order_id": "ORDER-7"},
+                "status": "canceled",
+                "refs": ["ORDER-7"],
+            }
+        ],
+    )
+
+    old = summarize_frozen_segments([placed])
+    current = summarize_frozen_segments([canceled], existing=old)
+
+    assert current.user_requests == ()
+    assert current.shopping_journeys[0]["request"] == (
+        "预算=600；换成商品 P-NEW，并排除红色"
+    )
+    assert current.shopping_journeys[0]["budget_max_major"] == 600
+    assert len(current.tool_facts) == 1
+    assert current.tool_facts[0]["status"] == "canceled"
+    assert current.tool_facts[0]["tool_call_ids"] == ["placed", "canceled"]
+    serialized = json.dumps(current.to_prompt_dict(), ensure_ascii=False)
+    assert "P-OLD" not in serialized
+    assert "ORDER-FAKE" not in serialized
+    assert "session-context is authoritative" in serialized
+
+
+def test_l3_excludes_structured_output_prose_and_keeps_selection_in_journey() -> None:
+    repeated_prose = "这段最终回答不应作为工具事实重复进入摘要。" * 100
+    segment = _summary_segment(
+        0,
+        user="切换到露营折叠椅，只看 CrossShop，预算500元，找2款候选。",
+        tools=[
+            {
+                "tool": "product_search_tool",
+                "tool_call_id": "search-chair",
+                "args": {
+                    "normalized_query": "露营折叠椅",
+                    "category": "露营折叠椅",
+                    "platform": "crossshop_reference",
+                    "price_max_major": 500,
+                    "target_currency": "CNY",
+                },
+                "status": "success",
+                "refs": ["P-CHAIR-1", "P-CHAIR-2"],
+            },
+            {
+                "tool": "GenerateStructuredOutput",
+                "tool_call_id": "structured-chair",
+                "args": {
+                    "final_text": repeated_prose,
+                    "selected_products": [
+                        {"platform": "crossshop_reference", "product_id": "P-CHAIR-1"}
+                    ],
+                },
+                "status": "success",
+            },
+        ],
+        assistant="1. P-CHAIR-1 | 舒适露营折叠椅\n价格：399 CNY。",
+    )
+
+    summary = summarize_frozen_segments([segment])
+    serialized = json.dumps(summary.to_prompt_dict(), ensure_ascii=False)
+
+    assert "GenerateStructuredOutput" not in serialized
+    assert repeated_prose not in serialized
+    assert summary.omitted_counts["duplicate_structured_outputs"] == 1
+    assert summary.shopping_journeys[0]["product_refs"] == [
+        "P-CHAIR-1",
+        "P-CHAIR-2",
+    ]
+    assert summary.shopping_journeys[0]["anchor_product"] == {
+        "product_id": "P-CHAIR-1",
+        "title": "舒适露营折叠椅",
+        "price": "399",
+        "currency": "CNY",
+    }
+
+
+def test_l3_recompression_migrates_legacy_summary_without_raw_history_replay() -> None:
+    old_segment = _summary_segment(0, user="早期事实")
+    legacy = StageSummary(
+        source_segments=(
+            {
+                "segment_id": old_segment.segment_id,
+                "content_hash": old_segment.content_hash,
+            },
+        ),
+        user_requests=("早期事实",),
+        tool_facts=(),
+        assistant_outcomes=("早期结果",),
+        source_message_start=0,
+        source_message_end=2,
+        schema_version="stage-summary-v1",
+    )
+
+    migrated = summarize_frozen_segments(
+        [_summary_segment(1, user="近期事实")],
+        existing=legacy,
+    )
+
+    assert migrated.schema_version == "stage-summary-v4"
+    assert migrated.generation == 2
+    assert migrated.user_requests == ()
+    assert migrated.shopping_journeys[0]["request"] == "早期事实"
+    assert migrated.shopping_journeys[0]["focus"] == ["近期事实"]
+    assert migrated.source_segment_ids == (
+        "summary-source-0",
+        "summary-source-1",
+    )
+
+
+def test_legacy_schema_upgrade_rebuilds_exact_authored_turns_from_l2() -> None:
+    segments: list[FrozenSegment] = []
+    actual_index = 0
+    for authored_turn in range(1, 92):
+        if authored_turn == 62:
+            segments.append(
+                _summary_segment(
+                    actual_index,
+                    user="准确告诉我本次会话第 61 轮讨论了什么。",
+                )
+            )
+            actual_index += 1
+        user = "继续比较"
+        tools = None
+        if authored_turn == 1:
+            user = "先看通勤背包，预算300元。"
+        elif authored_turn == 86:
+            user = "最后看轻量冲锋衣，只看京东，预算800元。"
+        elif authored_turn == 91:
+            user = "切换到露营折叠椅，只看 CrossShop，预算500元。"
+            tools = [
+                {
+                    "tool": "product_search_tool",
+                    "args": {
+                        "normalized_query": "露营折叠椅",
+                        "platform": "crossshop_reference",
+                        "price_max_major": 500,
+                        "target_currency": "CNY",
+                    },
+                    "status": "success",
+                    "refs": ["P-CHAIR-1"],
+                }
+            ]
+        segments.append(_summary_segment(actual_index, user=user, tools=tools))
+        actual_index += 1
+
+    legacy = StageSummary(
+        source_segments=tuple(
+            {
+                "segment_id": item.segment_id,
+                "content_hash": item.content_hash,
+            }
+            for item in segments
+        ),
+        user_requests=(
+            "最后看轻量冲锋衣，只看京东，预算800元。",
+            "切换到露营折叠椅，只看 CrossShop，预算500元。",
+        ),
+        # This deliberately unrelated legacy fact must not be positionally
+        # attached to either sampled request during migration.
+        tool_facts=(
+            {
+                "tool": "product_search_tool",
+                "args": {
+                    "platform": "amazon",
+                    "price_max_major": 150,
+                    "target_currency": "USD",
+                },
+                "status": "success",
+            },
+        ),
+        assistant_outcomes=(),
+        shopping_journeys=(
+            {
+                "journey_id": "journey-corrupted-v3",
+                "request": "切换到露营折叠椅，只看 CrossShop，预算500元。",
+                "authored_turn_start": 2,
+                "platform": "amazon",
+                "budget_max_major": 150,
+            },
+        ),
+        schema_version="stage-summary-v3",
+    )
+
+    rebuild_sources, rebuild_existing = _summary_rebuild_inputs(
+        frozen=segments,
+        eligible=(),
+        existing=legacy,
+    )
+    rebuilt = summarize_frozen_segments(
+        rebuild_sources,
+        existing=rebuild_existing,
+    )
+
+    jacket = next(
+        item for item in rebuilt.shopping_journeys if "冲锋衣" in item["request"]
+    )
+    chair = next(
+        item for item in rebuilt.shopping_journeys if "折叠椅" in item["request"]
+    )
+    assert jacket["authored_turn_start"] == 86
+    assert jacket["platform"] == "jd"
+    assert jacket["budget_max_major"] == 800
+    assert chair["authored_turn_start"] == 91
+    assert chair["platform"] == "crossshop_reference"
+    assert chair["budget_max_major"] == 500
+    assert chair["currency"] == "CNY"
+    assert chair["product_refs"] == ["P-CHAIR-1"]
+    serialized = json.dumps(rebuilt.to_prompt_dict(), ensure_ascii=False)
+    assert "准确告诉我本次会话" not in serialized
+    assert '"platform": "amazon"' not in serialized
+    assert "authored_turn_start/end" in serialized
+
+
+def test_l3_semantic_summary_keeps_every_journey_core_without_sampling() -> None:
+    segments = [
+        _summary_segment(
+            index,
+            user=(f"切换到品类-{index}，只看 CrossShop，预算{100 + index}元，找2款候选。"),
+            tools=[
+                {
+                    "tool": "product_search_tool",
+                    "tool_call_id": f"search-{index}",
+                    "args": {
+                        "normalized_query": f"品类-{index}",
+                        "category": f"品类-{index}",
+                        "platform": "crossshop_reference",
+                        "price_max_major": 100 + index,
+                        "target_currency": "CNY",
+                    },
+                    "status": "success",
+                    "refs": [f"P-{index}"],
+                }
+            ],
+            assistant=(f"1. P-{index} | 商品-{index}\n价格：{100 + index} CNY。"),
+        )
+        for index in range(30)
+    ]
+
+    summary = summarize_frozen_segments(
+        segments,
+        target_tokens=8_000,
+        hard_limit_tokens=12_000,
+    )
+
+    assert len(summary.shopping_journeys) == 30
+    assert [item["category"] for item in summary.shopping_journeys] == [
+        f"品类-{index}" for index in range(30)
+    ]
+    assert [item["budget_max_major"] for item in summary.shopping_journeys] == [
+        100 + index for index in range(30)
+    ]
+    assert summary.omitted_counts == {"duplicate_structured_outputs": 0}
+    assert summary.estimated_tokens <= 8_000
+
+
+def test_l3_hard_limit_failure_is_explicit() -> None:
+    segments = [
+        _summary_segment(
+            index,
+            user=f"切换到不可丢弃品类-{index}，找2款候选。",
+            tools=[
+                {
+                    "tool": "product_search_tool",
+                    "tool_call_id": f"hard-{index}",
+                    "args": {"normalized_query": f"不可丢弃品类-{index}"},
+                    "status": "success",
+                    "refs": [f"P-{index}"],
+                }
+            ],
+        )
+        for index in range(20)
+    ]
+
+    with pytest.raises(RuntimeError, match="above hard limit"):
+        summarize_frozen_segments(
+            segments,
+            target_tokens=100,
+            hard_limit_tokens=150,
+        )
+
+
+@pytest.mark.parametrize("failure", ["generation", "schema", "hard_limit"])
+def test_l3_failure_keeps_previous_valid_summary_and_model_view(failure: str) -> None:
+    first = _summary_segment(0)
+    previous = summarize_frozen_segments([first])
+    messages = [
+        *_turn("第一轮", "一" * 2_000, call_id="call-1"),
+        *_turn("第二轮", "二" * 2_000, call_id="call-2"),
+        UserMsg(name="buyer", content="第三轮"),
+    ]
+    namespace = {
+        "frozen_segments": [first.to_dict()],
+        "freeze_cursor": 2,
+        "stage_summary": previous.to_dict(),
+        "session_context": L4Context(revision=2).to_dict(),
+    }
+
+    def broken_builder(*_args, **_kwargs):
+        if failure == "generation":
+            raise RuntimeError("offline generator failed")
+        if failure == "schema":
+            return {"schema_version": "invalid"}
+        return summarize_frozen_segments(
+            _args[0],
+            existing=_kwargs.get("existing"),
+            target_tokens=50,
+            hard_limit_tokens=60,
+        )
+
+    state, model_view = advance_context_state(
+        context_messages=messages,
+        namespace=namespace,
+        fixed_messages=[],
+        tool_schemas=[],
+        policy=ContextBudgetPolicy(
+            model_context_tokens=8_000,
+            soft_limit_tokens=1,
+            l3_keep_recent_frozen_segments=0,
+            summary_target_tokens=100,
+            summary_hard_limit_tokens=150,
+        ),
+        has_pending=False,
+        has_interrupt=False,
+        summary_builder=broken_builder,
+    )
+
+    assert state["context_compression"]["action"] == "l3_failed"
+    assert state["stage_summary"]["summary_hash"] == previous.summary_hash
+    visible_summaries = [
+        message.get_text_content() or ""
+        for message in model_view
+        if "<stage-summary>" in (message.get_text_content() or "")
+    ]
+    assert len(visible_summaries) == 1
+    assert previous.summary_hash in visible_summaries[0]
 
 
 def test_phase_f_preference_hints_do_not_break_multiturn_l2_l3() -> None:

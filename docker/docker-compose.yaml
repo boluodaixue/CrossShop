@@ -1,7 +1,7 @@
-# Globex 全栈编排：app + Qdrant + Redis + React 前端
+# CrossShop 全栈编排：app + Qdrant + Redis + React 前端
 #
 # 用法：
-#   cd globex-agent
+#   cd crossshop-agent
 #   export LLM_BASE_URL=<网关地址> LLM_API_KEY=<密钥>   # 敏感配置走环境变量，不落盘
 #   docker compose -f docker/docker-compose.yaml up -d --build
 #   前端 http://localhost:5173，后端 http://localhost:8000
@@ -37,9 +37,9 @@ services:
       RERANKER_BASE_URL: ${RERANKER_BASE_URL-}
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-globex_products}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-crossshop_products}
       # 四期：存储走 SQLite（落在 app-data 卷）；DATABASE_URL=file 退回 JSON 文件存储
-      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/globex.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/crossshop.db}
       # 四期：Redis 缓存（embedding 缓存 + 语义缓存 + 幂等键）；置空则全部缓存关闭
       REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
       SEMANTIC_CACHE_THRESHOLD: ${SEMANTIC_CACHE_THRESHOLD:-0.95}
@@ -86,9 +86,9 @@ services:
       RERANKER_BASE_URL: ${RERANKER_BASE_URL-}
       RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       QDRANT_URL: http://qdrant:6333
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-globex_products}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-crossshop_products}
       # 与 app 共一个 SQLite 文件（共享 app-data 卷）；WAL 已开，缓解双进程写锁竞争
-      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/globex.db}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/crossshop.db}
       REDIS_URL: ${REDIS_URL-redis://redis:6379/0}
       QUEUE_ENABLED: "1"
       SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-1}
@@ -134,7 +134,7 @@ services:
       dockerfile: infra/opensearch/Dockerfile
       args:
         OPENSEARCH_VERSION: "2.19.1"
-    image: globex/opensearch:2.19.1
+    image: crossshop/opensearch:2.19.1
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"

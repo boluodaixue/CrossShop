@@ -1,6 +1,6 @@
 """Build the source-aligned CategoryInsight audit dataset.
 
-The builder preserves the approved Taobao CategoryCard seed bytes, validates
+The builder preserves the approved ReferenceSeed CategoryCard seed bytes, validates
 all source contracts, and publishes the approved promotion inputs beside the
 legacy audit artifacts. Runtime Markdown is built separately by
 ``promote_category_insight_v1.py``.
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE_DIR = ROOT / "data" / "category_insight" / "sources"
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "processed" / "category-insight-v1"
 DEFAULT_H0_PRODUCTS = (
-    ROOT / "data" / "processed" / "catalogs-v2" / "taobao" / "products.jsonl"
+    ROOT / "data" / "processed" / "catalogs-v2" / "reference_seed" / "products.jsonl"
 )
 
 DATASET_VERSION = "category-insight-approved-input-v1"
@@ -334,12 +334,12 @@ def build(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     h0_products: Path = DEFAULT_H0_PRODUCTS,
 ) -> dict[str, Any]:
-    taobao_dir = source_dir / "taobao_zh"
-    legacy_cards_path = taobao_dir / "category_cards_taobao_zh.jsonl"
-    legacy_provenance_path = taobao_dir / "category_card_provenance_taobao_zh.jsonl"
-    taxonomy_path = taobao_dir / "category_taxonomy_taobao_zh.json"
-    legacy_manifest_path = taobao_dir / "category_card_manifest_taobao_zh.json"
-    legacy_facts_path = taobao_dir / "category_item_facts_taobao_zh.jsonl"
+    reference_seed_dir = source_dir / "reference_seed_zh"
+    legacy_cards_path = reference_seed_dir / "category_cards_reference_seed_zh.jsonl"
+    legacy_provenance_path = reference_seed_dir / "category_card_provenance_reference_seed_zh.jsonl"
+    taxonomy_path = reference_seed_dir / "category_taxonomy_reference_seed_zh.json"
+    legacy_manifest_path = reference_seed_dir / "category_card_manifest_reference_seed_zh.json"
+    legacy_facts_path = reference_seed_dir / "category_item_facts_reference_seed_zh.jsonl"
     candidates_path = source_dir / "knowledge_candidates.jsonl"
 
     legacy_cards = _read_jsonl(legacy_cards_path)
@@ -411,7 +411,7 @@ def build(
         ),
         "migration_source": {
             "artifact_commit": "e6852d0886bbdf42d16fe7adedb35fca8fad97d8",
-            "repository": "D:/PycharmProjects/GlobexAgentLearning",
+            "repository": "D:/PycharmProjects/CrossShopAgentLearning",
         },
         "outputs": {
             "knowledge_candidates": _file_entry(output_candidates, len(candidates)),

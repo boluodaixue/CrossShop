@@ -167,7 +167,7 @@ async def run_case(client: httpx.AsyncClient, case: dict, ground_truth: str) -> 
 
 def render_report(results: list[dict]) -> str:
     lines = [
-        f"# Globex 评测回归报告（{datetime.now().strftime('%Y-%m-%d %H:%M')}）",
+        f"# CrossShop 评测回归报告（{datetime.now().strftime('%Y-%m-%d %H:%M')}）",
         "",
         f"总览：{sum(1 for r in results if r['verdict'] == 'PASS')}/{len(results)} PASS，"
         f"平均分 {sum(r['score'] for r in results) / len(results):.3f}",

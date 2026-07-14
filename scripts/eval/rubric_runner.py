@@ -1,4 +1,4 @@
-"""Run Rubric v3 cases against the real in-process Globex composition.
+"""Run Rubric v3 cases against the real in-process CrossShop composition.
 
 The runner subscribes to the same local EventBus used by the application and
 installs a privacy-safe local OTel exporter before the container is built.
@@ -36,14 +36,17 @@ from scripts.eval.rubric_contract import (
     EvaluationEvidence,
     PreferenceStateEvidence,
     RubricCaseSpec,
+    RuntimeSignalEvidence,
     TurnEvidence,
 )
+from scripts.eval.rubric_context_artifact import load_context_compression_artifact
 from scripts.eval.rubric_evidence import (
     build_evaluation_evidence,
     build_structured_state_evidence,
     build_turn_evidence,
     redact_text,
 )
+from scripts.eval.rubric_fault_injection import FAULT_PROFILES, RubricFaultInjection
 from scripts.eval.rubric_ground_truth import (
     ProductFactWindow,
     build_product_fact_window,
@@ -68,6 +71,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CASES_PATH = PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml"
 DEFAULT_ARTIFACT_ROOT = PROJECT_ROOT / "artifacts" / "rubric"
 _JUDGE_MAX_ATTEMPTS = 2
+_DEPENDENCY_ORDER_ID_TOKEN = "{{dependency.latest_order_id}}"
 
 
 class EvaluationRunError(RuntimeError):
@@ -153,10 +157,10 @@ def select_cases(
 
 def _turn_spans(collector: LocalSpanCollector, offset: int) -> list[Any]:
     spans = collector.snapshot()[offset:]
-    roots = [span for span in spans if span.name == "globex.shopping_intent"]
+    roots = [span for span in spans if span.name == "crossshop.shopping_intent"]
     if len(roots) != 1:
         raise RuntimeError(
-            f"expected one globex.shopping_intent span, observed {len(roots)}",
+            f"expected one crossshop.shopping_intent span, observed {len(roots)}",
         )
     trace_id = roots[0].context.trace_id
     selected = [span for span in spans if span.context.trace_id == trace_id]
@@ -247,7 +251,7 @@ async def _context_state(
     session_id: str,
 ) -> tuple[dict[str, Any], int]:
     agent = await container.orchestrator._sessions.get_or_create(session_id)  # noqa: SLF001
-    namespace = agent.state.middle_context.get("globex_context_v1", {})
+    namespace = agent.state.middle_context.get("crossshop_context_v1", {})
     if not isinstance(namespace, dict):
         return {}, len(agent.state.context)
     return namespace, len(agent.state.context)
@@ -296,16 +300,90 @@ async def evaluate_case(
     judge_model: str,
     buyer_id: str,
     prior_context: str,
+    context_compression_artifact_dir: Path | None = None,
+    repeated_context_compression_artifact_dir: Path | None = None,
 ) -> CompletedCaseArtifacts:
     try:
-        evidence = await collect_case_evidence(
-            container,
-            collector,
-            case,
-            buyer_id=buyer_id,
-        )
+        if case.execution_profile in {
+            "context-compression-artifact",
+            "context-repeated-compression-artifact",
+        }:
+            artifact_dir = (
+                repeated_context_compression_artifact_dir
+                if case.execution_profile == "context-repeated-compression-artifact"
+                else context_compression_artifact_dir
+            )
+            if artifact_dir is None:
+                raise ValueError(
+                    "the matching context compression artifact is required",
+                )
+            evidence = load_context_compression_artifact(
+                artifact_dir,
+                case=case,
+                require_repeated=(
+                    case.execution_profile == "context-repeated-compression-artifact"
+                ),
+            ).evidence
+        elif case.execution_profile in FAULT_PROFILES:
+            with RubricFaultInjection(
+                container,
+                case.execution_profile,
+            ) as injection:
+                evidence = await collect_case_evidence(
+                    container,
+                    collector,
+                    case,
+                    buyer_id=buyer_id,
+                )
+                first = evidence.turns[0]
+                signal_order = (
+                    max(
+                        (item.order for item in first.runtime_signals),
+                        default=0,
+                    )
+                    + 1
+                )
+                first = first.model_copy(
+                    update={
+                        "runtime_signals": [
+                            *first.runtime_signals,
+                            RuntimeSignalEvidence(
+                                order=signal_order,
+                                signal="harness",
+                                details=injection.details(),
+                            ),
+                        ],
+                    },
+                )
+                evidence = evidence.model_copy(
+                    update={"turns": [first, *evidence.turns[1:]]},
+                )
+        else:
+            evidence = await collect_case_evidence(
+                container,
+                collector,
+                case,
+                buyer_id=buyer_id,
+            )
     except Exception as err:
-        raise EvaluationRunError("evidence_collection", err) from err
+        phase = (
+            "artifact_validation"
+            if case.execution_profile
+            in {
+                "context-compression-artifact",
+                "context-repeated-compression-artifact",
+            }
+            else "evidence_collection"
+        )
+        raise EvaluationRunError(phase, err) from err
+    try:
+        validate_case_execution_contract(case, evidence)
+    except Exception as err:
+        raise EvaluationRunError(
+            "evidence_collection",
+            err,
+            evidence=evidence,
+        ) from err
     try:
         product_ids = collect_case_product_ids(
             case.ground_truth_product_ids,
@@ -497,6 +575,63 @@ def build_dependency_context(
     return redact_text(json.dumps(rows, ensure_ascii=False))
 
 
+def bind_dependency_inputs(
+    case: RubricCaseSpec,
+    dependencies: list[CompletedCaseArtifacts],
+) -> RubricCaseSpec:
+    """Resolve explicit runtime handles without injecting dependency chat state."""
+
+    if not any(_DEPENDENCY_ORDER_ID_TOKEN in query for query in case.queries):
+        return case
+    order_ids: list[str] = []
+    for artifacts in dependencies:
+        for turn in artifacts.evidence.turns:
+            for call in turn.tool_calls:
+                order = call.result_summary.get("order")
+                order_id = order.get("order_id") if isinstance(order, dict) else None
+                if (
+                    call.tool == "create_order_tool"
+                    and call.status == "success"
+                    and isinstance(order_id, str)
+                    and order_id
+                ):
+                    order_ids.append(order_id)
+    if not order_ids:
+        raise ValueError(
+            f"case {case.id} requires a successful dependency order id",
+        )
+    latest_order_id = order_ids[-1]
+    return case.model_copy(
+        update={
+            "queries": [
+                query.replace(_DEPENDENCY_ORDER_ID_TOKEN, latest_order_id)
+                for query in case.queries
+            ],
+        },
+    )
+
+
+def validate_case_execution_contract(
+    case: RubricCaseSpec,
+    evidence: EvaluationEvidence,
+) -> None:
+    """Reject an eval that did not mechanically exercise its authored boundary."""
+
+    if case.id != "order-ownership-idempotency-write-failure":
+        return
+    first_turn = evidence.turns[0]
+    calls = [call for call in first_turn.tool_calls if call.tool == "query_order_tool"]
+    if len(calls) != 1:
+        raise ValueError(
+            "order ownership case must invoke query_order_tool exactly once",
+        )
+    order_id = calls[0].arguments.get("order_id")
+    if not isinstance(order_id, str) or order_id not in first_turn.user_input:
+        raise ValueError(
+            "order ownership case queried an id other than the bound dependency order",
+        )
+
+
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -546,6 +681,16 @@ def build_run_manifest(
     )
     category_manifest = category_release / "manifest.json"
     category_cards = category_release / "approved_cards.jsonl"
+    # Keep legacy release hashes for provenance, but distinguish the active backend.
+    knowledge_backend = getattr(settings, "category_kb_backend", "qdrant")
+    knowledge_expected_hash = None
+    if knowledge_backend == "opensearch":
+        from app.infrastructure.rag.opensearch_knowledge import (
+            corpus_hash,
+            load_documents,
+            make_chunks,
+        )
+        knowledge_expected_hash = corpus_hash(make_chunks(load_documents(PROJECT_ROOT)))
     policy_json = json.dumps(
         evaluation_policy.model_dump(mode="json"),
         ensure_ascii=False,
@@ -580,7 +725,15 @@ def build_run_manifest(
         "product_embedding_dim": settings.product_embedding_dim,
         "reranker_model": settings.reranker_model or None,
         "reranker_configured": bool(settings.reranker_base_url),
-        "category_collection": settings.category_kb_collection,
+        "category_collection": (
+            settings.category_kb_collection if knowledge_backend == "qdrant" else None
+        ),
+        "knowledge_backend": knowledge_backend,
+        "knowledge_index_requested": (
+            settings.category_knowledge_index if knowledge_backend == "opensearch" else None
+        ),
+        "knowledge_expected_corpus_sha256": knowledge_expected_hash,
+        "knowledge_actual_index_note": "Actual physical index is recorded in knowledge tool provenance",
         "qdrant_mode": "remote" if settings.qdrant_url else "embedded",
         "database_mode": (
             "json_file" if settings.database_url == "file" else "configured_database"
@@ -662,15 +815,29 @@ async def run(args: argparse.Namespace) -> int:
                     if item.strip()
                 )
                 try:
+                    execution_case = bind_dependency_inputs(
+                        case,
+                        dependency_artifacts,
+                    )
                     artifacts = await evaluate_case(
                         container,
                         collector,
                         client,
                         settings,
-                        case,
+                        execution_case,
                         judge_model=judge_model,
                         buyer_id=buyer_id,
                         prior_context=prior_context,
+                        context_compression_artifact_dir=(
+                            Path(args.context_compression_artifact)
+                            if args.context_compression_artifact
+                            else None
+                        ),
+                        repeated_context_compression_artifact_dir=(
+                            Path(args.repeated_context_compression_artifact)
+                            if args.repeated_context_compression_artifact
+                            else None
+                        ),
                     )
                 except Exception as err:  # keep batch evidence; never fake a score
                     cause = err.cause if isinstance(err, EvaluationRunError) else err
@@ -684,6 +851,7 @@ async def run(args: argparse.Namespace) -> int:
                         flush=True,
                     )
                     if phase in {
+                        "artifact_validation",
                         "evidence_collection",
                         "ground_truth",
                         "judge_protocol",
@@ -724,12 +892,28 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Globex Rubric v3 evaluation")
+    parser = argparse.ArgumentParser(description="CrossShop Rubric v3 evaluation")
     parser.add_argument("--cases", default=str(DEFAULT_CASES_PATH))
     parser.add_argument("--only", action="append", default=[])
     parser.add_argument("--judge-model", default="")
     parser.add_argument("--artifact-root", default=str(DEFAULT_ARTIFACT_ROOT))
     parser.add_argument("--allow-semantic-cache", action="store_true")
+    parser.add_argument(
+        "--context-compression-artifact",
+        default="",
+        help=(
+            "validated resume-clone artifact directory used by the natural "
+            "context-compression Rubric case"
+        ),
+    )
+    parser.add_argument(
+        "--repeated-context-compression-artifact",
+        default="",
+        help=(
+            "validated default-threshold artifact containing at least two "
+            "natural context.compressed transitions"
+        ),
+    )
     return parser
 
 

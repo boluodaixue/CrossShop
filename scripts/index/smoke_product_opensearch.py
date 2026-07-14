@@ -28,8 +28,8 @@ from scripts.index.product_opensearch_common import (
 )
 
 QUERIES = {
-    "globex_reference": "降噪耳机",
-    "taobao": "轻便旅行背包",
+    "crossshop_reference": "降噪耳机",
+    "reference_seed": "轻便旅行背包",
     "amazon": "noise cancelling headphones",
 }
 

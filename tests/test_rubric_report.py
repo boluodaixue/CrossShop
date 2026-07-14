@@ -363,7 +363,7 @@ def test_report_escapes_judge_markdown_structure() -> None:
     assert "质量 \\| 注入" in report
 
 
-def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
+def test_coverage_counts_unique_points_and_v3_suite_closes_authored_gap() -> None:
     suite = load_case_suite(PROJECT_ROOT / "eval" / "rubric_cases_v3.yaml")
     coverage = summarize_coverage(
         suite.cases,
@@ -372,7 +372,7 @@ def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
         policy=suite.evaluation_policy,
     )
 
-    assert coverage.designed_score == 82.643
+    assert coverage.designed_score == 100.0
     assert coverage.executed_score == 0.0
     short_multi = next(
         item
@@ -386,14 +386,7 @@ def test_coverage_counts_unique_points_and_v3_suite_has_expected_gap() -> None:
         for family in coverage.families
         for point in family.missing_points
     }
-    assert missing == {
-        ("long-context-memory", "summary-freeze-recovery"),
-        ("trade-order", "ownership-idempotency-failure"),
-        ("exception-degradation", "opensearch-unavailable"),
-        ("exception-degradation", "repository-inconsistency"),
-        ("exception-degradation", "model-or-embedding-timeout"),
-        ("exception-degradation", "reranker-or-platform-fallback"),
-    }
+    assert missing == set()
 
 
 def test_duplicate_cases_do_not_increase_coverage_for_the_same_point() -> None:

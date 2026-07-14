@@ -26,6 +26,7 @@ class EvaluationFailure(BaseModel):
     phase: Literal[
         "case_contract",
         "dependency",
+        "artifact_validation",
         "intent_execution",
         "evidence_collection",
         "ground_truth",
@@ -445,7 +446,7 @@ def render_markdown_report(
     }[quality.p0_gate_status]
     weights = policy.quality_weights
     lines = [
-        f"# Globex Rubric 评测报告（{generated_at:%Y-%m-%d %H:%M}）",
+        f"# CrossShop Rubric 评测报告（{generated_at:%Y-%m-%d %H:%M}）",
         "",
         (
             f"评分协议：`{policy.quality_policy_id}`；"

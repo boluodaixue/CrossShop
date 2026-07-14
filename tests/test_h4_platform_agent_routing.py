@@ -68,9 +68,9 @@ def _text(chunk) -> str:
 
 async def test_one_product_search_tool_selects_platform_outside_spec() -> None:
     reference = _CapturingUseCase("reference")
-    taobao = _CapturingUseCase("taobao")
+    reference_seed = _CapturingUseCase("reference_seed")
     tool = build_product_search_tool(
-        {"globex_reference": reference, "taobao": taobao},  # type: ignore[arg-type]
+        {"crossshop_reference": reference, "reference_seed": reference_seed},  # type: ignore[arg-type]
         TradeEventBus(),
     )
 
@@ -78,16 +78,16 @@ async def test_one_product_search_tool_selects_platform_outside_spec() -> None:
     try:
         response = await tool(
             normalized_query="轻便旅行背包",
-            platform="taobao",
+            platform="reference_seed",
             ship_to="CN",
         )
     finally:
         ShoppingContext.reset(token)
 
-    assert json.loads(_text(response))["hits"] == [{"product_id": "taobao"}]
+    assert json.loads(_text(response))["hits"] == [{"product_id": "reference_seed"}]
     assert reference.specs == []
-    assert len(taobao.specs) == 1
-    assert [field.name for field in fields(taobao.specs[0])] == [
+    assert len(reference_seed.specs) == 1
+    assert [field.name for field in fields(reference_seed.specs[0])] == [
         "normalized_query",
         "category",
         "ship_to",
@@ -151,7 +151,7 @@ async def test_multi_platform_tool_rejects_missing_or_invalid_scope() -> None:
     assert "site_locale 仅可用于 amazon" in _text(
         await tool(
             normalized_query="旅行用品",
-            platform="taobao",
+            platform="reference_seed",
             site_locale="jp",
         ),
     )
@@ -165,8 +165,8 @@ async def test_bound_search_tool_cannot_switch_platform_or_site() -> None:
         fixed_site_locale="jp",
     )
 
-    assert "不能切换为 taobao" in _text(
-        await tool(normalized_query="旅行用品", platform="taobao"),
+    assert "不能切换为 reference_seed" in _text(
+        await tool(normalized_query="旅行用品", platform="reference_seed"),
     )
     assert "不能切换为 us" in _text(
         await tool(normalized_query="旅行用品", site_locale="us"),
@@ -191,7 +191,7 @@ async def test_dispatch_requires_and_forwards_one_fixed_search_scope() -> None:
     invalid_trade = await tool(
         subagent_type="trade_agent",
         demands="查询订单",
-        platform="taobao",
+        platform="reference_seed",
     )
     assert "trade_agent 不接受" in _text(invalid_trade)
     assert trade.scopes == []
@@ -218,8 +218,8 @@ def test_prompts_freeze_single_tool_dispatch_and_one_rewrite() -> None:
     assert "所有其他参数必须完全一致" in search
     assert "不得改变原始 hits 数量门槛" in search
     assert "top_k 默认传 5且只允许 1..5" in search
-    assert "product_search_globex_reference_tool" not in main
-    assert "product_search_taobao_tool" not in main
+    assert "product_search_crossshop_reference_tool" not in main
+    assert "product_search_reference_seed_tool" not in main
     assert "product_search_amazon_tool" not in main
 
 

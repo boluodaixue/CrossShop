@@ -22,16 +22,16 @@ DEFAULT_LEGACY_CARDS = (
     / "data"
     / "category_insight"
     / "sources"
-    / "taobao_zh"
-    / "category_cards_taobao_zh.jsonl"
+    / "reference_seed_zh"
+    / "category_cards_reference_seed_zh.jsonl"
 )
 DEFAULT_LEGACY_PROVENANCE = (
     ROOT
     / "data"
     / "category_insight"
     / "sources"
-    / "taobao_zh"
-    / "category_card_provenance_taobao_zh.jsonl"
+    / "reference_seed_zh"
+    / "category_card_provenance_reference_seed_zh.jsonl"
 )
 DEFAULT_RELEASE_DIR = (
     ROOT / "data" / "category_insight" / "releases" / "category-insight-v1"
@@ -92,7 +92,7 @@ FORBIDDEN_RUNTIME_TERMS = (
     "审核",
     "置信度",
     "尚未外部验证",
-    "当前淘宝目录",
+    "当前示例平台目录",
     "已删除原文",
 )
 
@@ -220,14 +220,14 @@ VERIFIED_EVIDENCE: dict[str, list[str]] = {
 }
 
 APPLICABILITY_SCOPES: dict[str, str] = {
-    "kc-latex-pillow-selection-guide-01": "旧淘宝中文目录的材质、功能和适用人群属性维度；不是市场分布或医疗证据。",
-    "kc-children-study-chair-selection-guide-01": "旧淘宝中文目录的调节、材质和适用年龄属性维度；不是人体工学或安全认证。",
-    "kc-tablet-stand-selection-guide-01": "旧淘宝中文目录的便携、调节和材质属性维度；具体承重和兼容性另核。",
-    "kc-portable-power-station-selection-guide-01": "旧淘宝中文目录的场景、容量功率和电池类型属性维度；具体型号规格另核。",
-    "kc-phone-live-fill-light-selection-guide-01": "旧淘宝中文目录的使用方式、功能和形态属性维度；不是光学性能测试。",
-    "kc-car-ambient-light-selection-guide-01": "旧淘宝中文目录的灯光、安装和车型属性维度；道路合规、安装安全和车型兼容另核。",
-    "kc-badminton-bag-selection-guide-01": "旧淘宝中文目录的容量、背负方式和品牌属性维度；不是市场份额或真伪证明。",
-    "kc-neck-massager-selection-guide-01": "旧淘宝中文目录的按摩方式、功能和部位属性维度；不是医疗证据。",
+    "kc-latex-pillow-selection-guide-01": "旧示例平台中文目录的材质、功能和适用人群属性维度；不是市场分布或医疗证据。",
+    "kc-children-study-chair-selection-guide-01": "旧示例平台中文目录的调节、材质和适用年龄属性维度；不是人体工学或安全认证。",
+    "kc-tablet-stand-selection-guide-01": "旧示例平台中文目录的便携、调节和材质属性维度；具体承重和兼容性另核。",
+    "kc-portable-power-station-selection-guide-01": "旧示例平台中文目录的场景、容量功率和电池类型属性维度；具体型号规格另核。",
+    "kc-phone-live-fill-light-selection-guide-01": "旧示例平台中文目录的使用方式、功能和形态属性维度；不是光学性能测试。",
+    "kc-car-ambient-light-selection-guide-01": "旧示例平台中文目录的灯光、安装和车型属性维度；道路合规、安装安全和车型兼容另核。",
+    "kc-badminton-bag-selection-guide-01": "旧示例平台中文目录的容量、背负方式和品牌属性维度；不是市场份额或真伪证明。",
+    "kc-neck-massager-selection-guide-01": "旧示例平台中文目录的按摩方式、功能和部位属性维度；不是医疗证据。",
     "kc-travel-gear-selection-guide-01": "国际航空随身行李的一般选购提示；具体航司、舱等、机型和行程规则优先。",
     "kc-travel-gear-pitfall-01": "国际航空随身行李尺寸提示；商品英寸标称不等同于航司接受资格。",
     "kc-outdoor-sports-selection-guide-01": "ANSI/PLATO FL 1-2025 覆盖的手持和便携照明性能声明。",
@@ -620,7 +620,7 @@ def build(
         },
         "release_version": RELEASE_VERSION,
         "runtime": {
-            "collection_default": "globex_category_kb_v1",
+            "collection_default": "crossshop_category_kb_v1",
             "knowledge_directory": "knowledge/category-insight-v1",
             "markdown_contract": [
                 "category",

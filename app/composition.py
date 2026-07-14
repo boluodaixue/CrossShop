@@ -39,6 +39,10 @@ from app.infrastructure.cache.redis_cache import RedisCache
 from app.infrastructure.cache.semantic_cache import SemanticCache
 from app.infrastructure.embedding.openai_embedding_client import OpenAIEmbeddingClient
 from app.infrastructure.eventbus import TradeEventBus
+from app.infrastructure.evaluation_controls import (
+    FULL_HARNESS_CONTROLS,
+    EvaluationHarnessControls,
+)
 from app.infrastructure.persistence.in_memory_repositories import (
     InMemoryOrderRepository,
 )
@@ -66,6 +70,7 @@ from app.infrastructure.rag.category_knowledge import (
     bootstrap_category_knowledge,
     build_category_knowledge_base,
 )
+from app.infrastructure.rag.opensearch_knowledge import OpenSearchKnowledgeBase
 from app.infrastructure.rerank.http_reranker import HttpReranker
 from app.infrastructure.resilience import CircuitBreakerRegistry
 from app.infrastructure.settings import Settings, load_settings
@@ -83,7 +88,7 @@ def _prompt_fingerprint() -> str:
     prompt 一改，旧缓存的回复就不再代表当前 Agent 行为，必须作废。
     读不到文件时返回固定值，不因此阻断启动。
     """
-    path = Path(__file__).resolve().parent / "application" / "prompts" / "globex.yml"
+    path = Path(__file__).resolve().parent / "application" / "prompts" / "crossshop.yml"
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()[:8]
     except OSError:
@@ -148,6 +153,8 @@ class Container:
 
     async def shutdown(self) -> None:
         try:
+            if isinstance(self.knowledge_base, OpenSearchKnowledgeBase):
+                await self.knowledge_base.close()
             for index in self.product_indexes.values():
                 await index.close()
             await self.cache.close()
@@ -158,8 +165,14 @@ class Container:
             await shutdown_tracing()
 
 
-async def build_container() -> Container:
-    settings = load_settings()
+async def build_container(
+    *,
+    settings_override: Settings | None = None,
+    evaluation_controls: EvaluationHarnessControls = FULL_HARNESS_CONTROLS,
+) -> Container:
+    """Build production wiring, with explicit overrides reserved for evaluators."""
+
+    settings = settings_override or load_settings()
     if settings.product_embedding_dim != VECTOR_DIMENSION:
         raise ValueError(
             "Product BGE-M3 embedding dimension must be "
@@ -198,7 +211,7 @@ async def build_container() -> Container:
         if cache.enabled
         else raw_embedder
     )
-    # Product Query Tower 使用与离线 Item Tower 一致的 BGE-M3；品类 RAG 与语义缓存
+    # Product Query Tower 与知识 v2 复用 BGE-M3 服务但使用独立索引；语义缓存
     # 继续使用原 EMBEDDING_*。偏好相关性默认物理复用商品 BGE，但保持独立客户端和
     # cache namespace，避免污染 Product Query 或迁移既有 Qdrant collection。
     product_embedding_settings = replace(
@@ -325,6 +338,7 @@ async def build_container() -> Container:
         knowledge_base,
         circuit_registry,
         throttle,
+        evaluation_controls,
     )
     trade_factory = TradeAgentFactory(
         settings,
@@ -334,6 +348,7 @@ async def build_container() -> Container:
         bus,
         circuit_registry,
         throttle,
+        evaluation_controls,
     )
     # H5：偏好只由 Main Agent 编排入口读取；SearchAgent 始终保持中性检索。
     # 相关 like Top-K 使用逻辑独立的偏好 BGE 客户端。它可以物理复用商品
@@ -352,6 +367,7 @@ async def build_container() -> Container:
         throttle,
         sequencing=sequencing_tracker,
         loop_detector=loop_detector,
+        evaluation_controls=evaluation_controls,
     )
     sessions = SessionRegistry(main_factory, session_store)
     orchestrator = MainAgentOrchestrator(

@@ -3,7 +3,7 @@
 This is a local development and acceptance service, not an application-layer
 adapter.  ``torch`` and ``transformers`` are intentionally imported lazily so
 they remain dependencies of the dedicated model environment rather than the
-main Globex application.
+main CrossShop application.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ except ImportError:  # The dedicated Python 3.9 model environment uses stdlib HT
     HTTPException = None  # type: ignore[assignment,misc]
     Request = Any  # type: ignore[assignment,misc]
 
-LOGGER = logging.getLogger("globex.bge_reranker")
+LOGGER = logging.getLogger("crossshop.bge_reranker")
 
 DEFAULT_MODEL_ID = "BAAI/bge-reranker-v2-m3"
 DEFAULT_MODEL_PATH = Path(r"D:\models\bge-reranker-v2-m3")
@@ -256,7 +256,7 @@ def create_app(
         LOGGER.info("reranker ready: %s", service.health())
         yield
 
-    application = FastAPI(title="Globex BGE Reranker", lifespan=lifespan)
+    application = FastAPI(title="CrossShop BGE Reranker", lifespan=lifespan)
 
     def get_service(request: Request) -> RerankerService:
         return request.app.state.reranker_service
@@ -299,7 +299,7 @@ def _serve_stdlib(config: ServiceConfig, port: int) -> None:
     LOGGER.info("reranker ready: %s", service.health())
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "GlobexBgeReranker/1.0"
+        server_version = "CrossShopBgeReranker/1.0"
 
         def _write_json(self, status: int, payload: object) -> None:
             body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode(

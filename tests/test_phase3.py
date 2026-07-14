@@ -263,12 +263,12 @@ class TestToolResilience:
             raise httpx.ConnectError("connection reset", request=request)
 
         tool = FunctionTool(product_search_tool, middlewares=[middleware])
-        result = await tool(platform="taobao")
+        result = await tool(platform="reference_seed")
         if hasattr(result, "__aiter__"):
             _ = [chunk async for chunk in result]
 
-        assert registry.status("product_search_tool:taobao") == "open"
-        assert registry.status("product_search_tool:globex_reference") == "closed"
+        assert registry.status("product_search_tool:reference_seed") == "open"
+        assert registry.status("product_search_tool:crossshop_reference") == "closed"
         assert registry.status("product_search_tool:amazon") == "closed"
 
     def test_fixed_search_agent_scope_and_amazon_locales_share_platform_key(self):
@@ -299,8 +299,8 @@ class TestToolResilience:
             )
 
         tool = FunctionTool(product_search_tool, middlewares=[middleware])
-        result = await tool(platform="taobao")
+        result = await tool(platform="reference_seed")
         if hasattr(result, "__aiter__"):
             _ = [chunk async for chunk in result]
 
-        assert registry.status("product_search_tool:taobao") == "closed"
+        assert registry.status("product_search_tool:reference_seed") == "closed"

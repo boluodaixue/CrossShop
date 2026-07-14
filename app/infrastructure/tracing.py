@@ -359,7 +359,7 @@ def setup_tracing(settings: Settings, *, exporter: Any | None = None) -> None:
             capture_output=settings.langfuse_capture_output,
         )
         provider = TracerProvider(
-            resource=Resource.create({"service.name": "globex-agent"}),
+            resource=Resource.create({"service.name": "crossshop-agent"}),
             sampler=ParentBased(TraceIdRatioBased(settings.langfuse_sample_rate)),
         )
         processor = (
@@ -423,7 +423,7 @@ def trace_span(name: str, attributes: Mapping[str, Any] | None = None):
 
     from opentelemetry import trace
 
-    tracer = trace.get_tracer("globex-agent")
+    tracer = trace.get_tracer("crossshop-agent")
     with tracer.start_as_current_span(name, attributes=dict(attributes or {})) as span:
         yield span
 
@@ -433,13 +433,13 @@ def trace_intent(*, session_id: str, buyer_id: str, locale: str, currency: str):
     """Create the root span for exactly one shopping intent."""
 
     with trace_span(
-        "globex.shopping_intent",
+        "crossshop.shopping_intent",
         {
-            "globex.request.id": f"req-{uuid.uuid4().hex}",
-            "globex.session.hash": _digest(session_id),
-            "globex.buyer.hash": _digest(buyer_id),
-            "globex.locale": locale,
-            "globex.currency": currency,
+            "crossshop.request.id": f"req-{uuid.uuid4().hex}",
+            "crossshop.session.hash": _digest(session_id),
+            "crossshop.buyer.hash": _digest(buyer_id),
+            "crossshop.locale": locale,
+            "crossshop.currency": currency,
         },
     ) as span:
         yield span
@@ -472,14 +472,14 @@ def _record_business_event(event_type: str, payload: Any) -> None:
         return
     source = payload if isinstance(payload, Mapping) else {}
     attributes = {
-        f"globex.{key}": source[key]
+        f"crossshop.{key}": source[key]
         for key in _BUSINESS_EVENT_FIELDS
         if key in source and isinstance(source[key], (str, bool, int, float))
     }
     if event_type == "error" or "error" in source:
-        attributes["globex.error"] = True
+        attributes["crossshop.error"] = True
     if event_type == "final.result":
         cards = source.get("displayed_products")
         if isinstance(cards, list):
-            attributes["globex.recommended_count"] = len(cards)
-    span.add_event(f"globex.{event_type}", attributes=attributes)
+            attributes["crossshop.recommended_count"] = len(cards)
+    span.add_event(f"crossshop.{event_type}", attributes=attributes)
