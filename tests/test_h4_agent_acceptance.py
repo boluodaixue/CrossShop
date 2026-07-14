@@ -497,8 +497,8 @@ def test_terminal_json_output_is_safe_on_windows_gbk() -> None:
 
 
 @pytest.mark.skipif(
-    os.getenv("GLOBEX_RUN_H4_REAL_INFRA") != "1",
-    reason="set GLOBEX_RUN_H4_REAL_INFRA=1 with local model services",
+    os.getenv("CROSSSHOP_RUN_H4_REAL_INFRA") != "1",
+    reason="set CROSSSHOP_RUN_H4_REAL_INFRA=1 with local model services",
 )
 def test_h4_real_composition_three_platforms_and_amazon_jp() -> None:
     async def _run() -> dict:

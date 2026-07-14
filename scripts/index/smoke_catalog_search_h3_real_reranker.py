@@ -250,7 +250,7 @@ def _render_readme(report: dict[str, Any], args: argparse.Namespace) -> str:
 opt-in 测试命令：
 
 ```powershell
-$env:GLOBEX_RUN_H3_REAL_RERANKER_INTEGRATION = "1"
+$env:CROSSSHOP_RUN_H3_REAL_RERANKER_INTEGRATION = "1"
 $env:RERANKER_BASE_URL = "{args.reranker_url.rstrip("/")}"
 $env:RERANKER_MODEL = "{args.reranker_model}"
 .venv\\Scripts\\python.exe -m pytest tests/test_h3_real_reranker_integration.py -q
@@ -473,7 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--opensearch-endpoint",
-        default=os.getenv("GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
+        default=os.getenv("CROSSSHOP_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
     )
     parser.add_argument(
         "--reranker-url",

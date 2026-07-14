@@ -368,7 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--endpoint",
-        default=os.getenv("GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
+        default=os.getenv("CROSSSHOP_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
     )
     parser.add_argument(
         "--catalog-root",

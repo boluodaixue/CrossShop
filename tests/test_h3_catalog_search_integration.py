@@ -13,15 +13,15 @@ from scripts.index.smoke_catalog_search_h3 import PLATFORM_SPECS, run
 
 
 def test_real_h3_catalog_search_composition(tmp_path: Path) -> None:
-    if os.getenv("GLOBEX_RUN_H3_OPENSEARCH_INTEGRATION") != "1":
-        pytest.skip("set GLOBEX_RUN_H3_OPENSEARCH_INTEGRATION=1 to run")
+    if os.getenv("CROSSSHOP_RUN_H3_OPENSEARCH_INTEGRATION") != "1":
+        pytest.skip("set CROSSSHOP_RUN_H3_OPENSEARCH_INTEGRATION=1 to run")
 
     root = Path(__file__).resolve().parents[1]
     report = asyncio.run(
         run(
             argparse.Namespace(
                 endpoint=os.getenv(
-                    "GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"
+                    "CROSSSHOP_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"
                 ),
                 catalog_root=root / "data" / "processed" / "catalogs-v2",
                 h2_artifact_root=root / "artifacts" / "h2-opensearch",

@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 SOURCE_DIR = ROOT / "data" / "category_insight" / "sources"
-TAOBAO_SOURCE_DIR = SOURCE_DIR / "reference_seed_zh"
+REFERENCE_SEED_SOURCE_DIR = SOURCE_DIR / "reference_seed_zh"
 PUBLISHED_DIR = ROOT / "data" / "processed" / "category-insight-v1"
 H0_PRODUCTS = ROOT / "data" / "processed" / "catalogs-v2" / "reference_seed" / "products.jsonl"
 
@@ -82,9 +82,9 @@ def _sha256(path: Path) -> str:
 
 def test_legacy_seed_files_are_byte_exact_and_cards_are_strict() -> None:
     for filename, expected_hash in EXPECTED_SEED_HASHES.items():
-        assert _sha256(TAOBAO_SOURCE_DIR / filename) == expected_hash
+        assert _sha256(REFERENCE_SEED_SOURCE_DIR / filename) == expected_hash
 
-    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
+    cards = _read_jsonl(REFERENCE_SEED_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     assert len(cards) == 48
     assert len({card["card_id"] for card in cards}) == 48
     assert Counter(card["card_type"] for card in cards) == {
@@ -106,7 +106,7 @@ def test_knowledge_candidates_use_the_approved_promotion_contract() -> None:
     candidates = _read_jsonl(SOURCE_DIR / "knowledge_candidates.jsonl")
     legacy_cards = {
         row["card_id"]: row
-        for row in _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
+        for row in _read_jsonl(REFERENCE_SEED_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     }
     assert len(candidates) == 16
     assert len({row["candidate_id"] for row in candidates}) == 16
@@ -153,9 +153,9 @@ def test_review_checklist_exactly_mirrors_candidate_contract() -> None:
 
 
 def test_provenance_exactly_covers_cards_and_all_source_ids_exist_in_h0() -> None:
-    cards = _read_jsonl(TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
+    cards = _read_jsonl(REFERENCE_SEED_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl")
     provenance = _read_jsonl(
-        TAOBAO_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
+        REFERENCE_SEED_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
     )
     assert len(provenance) == 48
     assert {row["card_id"] for row in provenance} == {row["card_id"] for row in cards}
@@ -211,10 +211,10 @@ def test_published_dataset_hashes_and_rebuild_are_stable(tmp_path: Path) -> None
         "legacy_source_item_ids": 779,
     }
     assert (PUBLISHED_DIR / "legacy_category_cards.jsonl").read_bytes() == (
-        TAOBAO_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl"
+        REFERENCE_SEED_SOURCE_DIR / "category_cards_reference_seed_zh.jsonl"
     ).read_bytes()
     assert (PUBLISHED_DIR / "legacy_category_card_provenance.jsonl").read_bytes() == (
-        TAOBAO_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
+        REFERENCE_SEED_SOURCE_DIR / "category_card_provenance_reference_seed_zh.jsonl"
     ).read_bytes()
 
 

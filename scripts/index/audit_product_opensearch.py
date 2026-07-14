@@ -106,7 +106,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--endpoint",
-        default=os.getenv("GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
+        default=os.getenv("CROSSSHOP_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"),
     )
     parser.add_argument("--batch-size", type=int, default=500)
     parser.add_argument("--artifact-root", type=Path)

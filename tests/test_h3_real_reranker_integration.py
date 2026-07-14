@@ -27,9 +27,9 @@ def test_real_h3_rejects_project_root_as_output_root() -> None:
 
 
 def test_real_h3_cross_encoder_reranker() -> None:
-    if os.getenv("GLOBEX_RUN_H3_REAL_RERANKER_INTEGRATION") != "1":
+    if os.getenv("CROSSSHOP_RUN_H3_REAL_RERANKER_INTEGRATION") != "1":
         pytest.skip(
-            "set GLOBEX_RUN_H3_REAL_RERANKER_INTEGRATION=1 and start the "
+            "set CROSSSHOP_RUN_H3_REAL_RERANKER_INTEGRATION=1 and start the "
             "local reranker service to run"
         )
     reranker_url = os.getenv("RERANKER_BASE_URL", "")
@@ -41,7 +41,7 @@ def test_real_h3_cross_encoder_reranker() -> None:
         run(
             argparse.Namespace(
                 opensearch_endpoint=os.getenv(
-                    "GLOBEX_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"
+                    "CROSSSHOP_OPENSEARCH_ENDPOINT", "http://127.0.0.1:9200"
                 ),
                 reranker_url=reranker_url,
                 reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
