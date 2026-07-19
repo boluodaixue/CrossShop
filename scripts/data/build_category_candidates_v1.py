@@ -411,7 +411,7 @@ def build(
         ),
         "migration_source": {
             "artifact_commit": "e6852d0886bbdf42d16fe7adedb35fca8fad97d8",
-            "repository": "D:/PycharmProjects/CrossShopAgentLearning",
+            "repository": "CrossShop reference seed",
         },
         "outputs": {
             "knowledge_candidates": _file_entry(output_candidates, len(candidates)),

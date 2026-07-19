@@ -9,7 +9,7 @@ model environment does not need FastAPI or Uvicorn installed.
 Start it from the repository root with the dedicated model environment:
 
 ```powershell
-C:\Anaconda\envs\blog_04\python.exe -m scripts.rerank.serve_bge_reranker --port 8001
+python -m scripts.rerank.serve_bge_reranker --port 8001
 ```
 
 Then configure the existing client:

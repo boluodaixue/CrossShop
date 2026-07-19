@@ -219,7 +219,7 @@ def _build_into(sources: dict[tuple[str, str], Path], root: Path) -> dict:
         },
         "reference_source": _file_metadata(
             V2_ROOT / "app" / "infrastructure" / "persistence" / "seed_products.py",
-            relative_path="D:/PycharmProjects/crossshop-agent-mainV2/app/infrastructure/persistence/seed_products.py",
+            relative_path="app/infrastructure/persistence/seed_products.py",
         ),
     }
     _write_json(root / "manifest.json", manifest)

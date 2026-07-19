@@ -8,7 +8,7 @@ L2 normalize、1024 维输出和 `max_length=512`。模型加载始终设置
 模型依赖只安装在专用环境，不加入项目主依赖。启动命令：
 
 ```powershell
-C:\Anaconda\envs\blog_04\python.exe -m scripts.embedding.serve_bge_m3_query --port 8002
+python -m scripts.embedding.serve_bge_m3_query --port 8002
 ```
 
 服务只绑定 `127.0.0.1`，提供：
