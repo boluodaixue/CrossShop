@@ -63,8 +63,8 @@ REAL_CASES = (
         target_currency="USD",
     ),
     SearchCase(
-        name="reference_seed",
-        platform="reference_seed",
+        name="reference-seed",
+        platform="reference-seed",
         normalized_query="轻便旅行背包",
         locale="zh-CN",
         ship_to="CN",
@@ -452,8 +452,8 @@ async def run_deterministic_protocol() -> dict[str, Any]:
     # A simple single-platform request is a direct call to the same public tool.
     bus = TradeEventBus()
     direct_queue = bus.subscribe("h4-direct-main")
-    direct_usecase = _FakeUseCase("reference_seed")
-    direct_tool = build_product_search_tool({"reference_seed": direct_usecase}, bus)  # type: ignore[arg-type]
+    direct_usecase = _FakeUseCase("reference-seed")
+    direct_tool = build_product_search_tool({"reference-seed": direct_usecase}, bus)  # type: ignore[arg-type]
     token = ShoppingContext.set(
         ShoppingContextSnapshot(
             shopping_session_id="h4-direct-main",
@@ -464,7 +464,7 @@ async def run_deterministic_protocol() -> dict[str, Any]:
     )
     try:
         direct_result = _chunk_json(
-            await direct_tool(normalized_query="旅行背包", platform="reference_seed")
+            await direct_tool(normalized_query="旅行背包", platform="reference-seed")
         )
     finally:
         ShoppingContext.reset(token)
@@ -500,8 +500,8 @@ async def run_deterministic_protocol() -> dict[str, Any]:
             ),
             dispatch_tool(
                 subagent_type="search_agent",
-                demands="reference_seed search",
-                platform="reference_seed",
+                demands="reference-seed search",
+                platform="reference-seed",
             ),
             dispatch_tool(
                 subagent_type="search_agent",
@@ -513,7 +513,7 @@ async def run_deterministic_protocol() -> dict[str, Any]:
         ShoppingContext.reset(token)
     expected_scopes = {
         ("crossshop_reference", None),
-        ("reference_seed", None),
+        ("reference-seed", None),
         ("amazon", None),
     }
     if set(search_factory.scopes) != expected_scopes:
@@ -582,7 +582,7 @@ async def run_deterministic_protocol() -> dict[str, Any]:
         "evidence_type": "deterministic_protocol_only_not_llm_behavior",
         "simple_single_platform": {
             "tool": "product_search_tool",
-            "platform": "reference_seed",
+            "platform": "reference-seed",
             "product_search_calls": len(direct_usecase.specs),
             "agent_dispatch_calls": 0,
         },
@@ -947,10 +947,10 @@ def evaluate_real_main_case(
     ]
     overlap = _dispatch_overlap(events)
 
-    if name == "single-reference_seed":
+    if name == "single-reference-seed":
         protocol_failures, search_protocol = _evaluate_product_search_protocol(
             events,
-            expected_platforms={"reference_seed"},
+            expected_platforms={"reference-seed"},
         )
         failures.extend(protocol_failures)
         if search_dispatches:
@@ -959,10 +959,10 @@ def evaluate_real_main_case(
             failures.append(
                 "single ReferenceSeed search must directly invoke the tool once or twice"
             )
-        if any(_invoke_platform(event) != "reference_seed" for event in product_invokes):
+        if any(_invoke_platform(event) != "reference-seed" for event in product_invokes):
             failures.append("single ReferenceSeed search invoked a non-ReferenceSeed platform")
         route = {
-            "expected": "direct product_search_tool platform=reference_seed",
+            "expected": "direct product_search_tool platform=reference-seed",
             "product_search_invoke_count": len(product_invokes),
             "product_search_platforms": [
                 _invoke_platform(event) for event in product_invokes
@@ -973,11 +973,11 @@ def evaluate_real_main_case(
     elif name == "cross-platform":
         protocol_failures, search_protocol = _evaluate_product_search_protocol(
             events,
-            expected_platforms={"crossshop_reference", "reference_seed", "amazon"},
+            expected_platforms={"crossshop_reference", "reference-seed", "amazon"},
         )
         failures.extend(protocol_failures)
         platforms = [event["payload"].get("platform") for event in search_dispatches]
-        expected = {"crossshop_reference", "reference_seed", "amazon"}
+        expected = {"crossshop_reference", "reference-seed", "amazon"}
         if len(search_dispatches) != 3 or set(platforms) != expected:
             failures.append(
                 "cross-platform search did not dispatch exactly three platforms"
@@ -1129,7 +1129,7 @@ async def run_real_main_agent(
     """Attempt two real MainAgent conversations and report behavior, never infer it."""
     cases = (
         (
-            "single-reference_seed",
+            "single-reference-seed",
             "只在示例平台帮我找轻便旅行背包，预算 100 元以内，收货到中国，最多推荐 5 件。",
         ),
         (

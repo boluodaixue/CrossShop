@@ -29,7 +29,7 @@ evaluation_policy:
       required_points:
         broad-need-direct-search: "宽泛商品需求直接检索，不强制追问"
         hard-constraint: "价格、配送等当前轮硬约束正确执行"
-        explicit-reference_seed-routing: "明确只看示例平台时由 Main 直调示例平台"
+        explicit-reference-seed-routing: "明确只看示例平台时由 Main 直调示例平台"
         explicit-crossshop-routing: "明确只看 CrossShop 时由 Main 直调 CrossShop"
         amazon-unscoped-routing: "只看 Amazon 但未指定站点时不擅自限定 locale"
         amazon-explicit-locale-routing: "明确 Amazon 站点时正确限定 site_locale"
@@ -356,7 +356,7 @@ cases:
         - "前两轮不得推荐或编造具体商品；第三轮展示的商品必须来自真实工具 hits"
       p1:
         - "前两轮可调用 category_insight_tool，但不得调用 product_search_tool 或 SearchAgent，并能延续两拍、鞋和衣物的知识上下文"
-        - "第三轮才使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数使用 platform=reference_seed 且 top_k 在冻结的 1..5 范围内，真实候选充足时最终结构化展示 2 件，并延续前两轮形成的选购口径"
+        - "第三轮才使用唯一的 product_search_tool 工具类型；首次原始 hits 少于 3 时最多再调用一次且只能改 normalized_query。参数使用 platform=reference-seed 且 top_k 在冻结的 1..5 范围内，真实候选充足时最终结构化展示 2 件，并延续前两轮形成的选购口径"
       p2:
         - criterion: "知识到搜索的衔接质量"
           score_1_anchor: "追问丢失上下文，或转搜索后推荐理由与前两轮选购口径无关"
@@ -493,16 +493,16 @@ cases:
           score_1_anchor: "创建与查询状态混乱，用户无法确认查的是哪个订单"
           score_5_anchor: "确认、创建和真实查单三步边界清楚，订单号与当前状态表达简洁且可核对"
 
-  - id: single-reference_seed-route
+  - id: single-reference-seed-route
     description: 示例平台单平台由 Main 直接检索
     scenario_family: single-turn-recommendation
-    coverage_points: [explicit-reference_seed-routing]
+    coverage_points: [explicit-reference-seed-routing]
     queries: ["只看示例平台，帮我找2款轻便旅行背包。"]
     rubric:
       p0:
         - "不得混入 CrossShop 或 Amazon 商品，展示商品必须来自示例平台真实 hits"
       p1:
-        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=reference_seed 且 top_k 在 1..5 范围内"
+        - "Main 不派发 SearchAgent，直接调用唯一的 product_search_tool，参数含 platform=reference-seed 且 top_k 在 1..5 范围内"
         - "最终结构化展示最多 2 件；候选充足时展示 2 件，不足时如实说明"
       p2:
         - criterion: "单平台推荐清晰度"
