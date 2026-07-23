@@ -611,8 +611,13 @@ def test_run_manifest_has_source_identity_but_no_endpoint_or_secret(
     assert manifest["coverage_policy_id"] == "crossshop-scenario-coverage-v1"
     assert len(manifest["evaluation_policy_sha256"]) == 64
     assert len(manifest["source_tree_sha256"]) == 64
-    assert len(manifest["category_release_manifest_sha256"]) == 64
-    assert len(manifest["category_approved_cards_sha256"]) == 64
+    category_release = PROJECT_ROOT / "data" / "category_insight" / "releases" / "category-insight-v1"
+    if category_release.exists():
+        assert len(manifest["category_release_manifest_sha256"]) == 64
+        assert len(manifest["category_approved_cards_sha256"]) == 64
+    else:
+        assert manifest["category_release_manifest_sha256"] is None
+        assert manifest["category_approved_cards_sha256"] is None
     assert manifest["product_search_startup_checks"] == {"reference_seed": "ready"}
     assert "private-reranker" not in serialized
     assert "private-qdrant" not in serialized

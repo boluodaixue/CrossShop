@@ -404,8 +404,8 @@ async def run_fault_contracts() -> dict[str, Any]:
 
     async def product_search_tool(platform: str) -> ToolChunk:
         """Injected single product tool with platform-scoped dependency health."""
-        if platform == "reference-seed":
-            raise httpx.ConnectError("injected reference-seed connection failure")
+        if platform == "reference_seed":
+            raise httpx.ConnectError("injected reference_seed connection failure")
         return ToolChunk(
             content=[TextBlock(type="text", text=f"{platform}:ok")],
             state=ToolResultState.SUCCESS,
@@ -415,13 +415,13 @@ async def run_fault_contracts() -> dict[str, Any]:
         product_search_tool,
         middlewares=[ToolResilienceMiddleware(platform_registry)],
     )
-    await _call_function_tool(platform_tool, platform="reference-seed")
-    await _call_function_tool(platform_tool, platform="reference-seed")
-    reference-seed_short_circuit = await _call_function_tool(
+    await _call_function_tool(platform_tool, platform="reference_seed")
+    await _call_function_tool(platform_tool, platform="reference_seed")
+    reference_seed_short_circuit = await _call_function_tool(
         platform_tool,
-        platform="reference-seed",
+        platform="reference_seed",
     )
-    amazon_after_reference-seed_failure = await _call_function_tool(
+    amazon_after_reference_seed_failure = await _call_function_tool(
         platform_tool,
         platform="amazon",
     )
@@ -430,25 +430,25 @@ async def run_fault_contracts() -> dict[str, Any]:
             name="product-circuit-is-platform-scoped",
             classification="circuit_open",
             passed=(
-                platform_registry.status("product_search_tool:reference-seed") == "open"
+                platform_registry.status("product_search_tool:reference_seed") == "open"
                 and platform_registry.status("product_search_tool:amazon") == "closed"
-                and "已熔断" in reference-seed_short_circuit.content[0].text
-                and amazon_after_reference-seed_failure.state == ToolResultState.SUCCESS
+                and "已熔断" in reference_seed_short_circuit.content[0].text
+                and amazon_after_reference_seed_failure.state == ToolResultState.SUCCESS
             ),
             request={
                 "tool": "product_search_tool",
-                "failed_platform": "reference-seed",
+                "failed_platform": "reference_seed",
                 "healthy_platform": "amazon",
             },
             result={
-                "reference-seed_circuit": platform_registry.status(
-                    "product_search_tool:reference-seed"
+                "reference_seed_circuit": platform_registry.status(
+                    "product_search_tool:reference_seed"
                 ),
                 "amazon_circuit": platform_registry.status(
                     "product_search_tool:amazon"
                 ),
                 "amazon_available": (
-                    amazon_after_reference-seed_failure.state == ToolResultState.SUCCESS
+                    amazon_after_reference_seed_failure.state == ToolResultState.SUCCESS
                 ),
             },
         ),
@@ -877,7 +877,7 @@ async def run_fault_contracts() -> dict[str, Any]:
     )
 
     platform_bus = TradeEventBus()
-    injected_search_factory = _InjectedSearchFactory(platform_bus, "reference-seed")
+    injected_search_factory = _InjectedSearchFactory(platform_bus, "reference_seed")
     injected_trade_factory = SimpleNamespace()
     dispatch = build_task_dispatch_tool(
         injected_search_factory,  # type: ignore[arg-type]
@@ -901,7 +901,7 @@ async def run_fault_contracts() -> dict[str, Any]:
                     platform=platform,
                     site_locale=None,
                 )
-                for platform in ("crossshop_reference", "reference-seed", "amazon")
+                for platform in ("crossshop_reference", "reference_seed", "amazon")
             ),
         )
     finally:
@@ -912,7 +912,7 @@ async def run_fault_contracts() -> dict[str, Any]:
             "dispatch_result": json.loads(chunk.content[0].text),
         }
         for platform, chunk in zip(
-            ("crossshop_reference", "reference-seed", "amazon"),
+            ("crossshop_reference", "reference_seed", "amazon"),
             platform_chunks,
             strict=True,
         )
@@ -927,8 +927,8 @@ async def run_fault_contracts() -> dict[str, Any]:
                     "search_result_available"
                 ]
                 is True
-                and platform_states["reference-seed"]["state"] == "success"
-                and platform_states["reference-seed"]["dispatch_result"][
+                and platform_states["reference_seed"]["state"] == "success"
+                and platform_states["reference_seed"]["dispatch_result"][
                     "search_result_available"
                 ]
                 is False
@@ -939,13 +939,13 @@ async def run_fault_contracts() -> dict[str, Any]:
                 is True
             ),
             request={
-                "platforms": ["crossshop_reference", "reference-seed", "amazon"],
-                "injected_failure": "reference-seed",
+                "platforms": ["crossshop_reference", "reference_seed", "amazon"],
+                "injected_failure": "reference_seed",
             },
             result={
                 "platform_results": platform_states,
                 "boundary": "production task_dispatch correlation and aggregation",
-                "failed_dispatch_outer_state": platform_states["reference-seed"]["state"],
+                "failed_dispatch_outer_state": platform_states["reference_seed"]["state"],
                 "automatic_retry_calls": 0,
             },
         ),
@@ -1400,7 +1400,7 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
             )
     elif expectation == "cross_platform":
         platforms = {event["payload"].get("platform") for event in dispatches}
-        if platforms != {"crossshop_reference", "reference-seed", "amazon"}:
+        if platforms != {"crossshop_reference", "reference_seed", "amazon"}:
             failures.append(f"cross-platform dispatch mismatch: {sorted(platforms)}")
         overlap = _dispatch_overlap(events)
         if set(overlap["complete_platforms"]) != platforms:
@@ -1487,9 +1487,9 @@ def _evaluate_turn(turn: dict[str, Any]) -> list[str]:
             if normalized_query != "降噪耳机":
                 failures.append(f"category switch did not form new request: {args}")
     elif expectation == "conditional_rewrite_filtered":
-        protocol_failures, evidence = _protocol(events, {"reference-seed"})
+        protocol_failures, evidence = _protocol(events, {"reference_seed"})
         failures.extend(protocol_failures)
-        calls = evidence["calls_by_platform"]["reference-seed"]
+        calls = evidence["calls_by_platform"]["reference_seed"]
         if len(calls) != 2:
             failures.append(f"expected one legal rewrite, observed {len(calls)} calls")
         elif not all(
@@ -1652,7 +1652,7 @@ async def _run_recorded_retrieval_turn(
     timeout_seconds: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Record the exact query crossing both real retrieval model boundaries."""
-    usecase = container.catalog_searches["reference-seed"]
+    usecase = container.catalog_searches["reference_seed"]
     original_embedder = usecase._embedder
     original_reranker = usecase._reranker
     embedder = _RecordingEmbedder(original_embedder)
@@ -1736,11 +1736,11 @@ async def run_online_acceptance(
             "direct:crossshop_reference",
         ),
         LiveTurn(
-            "single-reference-seed",
-            f"h6-reference-seed-{stamp}",
-            f"h6-reference-seed-buyer-{stamp}",
+            "single-reference_seed",
+            f"h6-reference_seed-{stamp}",
+            f"h6-reference_seed-buyer-{stamp}",
             "只看示例平台，帮我找轻便旅行背包，最多 5 件。",
-            "direct:reference-seed",
+            "direct:reference_seed",
         ),
         LiveTurn(
             "single-amazon",
@@ -1784,7 +1784,7 @@ async def run_online_acceptance(
             constraint_session,
             constraint_buyer,
             "只看示例平台，帮我找轻便旅行背包。",
-            "direct:reference-seed",
+            "direct:reference_seed",
         ),
         LiveTurn(
             "constraint-followup",
@@ -1819,7 +1819,7 @@ async def run_online_acceptance(
             more_session,
             more_buyer,
             "只看示例平台找旅行背包，明确推荐 3 件。",
-            "direct:reference-seed",
+            "direct:reference_seed",
         ),
         timeout_seconds=timeout_seconds,
     )
@@ -1939,7 +1939,7 @@ async def run_online_acceptance(
                 f"h6-pref-{stamp}",
                 preferred_buyer,
                 preference_query,
-                "direct:reference-seed",
+                "direct:reference_seed",
             ),
             timeout_seconds=timeout_seconds,
         )
@@ -1950,7 +1950,7 @@ async def run_online_acceptance(
                 f"h6-plain-{stamp}",
                 plain_buyer,
                 preference_query,
-                "direct:reference-seed",
+                "direct:reference_seed",
             ),
             timeout_seconds=timeout_seconds,
         )
@@ -2177,7 +2177,7 @@ async def run_online_acceptance(
         for name, turn in same_platform_turns.items()
     }
     isolation = {
-        "platform": "reference-seed",
+        "platform": "reference_seed",
         "session_product_refs": session_refs,
         "all_sessions_populated": all(session_refs.values()),
         "owner_and_request_checks": owner_checks,
