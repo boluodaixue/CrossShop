@@ -23,10 +23,12 @@ CONTRACT = "bge-m3-cls-l2-1024-max512-knowledge-char360-v2"
 
 
 def load_documents(root: Path) -> list[dict[str, Any]]:
-    """Preserve v1 cards and add source-backed paraphrases without type buckets."""
-    legacy = root / "knowledge" / "category-insight-v1"
+    """Load a corpus root with historical Markdown and optional official JSON."""
+    legacy = root / "historical"
+    if not legacy.exists():
+        legacy = root / "knowledge" / "category-insight-v1"
     files = sorted(legacy.glob("*.md"))
-    if len(files) != 64:
+    if len(files) not in {8, 64}:
         raise ValueError("Expected the frozen 64-document CategoryInsight v1 corpus")
     documents = []
     for path in files:
@@ -34,13 +36,16 @@ def load_documents(root: Path) -> list[dict[str, Any]]:
         documents.append({
             "document_id": path.stem, "title": text.splitlines()[0].lstrip("# "),
             "content": text, "source": path.name, "url": "",
-            "publisher": "CrossShop CategoryInsight v1",
+            "publisher": "CrossShop public demo" if len(files) == 8 else "CrossShop CategoryInsight v1",
             "checked_on": "2026-08-28", "scope": "历史发布资料；具体使用边界见正文。",
             "section": "full card", "source_kind": "legacy_release",
         })
-    source = json.loads((root / "knowledge/shopping-guide-v2/sources.json").read_text(
-        encoding="utf-8",
-    ))
+    source_path = root / "official" / "sources.json"
+    if not source_path.exists():
+        source_path = root / "shopping-guide-v2" / "sources.json"
+    if not source_path.exists():
+        return documents
+    source = json.loads(source_path.read_text(encoding="utf-8"))
     for item in source["documents"]:
         required = {"document_id", "title", "content", "url", "publisher",
                     "checked_on", "scope", "section"}
@@ -48,7 +53,7 @@ def load_documents(root: Path) -> list[dict[str, Any]]:
             raise ValueError("Official knowledge requires text and source metadata")
         if not item["url"].startswith("https://"):
             raise ValueError("Official source must use HTTPS")
-        documents.append({**item, "source": item["url"], "source_kind": "official_paraphrase"})
+        documents.append({**item, "source": item["url"], "source_kind": "official_source_summary"})
     ids = [item["document_id"] for item in documents]
     if len(ids) != len(set(ids)):
         raise ValueError("Duplicate knowledge document IDs")

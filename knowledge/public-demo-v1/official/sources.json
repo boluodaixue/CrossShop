@@ -1,0 +1,52 @@
+[
+  {
+    "document_id": "guide-usb-pd",
+    "title": "USB PD 充电器与线缆选购",
+    "url": "https://www.usb.org/usb-charger-pd",
+    "publisher": "USB-IF",
+    "checked_on": "2026-09-06",
+    "scope": "USB Power Delivery 公开说明；具体设备、线缆规格另查厂商。",
+    "section": "USB Power Delivery",
+    "content": "USB Power Delivery 涉及供电设备与受电设备之间的功率协商。选充电器和线缆时应同时核对设备支持的协议及功率条件，不能只凭 USB-C 接口外形判断实际充电功率。协议能力上限不代表每件商品都支持该能力。"
+  },
+  {
+    "document_id": "guide-apple-35w",
+    "title": "Apple 35W 双 USB-C 充电器双口功率分配",
+    "url": "https://support.apple.com/en-gb/111805",
+    "publisher": "Apple Support",
+    "checked_on": "2026-09-06",
+    "scope": "仅限文档中的 Apple 35W Dual USB-C Port Power Adapter，不推广到其他充电器。",
+    "section": "Charge two devices",
+    "content": "Apple 35W 双 USB-C 充电器同时连接两台设备时会分配功率，不是每个接口同时输出35W。官方示例中 Mac 笔记本搭配 iPhone 或 iPad 时，每台最多17.5W；Mac 或 iPhone 搭配 Apple Watch 或 AirPods 时，前者最多27.5W，后者最多7.5W。实际组合应核对原文。"
+  },
+  {
+    "document_id": "guide-ups-fragile",
+    "title": "跨境陶瓷杯与玻璃制品的易碎包装",
+    "url": "https://www.ups.com/us/en/support/shipping-support/packaging-tips",
+    "publisher": "UPS United States",
+    "checked_on": "2026-09-06",
+    "scope": "UPS 美国包装建议；不是所有承运商的统一承运条件，也不保证赔付。",
+    "section": "One-box versus two-box method",
+    "content": "UPS 对易碎物品建议考虑双箱包装。玻璃和陶瓷应分别缓冲包裹、填充空隙并保护边角，避免物品在箱内移动或相互碰撞。仅贴易碎标签不能替代包装。寄送前还需核对承运服务要求。"
+  },
+  {
+    "document_id": "guide-ups-electronics",
+    "title": "电子配件国际寄送的缓冲与防静电包装",
+    "url": "https://www.ups.com/us/en/support/shipping-support/packaging-tips",
+    "publisher": "UPS United States",
+    "checked_on": "2026-09-06",
+    "scope": "UPS 美国包装建议；电池或危险品另有要求。",
+    "section": "Packaging materials",
+    "content": "UPS 的包装材料说明建议电子物品使用防静电泡沫并配合气泡缓冲材料。包装需要限制内部移动、保护边角。完成缓冲包装不表示含电池设备已经满足危险品分类、标签和文件要求。"
+  },
+  {
+    "document_id": "guide-fedex-battery-form",
+    "title": "跨境寄送锂电池：单独电池、随设备与装在设备内",
+    "url": "https://www.fedex.com/en-us/shipping/how-to-ship-batteries.html",
+    "publisher": "FedEx United States",
+    "checked_on": "2026-09-06",
+    "scope": "FedEx 美国公开寄运指引；这是包裹运输而非旅客随身行李规则。路线和服务须向承运商复核。",
+    "section": "Lithium battery guidelines and restrictions",
+    "content": "锂离子电池单独寄送与和设备一起寄送、安装在设备内寄送属于不同包装形式，不能混用要求。FedEx 页面分别列出 UN3480 与 UN3481 等分类。咨询时应提供电池类型、容量、数量、包装形式、出发地和目的地；不能仅凭容量数字承诺能寄或免申报。"
+  }
+]

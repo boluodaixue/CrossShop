@@ -25,7 +25,8 @@ from app.infrastructure.rag.opensearch_knowledge import (
 from app.infrastructure.settings import PROJECT_ROOT, load_settings
 
 
-async def build(kb: OpenSearchKnowledgeBase, root: Path, *, publish: bool = False) -> dict:
+async def build(kb: OpenSearchKnowledgeBase, root: Path, *, publish: bool = False,
+                alias: str = "crossshop-knowledge-demo-current") -> dict:
     documents = load_documents(root)
     chunks = make_chunks(documents)
     release = corpus_hash(chunks)
@@ -83,17 +84,17 @@ async def build(kb: OpenSearchKnowledgeBase, root: Path, *, publish: bool = Fals
     if publish:
         if not qualified:
             raise RuntimeError(f"Knowledge smoke not qualified; alias unchanged: {probes}")
-        response = await kb.client.get(f"/_alias/{ALIAS}")
+        response = await kb.client.get(f"/_alias/{alias}")
         if response.status_code != 404:
             response.raise_for_status()
             previous = list(response.json())
         if any(not name.startswith(INDEX_PREFIX) for name in previous):
             raise RuntimeError("Knowledge alias targets unexpected index; refusing switch")
-        actions = [{"remove": {"index": name, "alias": ALIAS}} for name in previous]
-        actions.append({"add": {"index": index, "alias": ALIAS}})
+        actions = [{"remove": {"index": name, "alias": alias}} for name in previous]
+        actions.append({"add": {"index": index, "alias": alias}})
         await kb.request("POST", "/_aliases", json={"actions": actions})
     return {"schema_version": "knowledge-opensearch-release-v2", "release": release,
-            "index": index, "alias": ALIAS, "published": publish, "previous_indexes": previous,
+            "index": index, "alias": alias, "published": publish, "previous_indexes": previous,
             "document_count": len(documents), "chunk_count": count, "contract": CONTRACT,
             "smoke_probes": probes, "smoke_qualified": qualified,
             "benchmark": False}
@@ -102,12 +103,14 @@ async def build(kb: OpenSearchKnowledgeBase, root: Path, *, publish: bool = Fals
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--source-root", type=Path, default=PROJECT_ROOT / "knowledge/public-demo-v1")
+    parser.add_argument("--alias", default="crossshop-knowledge-demo-current")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--output", type=Path,
                         default=PROJECT_ROOT / "artifacts/knowledge-v2/build-report.json")
     args = parser.parse_args()
     if args.validate_only:
-        documents = load_documents(PROJECT_ROOT)
+        documents = load_documents(args.source_root)
         chunks = make_chunks(documents)
         report = {"validated": True, "document_count": len(documents),
                   "chunk_count": len(chunks), "release": corpus_hash(chunks),
@@ -117,7 +120,9 @@ async def main() -> None:
         if not isinstance(kb, OpenSearchKnowledgeBase):
             raise ValueError("Set CATEGORY_KB_BACKEND=opensearch for this builder")
         try:
-            report = await build(kb, PROJECT_ROOT, publish=args.publish)
+            if args.publish and args.alias == ALIAS and not args.publish:
+                raise ValueError("formal alias requires explicit --publish")
+            report = await build(kb, args.source_root, publish=args.publish, alias=args.alias)
         finally:
             await kb.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,10 @@
+{
+  "document_id": "guide-apple-35w",
+  "title": "Apple 35W 双 USB-C 充电器双口功率分配",
+  "url": "https://support.apple.com/en-gb/111805",
+  "publisher": "Apple Support",
+  "checked_on": "2026-09-06",
+  "scope": "仅限文档中的 Apple 35W Dual USB-C Port Power Adapter，不推广到其他充电器。",
+  "section": "Charge two devices",
+  "content": "Apple 35W 双 USB-C 充电器同时连接两台设备时会分配功率，不是每个接口同时输出35W。官方示例中 Mac 笔记本搭配 iPhone 或 iPad 时，每台最多17.5W；Mac 或 iPhone 搭配 Apple Watch 或 AirPods 时，前者最多27.5W，后者最多7.5W。实际组合应核对原文。"
+}

@@ -1,1 +1,18 @@
-{"version":"public-demo-v1","document_count":13,"historical_count":8,"official_count":5,"scope":"representative demo subset"}
+{
+  "provenance_file": "provenance.jsonl",
+  "document_count": 13,
+  "schema_version": "knowledge-demo-v1",
+  "boundary": "Representative public subset; not a live catalog or compliance guarantee.",
+  "category_counts": {
+    "catalog_style_proxy": 2,
+    "curated_selection_guide": 2,
+    "catalog_attribute_summary": 2,
+    "official_source_summary": 5,
+    "historical_price_range": 2
+  },
+  "corpus_version": "public-demo-v1",
+  "source_files": [
+    "historical/*.md",
+    "official/sources.json"
+  ]
+}

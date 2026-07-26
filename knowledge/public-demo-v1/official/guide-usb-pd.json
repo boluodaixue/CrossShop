@@ -1,0 +1,10 @@
+{
+  "document_id": "guide-usb-pd",
+  "title": "USB PD 充电器与线缆选购",
+  "url": "https://www.usb.org/usb-charger-pd",
+  "publisher": "USB-IF",
+  "checked_on": "2026-09-06",
+  "scope": "USB Power Delivery 公开说明；具体设备、线缆规格另查厂商。",
+  "section": "USB Power Delivery",
+  "content": "USB Power Delivery 涉及供电设备与受电设备之间的功率协商。选充电器和线缆时应同时核对设备支持的协议及功率条件，不能只凭 USB-C 接口外形判断实际充电功率。协议能力上限不代表每件商品都支持该能力。"
+}
