@@ -1,0 +1,2 @@
+{"item_id":"demo:aurora-lamp","platform":"demo","title":"Aurora Camp Lamp","category":"camping-light","price":39.9,"currency":"USD","attributes":{"battery":"USB-C","weight_g":280},"shipping_countries":["US","CN"]}
+{"item_id":"demo:trail-pack","platform":"demo","title":"Trail Day Pack","category":"travel-gear","price":49.0,"currency":"USD","attributes":{"capacity_l":18,"water_resistant":true},"shipping_countries":["US","CN"]}

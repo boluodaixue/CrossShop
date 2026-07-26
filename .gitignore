@@ -52,6 +52,7 @@ data/preferences/
 data/cache/
 data/models/
 data/indices/
+knowledge/private/
 pytest-*/
 .pytest-*/
 .tmp/
