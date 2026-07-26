@@ -30,16 +30,6 @@
     "content": "UPS 对易碎物品建议考虑双箱包装。玻璃和陶瓷应分别缓冲包裹、填充空隙并保护边角，避免物品在箱内移动或相互碰撞。仅贴易碎标签不能替代包装。寄送前还需核对承运服务要求。"
   },
   {
-    "document_id": "guide-ups-electronics",
-    "title": "电子配件国际寄送的缓冲与防静电包装",
-    "url": "https://www.ups.com/us/en/support/shipping-support/packaging-tips",
-    "publisher": "UPS United States",
-    "checked_on": "2026-09-06",
-    "scope": "UPS 美国包装建议；电池或危险品另有要求。",
-    "section": "Packaging materials",
-    "content": "UPS 的包装材料说明建议电子物品使用防静电泡沫并配合气泡缓冲材料。包装需要限制内部移动、保护边角。完成缓冲包装不表示含电池设备已经满足危险品分类、标签和文件要求。"
-  },
-  {
     "document_id": "guide-fedex-battery-form",
     "title": "跨境寄送锂电池：单独电池、随设备与装在设备内",
     "url": "https://www.fedex.com/en-us/shipping/how-to-ship-batteries.html",
@@ -48,5 +38,15 @@
     "scope": "FedEx 美国公开寄运指引；这是包裹运输而非旅客随身行李规则。路线和服务须向承运商复核。",
     "section": "Lithium battery guidelines and restrictions",
     "content": "锂离子电池单独寄送与和设备一起寄送、安装在设备内寄送属于不同包装形式，不能混用要求。FedEx 页面分别列出 UN3480 与 UN3481 等分类。咨询时应提供电池类型、容量、数量、包装形式、出发地和目的地；不能仅凭容量数字承诺能寄或免申报。"
+  },
+  {
+    "document_id": "guide-dhl-customs-description",
+    "title": "跨境清关资料：商品描述、材质和用途",
+    "url": "https://mydhlplus.dhl.com/content/dam/downloads/global/en/customs-guide/express_global_customs_customer_guidelines.pdf.coredownload.pdf",
+    "publisher": "DHL Express",
+    "checked_on": "2026-09-06",
+    "scope": "DHL Express 全球客户清关指南；目的国规定各异，不提供实时税率或免税结论。",
+    "section": "Page 7, Goods Description",
+    "content": "DHL 清关指南要求发票及运单提供完整、准确的货物描述，并在发票中按商品项目列明。应说明物品是什么、用来做什么、由什么材料制成。只写礼物、配件等笼统名称不足以清楚识别货物，可能造成清关延误。"
   }
 ]
