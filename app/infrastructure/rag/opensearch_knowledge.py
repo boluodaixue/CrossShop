@@ -47,7 +47,7 @@ def load_documents(root: Path) -> list[dict[str, Any]]:
         return documents
     source = json.loads(source_path.read_text(encoding="utf-8"))
     source = source.get("documents", source) if isinstance(source, dict) else source
-    for item in source["documents"]:
+    for item in source:
         required = {"document_id", "title", "content", "url", "publisher",
                     "checked_on", "scope", "section"}
         if not required.issubset(item) or any(not item[key] for key in required):
