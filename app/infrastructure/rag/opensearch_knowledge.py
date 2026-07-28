@@ -46,6 +46,7 @@ def load_documents(root: Path) -> list[dict[str, Any]]:
     if not source_path.exists():
         return documents
     source = json.loads(source_path.read_text(encoding="utf-8"))
+    source = source.get("documents", source) if isinstance(source, dict) else source
     for item in source["documents"]:
         required = {"document_id", "title", "content", "url", "publisher",
                     "checked_on", "scope", "section"}
