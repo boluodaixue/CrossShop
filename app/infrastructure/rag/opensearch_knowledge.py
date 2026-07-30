@@ -33,12 +33,20 @@ def load_documents(root: Path) -> list[dict[str, Any]]:
     documents = []
     for path in files:
         text = path.read_text(encoding="utf-8").strip()
+        if "attribute" in path.stem:
+            kind = "catalog_attribute_summary"
+        elif "bestseller" in path.stem:
+            kind = "catalog_style_proxy"
+        elif "price-range" in path.stem:
+            kind = "historical_price_range"
+        else:
+            kind = "curated_selection_guide"
         documents.append({
             "document_id": path.stem, "title": text.splitlines()[0].lstrip("# "),
             "content": text, "source": path.name, "url": "",
             "publisher": "CrossShop public demo" if len(files) == 8 else "CrossShop CategoryInsight v1",
             "checked_on": "2026-08-28", "scope": "历史发布资料；具体使用边界见正文。",
-            "section": "full card", "source_kind": "legacy_release",
+            "section": "full card", "source_kind": kind,
         })
     source_path = root / "official" / "sources.json"
     if not source_path.exists():
