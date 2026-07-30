@@ -656,14 +656,17 @@ def _source_tree_sha256(cases_path: Path) -> str:
 
 
 def _git_value(*args: str) -> str:
-    completed = subprocess.run(
-        ["git", *args],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout.strip()
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "unavailable"
+    return completed.stdout.strip() or "unavailable"
 
 
 def build_run_manifest(

@@ -71,7 +71,7 @@ def test_http_protocol_warmup_health_and_original_indices() -> None:
     assert health.json() == {
         "status": "ok",
         "model": "BAAI/bge-reranker-v2-m3",
-        "model_path": "D:\\models\\bge-reranker-v2-m3",
+        "model_path": str(Path("D:/models/bge-reranker-v2-m3")),
         "device": "cuda:0",
         "dtype": "float16",
         "max_length": 256,

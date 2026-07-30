@@ -29,6 +29,7 @@ from scripts.eval.rubric_fault_injection import RubricFaultInjection
 from scripts.eval.rubric_runner import (
     CompletedCaseArtifacts,
     EvaluationRunError,
+    _git_value,
     _safe_failure,
     _scoped_buyer_id,
     bind_dependency_inputs,
@@ -42,6 +43,15 @@ from scripts.eval.rubric_runner import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_git_value_degrades_when_git_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_git(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("scripts.eval.rubric_runner.subprocess.run", missing_git)
+
+    assert _git_value("rev-parse", "HEAD") == "unavailable"
 
 
 def _write_context_artifact(root: Path, *, repeated: bool = False) -> None:
